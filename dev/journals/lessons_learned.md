@@ -8,6 +8,55 @@ The bar is "took >1 hour" or "would have been ≥10× faster with this entry on 
 
 ---
 
+### Lesson #26 — DEIMv2 `PostProcessor.num_top_queries` must shrink when `num_classes` shrinks
+
+**Symptom:** First training epoch finishes (loss curves printed), then evaluation crashes inside DEIMv2's `engine/deim/postprocessor.py:59`:
+
+```python
+scores, index = torch.topk(scores.flatten(1), self.num_top_queries, dim=-1)
+RuntimeError: selected index k out of range
+```
+
+A true post-training failure, not a config bug surfaced at init. Easy to mistake for a model-output shape bug.
+
+**Root cause:** DEIMv2's PostProcessor selects topk over `scores.flatten(1)` whose shape is `[batch, num_queries * num_classes]` — one logit per (query, class) pair. Upstream's `configs/base/deimv2.yml` sets `num_top_queries: 300` because COCO has `num_classes=91` and `num_queries=100..300` so 100*91=9100 ≫ 300. The kit's `num_classes=1` override collapses the flattened axis to `num_queries` alone. For HGNetv2 atto with `num_queries=100`, the topk asks for k=300 from a 100-element tensor → crash. HGNetv2 femto (`num_queries=150`) and pico (`num_queries=200`) crash similarly; n/s/m/l/x and all DINOv3 variants inherit the upstream `num_queries=300` so single-class topk-300 is *exactly* the boundary case (works by chance).
+
+**Fix:** The kit's YAML generator overrides `PostProcessor.num_top_queries` to `min(300, num_queries * num_classes)`. Per-variant `num_queries` lives in `VARIANTS[name]["num_queries"]`, populated from the upstream configs (atto=100, femto=150, pico=200, all others=300). At `num_classes=91` (COCO) the override evaluates to 300 — same as upstream. At `num_classes=1` (single-class kit usage) it shrinks to `num_queries`, which is always a valid topk size. Regression test: `tests/unit/test_deimv2_topk_invariant.py` parametrizes over 12 variants × {1, 5, 20, 91} classes and asserts `num_top_queries ≤ num_queries * num_classes`.
+
+**Takeaway:** When overriding a config field on an upstream framework, also override every other field whose validity depended on the original value. The kit's "five-sizes-match" invariant (lesson #18) catches the spatial-axis case; this is the per-batch-axis analogue. A future agent extending the kit with a new trainer plugin that supports class-count-dependent operations must reproduce this defense.
+
+---
+
+### Lesson #25 — OpenGroundingDino's `tools/coco2odvg.py` needs `jsonlines`; trainer must fall back gracefully
+
+**Symptom:** Pytest tests for the OpenGroundingDINO trainer's `generate_config()` failed with `subprocess.CalledProcessError` from `tools/coco2odvg.py`. The captured stderr was `ModuleNotFoundError: No module named 'jsonlines'`.
+
+**Root cause:** The submodule's `tools/coco2odvg.py` reads/writes JSON Lines via the `jsonlines` package, which isn't a declared dep of `kwcoco_detector_kit` or the OpenGroundingDINO submodule's own `requirements.txt`. Whenever the kit's resolver finds `tpl/Open-GroundingDino` on disk (e.g. after `git submodule update --init`), `generate_config` invokes the upstream conversion tool — and dies in a CI env that doesn't install the optional extras.
+
+**Fix:** Two layers.
+1. The trainer's `generate_config` now wraps `_coco_to_odvg()` in `try/except subprocess.CalledProcessError`. On failure it emits a warning pointing at the `[opengroundingdino]` extras (which now include `jsonlines`) and leaves the stub Python config intact. The user can train against the stub config once they install the extras; the kit's pipeline doesn't abort at config-gen time.
+2. `setup_audit` now probes for `jsonlines` under the `opengroundingdino` group so `kwcoco-detector-kit check-env --groups opengroundingdino --strict_import` flags the gap before training is attempted.
+
+**Takeaway:** When a trainer plugin invokes upstream tools that have their own hidden runtime deps, the plugin's `generate_config` should treat the conversion as best-effort and degrade to a stub when the env isn't fully provisioned. Hard-failure at config-gen time blocks pipelines that don't actually need the conversion (the kit's own tests, smoke pipelines, dry-run sweeps). Hard-failure belongs at `launch()` time, not at `generate_config()` time.
+
+---
+
+### Lesson #24 — DEIMv2 single-GPU launches must use `torch.distributed.run` on torch ≥ 2.10
+
+**Symptom:** A bare `python tpl/DEIMv2/train.py -c train.yml` invocation dies at backbone init with `ValueError: Default process group has not been initialized, please make sure to call init_process_group.` The trace points at `engine/backbone/hgnetv2.py:562`:
+
+```python
+if torch.distributed.get_rank() == 0:
+```
+
+**Root cause:** DEIMv2's `setup_distributed()` calls `torch.distributed.init_process_group(init_method='env://')` inside a try/except — when `RANK` / `LOCAL_RANK` / `WORLD_SIZE` aren't set, the call fails, `enabled_dist = False`, and DEIMv2 prints "Not init distributed mode." Several modules downstream (notably `hgnetv2.py`'s rank-gated stem-print) call `torch.distributed.get_rank()` unconditionally. On torch ≤ 2.9 this returned 0 silently when no process group was initialized; **torch 2.10+ raises**. The kit's `launch()` used to invoke a bare `python train.py` for the single-GPU path (matching what the prior project's bash did) — that worked on the prior project's older torch but breaks the moment the user updates.
+
+**Fix:** Always launch DEIMv2 under `python -m torch.distributed.run --nproc_per_node N`, even for `num_gpus=1`. torchrun sets `RANK=0`, `LOCAL_RANK=0`, `WORLD_SIZE=N` so `init_process_group(env://)` succeeds and downstream `get_rank()` works on every torch version. The `--master_port` defaults to 29500, overridable via `$KCD_MASTER_PORT` for parallel sweeps.
+
+**Takeaway:** When an upstream trainer's distributed-init code path catches its own exceptions, that doesn't mean the rest of the trainer is single-GPU safe. The trainer's API contract is "you must launch under torchrun"; the kit's launcher should respect that contract unconditionally rather than emulating the bare-python path that used to work on older torch.
+
+---
+
 ### Lesson #23 — torch 2.10's optimizer constructor lazily imports `torch._dynamo` → ~20-30s cold-cache hang
 
 **Symptom:** A second invocation of an in-process trainer in the same shell session appears to hang for 20-30s on `torch.optim.Adam(model.parameters(), ...)`. Ctrl-C shows the stack inside `torch.fx.experimental.symbolic_shapes`'s sympy import chain.

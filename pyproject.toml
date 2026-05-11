@@ -66,6 +66,8 @@ opengroundingdino = [
     "transformers",
     "addict",
     "yapf",
+    # tools/coco2odvg.py reads/writes JSON Lines for the ODVG format.
+    "jsonlines",
 ]
 # Webdataset — Phase 3 storage backend. Soft-imported; not loaded in Phase 1.
 webdataset = [

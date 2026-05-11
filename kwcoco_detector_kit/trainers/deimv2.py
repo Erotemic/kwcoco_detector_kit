@@ -47,6 +47,18 @@ _HGNETV2_SIZES = ["atto", "femto", "pico", "n", "s", "m", "l", "x"]
 _DINOV3_SIZES = ["s", "m", "l", "x"]
 
 
+# Per-variant DEIMTransformer.num_queries. Mirrors upstream configs at
+# tpl/DEIMv2/configs/deimv2/*. The smaller HGNetv2 variants override the
+# 300 default with a smaller value (matches their decoder capacity); the
+# rest inherit 300 from configs/base/deimv2.yml.
+_NUM_QUERIES_BY_VARIANT: Dict[str, int] = {
+    "deimv2_hgnetv2_atto":  100,
+    "deimv2_hgnetv2_femto": 150,
+    "deimv2_hgnetv2_pico":  200,
+}
+_DEFAULT_NUM_QUERIES = 300
+
+
 def _build_variants() -> Dict[str, Dict[str, Any]]:
     out: Dict[str, Dict[str, Any]] = {}
     for size in _HGNETV2_SIZES:
@@ -56,6 +68,7 @@ def _build_variants() -> Dict[str, Dict[str, Any]]:
             "size": size,
             "upstream_config_relpath": f"configs/deimv2/deimv2_hgnetv2_{size}_coco.yml",
             "supports_dynamic_input": False,
+            "num_queries": _NUM_QUERIES_BY_VARIANT.get(name, _DEFAULT_NUM_QUERIES),
         }
     for size in _DINOV3_SIZES:
         name = f"deimv2_dinov3_{size}"
@@ -64,6 +77,7 @@ def _build_variants() -> Dict[str, Dict[str, Any]]:
             "size": size,
             "upstream_config_relpath": f"configs/deimv2/deimv2_dinov3_{size}_coco.yml",
             "supports_dynamic_input": True,
+            "num_queries": _NUM_QUERIES_BY_VARIANT.get(name, _DEFAULT_NUM_QUERIES),
         }
     return out
 
@@ -357,6 +371,24 @@ def _val_transforms_block(input_hw: Tuple[int, int]) -> Dict[str, Any]:
     }
 
 
+def _effective_num_top_queries(num_queries: int, num_classes: int,
+                                default_topk: int = 300) -> int:
+    """Compute a safe ``PostProcessor.num_top_queries``.
+
+    DEIMv2's PostProcessor selects topk over ``scores.flatten(1)`` whose
+    shape is ``[batch, num_queries * num_classes]`` (one logit per
+    (query, class) pair). The upstream default ``num_top_queries=300``
+    assumes COCO's ``num_classes=91`` so 100*91=9100 >> 300; with the
+    kit's ``num_classes=1`` override the flattened axis collapses to
+    ``num_queries`` and topk(k=300) raises ``selected index k out of range``.
+
+    Returns ``min(default_topk, num_queries * num_classes)`` (always
+    ≥ 1). See lesson #26.
+    """
+    upper = max(1, int(num_queries) * int(num_classes))
+    return min(int(default_topk), upper)
+
+
 def _build_train_yml(
     *,
     workdir: Path,
@@ -364,6 +396,7 @@ def _build_train_yml(
     train_mscoco_fpath: str,
     vali_mscoco_fpath: str,
     family: str,
+    num_queries: int,
     input_hw: Tuple[int, int],
     num_classes: int,
     batch_size: int,
@@ -392,6 +425,11 @@ def _build_train_yml(
         "remap_mscoco_category": False,
         "evaluator": {"type": "CocoEvaluator", "iou_types": ["bbox"]},
         "eval_spatial_size": [H, W],
+        # Failure #18 lockstep — and the postprocessor's topk has to be
+        # consistent with num_queries * num_classes (lesson #26).
+        "PostProcessor": {
+            "num_top_queries": _effective_num_top_queries(num_queries, num_classes),
+        },
         "train_dataloader": {
             "total_batch_size": int(batch_size),
             "num_workers": 4,
@@ -694,6 +732,7 @@ class DEIMv2Trainer:
             train_mscoco_fpath=str(train_ann_fpath),
             vali_mscoco_fpath=str(vali_ann_fpath),
             family=family,
+            num_queries=int(info["num_queries"]),
             input_hw=tuple(input_hw),
             num_classes=int(num_classes),
             batch_size=int(batch_size),
@@ -770,22 +809,31 @@ class DEIMv2Trainer:
         # multiprocessing IPC. Clamp to hard cap.
         raise_nofile_limit(target=65536)
 
-        args = [sys.executable, str(train_py), "-c", str(cfg_fpath)]
-        if init_checkpoint:
-            args += ["-t", str(init_checkpoint)]
-        if resume:
-            args += ["-r", str(resume)]
-
         env = os.environ.copy()
         env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
         env.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1")
 
-        if num_gpus > 1 or distributed:
-            args = [
-                sys.executable, "-m", "torch.distributed.run",
-                "--master_port", str(env.get("KCD_MASTER_PORT", "29500")),
-                "--nproc_per_node", str(int(num_gpus)),
-            ] + args[1:]  # drop the leading sys.executable
+        # Always launch DEIMv2 under torch.distributed.run, even single-GPU.
+        # Why: DEIMv2's setup_distributed() calls init_process_group(env://)
+        # which silently fails when RANK / LOCAL_RANK / WORLD_SIZE are unset.
+        # That used to be OK because torch <= 2.9 let get_rank() return 0 when
+        # no process group was initialized — but several DEIMv2 modules
+        # (engine/backbone/hgnetv2.py:562 most prominently) call get_rank()
+        # unconditionally. On torch 2.10+ that raises ValueError("Default
+        # process group has not been initialized") and the whole subprocess
+        # dies before training starts. Running every DEIMv2 launch under
+        # torchrun sets RANK=0 LOCAL_RANK=0 WORLD_SIZE=N so the env-based
+        # init succeeds on both old and new torch. See lessons #24.
+        args = [
+            sys.executable, "-m", "torch.distributed.run",
+            "--master_port", str(env.get("KCD_MASTER_PORT", "29500")),
+            "--nproc_per_node", str(int(num_gpus)),
+            str(train_py), "-c", str(cfg_fpath),
+        ]
+        if init_checkpoint:
+            args += ["-t", str(init_checkpoint)]
+        if resume:
+            args += ["-r", str(resume)]
 
         subprocess.run(args, check=True, env=env, cwd=str(repo))
         return workdir

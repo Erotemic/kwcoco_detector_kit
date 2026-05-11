@@ -160,7 +160,12 @@ def _write_datasets_json(out_fpath: Path, *,
 
 def _coco_to_odvg(coco_json_fpath: Path, out_fpath: Path, *,
                    repo: Path) -> Path:
-    """Subprocess OpenGroundingDINO's ``tools/coco2odvg.py``."""
+    """Subprocess OpenGroundingDINO's ``tools/coco2odvg.py``.
+
+    Raises subprocess.CalledProcessError if the upstream tool can't run
+    (commonly because the env lacks ``jsonlines`` — see lesson #25 and
+    the ``[opengroundingdino]`` extras group).
+    """
     tool = repo / "tools" / "coco2odvg.py"
     if not tool.exists():
         raise FileNotFoundError(tool)
@@ -333,7 +338,25 @@ class OpenGroundingDINOTrainer:
         repo = _resolve_repo()
         train_odvg = prep_dpath / "train.odvg.jsonl"
         if repo:
-            _coco_to_odvg(train_mscoco, train_odvg, repo=repo)
+            try:
+                _coco_to_odvg(train_mscoco, train_odvg, repo=repo)
+            except subprocess.CalledProcessError as ex:
+                # coco2odvg.py needs `jsonlines` and a few other transitive
+                # deps. When they're missing, fall back to the stub-config
+                # path so the rest of generate_config still completes — the
+                # later launch() step will fail loudly if the user actually
+                # tries to train. See lesson #25.
+                import warnings as _warnings
+                _warnings.warn(
+                    f"opengroundingdino: coco2odvg conversion failed "
+                    f"(exit {ex.returncode}); generated config is a stub. "
+                    "Install the [opengroundingdino] extras "
+                    "(pip install -e '.[opengroundingdino]') or run "
+                    "`kwcoco-detector-kit check-env --groups opengroundingdino "
+                    "--strict_import` for the actionable hint."
+                )
+            except FileNotFoundError:
+                pass
         else:
             # Phase-1-style "generate config without launching" fallback:
             # leave the ODVG file unwritten and document the path. The

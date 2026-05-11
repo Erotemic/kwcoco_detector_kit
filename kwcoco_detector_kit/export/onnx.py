@@ -180,27 +180,45 @@ def _export_deimv2(
     ckpt = trainer.find_checkpoint(workdir)
     cfg = workdir / "generated_configs" / "train.yml"
 
+    # DEIMv2's tools/deployment/export_onnx.py has no `-o`/`--output` flag —
+    # it derives the output path from `--resume`:
+    #     output_file = args.resume.replace('.pth', '.onnx')
+    # We let it write there, then move to the kit's canonical
+    # `<workdir>/export/<name>.onnx` slot. See lesson #27.
     args = [
         sys.executable, str(export_script),
         "-c", str(cfg),
         "-r", str(ckpt),
-        "-o", str(out_fpath),
         "--check",
         "--opset", str(int(opset)),
     ]
     if importlib.util.find_spec("onnxsim") is not None:
         args.append("--simplify")
 
+    derived_onnx = Path(str(ckpt).replace(".pth", ".onnx"))
     try:
         subprocess.run(args, check=True, cwd=str(repo))
     except subprocess.CalledProcessError as ex:
-        # Recover the unsimplified .onnx if the subprocess crashed
-        # during --simplify (failure #10).
-        if not out_fpath.exists():
+        # Recover the unsimplified .onnx if the subprocess crashed during
+        # --simplify (failure #10). Upstream may have written the .onnx
+        # to either the derived path (next to the checkpoint) or the kit's
+        # intended path (if we ever land an upstream patch that honors -o).
+        if not (derived_onnx.exists() or out_fpath.exists()):
             raise
         print(
             f"[export.onnx] DEIMv2 exporter exited {ex.returncode} but "
-            f"{out_fpath} exists — recovering unsimplified artifact."
+            f"a .onnx artifact exists — recovering unsimplified output."
+        )
+
+    # Move the upstream-derived artifact to the kit's canonical path.
+    if derived_onnx.exists() and derived_onnx != out_fpath:
+        out_fpath.parent.mkdir(parents=True, exist_ok=True)
+        import shutil
+        shutil.move(str(derived_onnx), str(out_fpath))
+    elif not out_fpath.exists():
+        raise FileNotFoundError(
+            f"DEIMv2 export reported success but neither {derived_onnx} nor "
+            f"{out_fpath} exist on disk."
         )
 
     policy = _read_policy(workdir)

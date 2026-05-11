@@ -8,6 +8,36 @@ The bar is "took >1 hour" or "would have been ≥10× faster with this entry on 
 
 ---
 
+### Lesson #27 — DEIMv2's `export_onnx.py` has no `-o`/`--output` flag — output path is derived from `--resume`
+
+**Symptom:** Real-host training reached evaluation (post-lesson #26 fix), saved `best_stg1.pth`, then ONNX export failed with:
+
+```
+usage: export_onnx.py [-h] [--config CONFIG] [--resume RESUME] [--opset OPSET] [--check] [--simplify]
+export_onnx.py: error: unrecognized arguments: -o /tmp/.../export/deimv2_h256_w256.onnx
+```
+
+The subprocess exited with code 2 (argparse failure) before writing anything.
+
+**Root cause:** DEIMv2's `tools/deployment/export_onnx.py:103-107` registers only `--config`/`-c`, `--resume`/`-r`, `--opset`, `--check`, `--simplify`. The output path is hardcoded at line 68:
+
+```python
+output_file = args.resume.replace('.pth', '.onnx') if args.resume else 'model.onnx'
+```
+
+So a `-r /workdir/best_stg2.pth` invocation writes `/workdir/best_stg2.onnx`. The kit's wrapper was passing `-o <kit_path>` which argparse rejects outright. The kit's recovery path (catch `CalledProcessError` + recover existing `.onnx`) didn't trigger because nothing was on disk — the script crashed at argparse, before reaching `torch.onnx.export()`.
+
+**Fix:** Drop `-o` from the subprocess args. After the upstream subprocess succeeds (or partially succeeds with `.onnx` on disk despite a `--simplify` crash), `shutil.move()` the derived artifact (`<resume>.replace('.pth', '.onnx')`) to the kit's canonical `<workdir>/export/<name>.onnx` slot. The kit's modelspec sidecar writer keeps working unchanged.
+
+Regression: `tests/unit/test_deimv2_export_args.py` (3 tests):
+1. captured subprocess args do not contain `-o` or `--output`,
+2. derived artifact gets moved to the kit's canonical path (and the derived path no longer exists after success),
+3. the `--simplify`-crash recovery still works when upstream wrote the unsimplified `.onnx`.
+
+**Takeaway:** Inspect upstream CLI surfaces before assuming `-o` exists. The kit's pattern for subprocess-driven trainers is to (a) call the upstream tool with its native arg shape, (b) compute the upstream-written artifact path, (c) move/rename to the kit's canonical layout. This separates "where upstream wants to write" from "where the kit's manifest expects to find it".
+
+---
+
 ### Lesson #26 — DEIMv2 `PostProcessor.num_top_queries` must shrink when `num_classes` shrinks
 
 **Symptom:** First training epoch finishes (loss curves printed), then evaluation crashes inside DEIMv2's `engine/deim/postprocessor.py:59`:

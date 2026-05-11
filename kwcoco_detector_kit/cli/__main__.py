@@ -105,6 +105,8 @@ def _register_subcommands():
     import kwcoco_detector_kit.data.tile as _tile
     import kwcoco_detector_kit.data.merge as _merge
     import kwcoco_detector_kit.data.mine as _mine
+    import kwcoco_detector_kit.data.tile_store as _tile_store
+    import kwcoco_detector_kit.data.stats as _stats
     import kwcoco_detector_kit.orchestration.pareto_sweep as _sweep
     import kwcoco_detector_kit.orchestration.round_loop as _round
     import kwcoco_detector_kit.orchestration.eligibility as _elig
@@ -113,6 +115,8 @@ def _register_subcommands():
     _register_module("tile", _tile)
     _register_module("merge", _merge)
     _register_module("mine", _mine)
+    _register_module("convert-store", _tile_store)   # Phase 3
+    _register_module("stats", _stats)                # Phase 3
     _register_module("sweep", _sweep)
     _register_module("round-loop", _round)
     _register_module("manifest", _elig)

@@ -23,6 +23,19 @@ All notable changes to `kwcoco-detector-kit` are recorded here. Format follows [
 - Phase 1 test bar: structural YAML invariants via `yaml.safe_load` + dict-shape assertions. The DEIMv2 `engine.core.YAMLConfig` drive-through is gated behind `pytest -m requires_deimv2`.
 - Storage format for intermediate training data is intentionally JPEG-on-disk + kwcoco manifest in Phase 1. Webdataset is deferred to Phase 3 and treated as one possible backend behind a `TileStore` interface (user's design constraint: oversized tiles for crop-aug, streamable from spinning disk / slow network).
 
+## Phase 3 additions — TileStore abstraction (additive; Phase 2 path unchanged)
+- `data/tile_store.py` — `TileStore` Protocol + two backends:
+  - `KwcocoJpegStore` (default) — wraps the Phase 1 `.kwcoco.zip` output unchanged.
+  - `WebdatasetStore` — converts a kwcoco bundle to `shard-NNNNNN.tar` + `_bundle_meta.json`. Sequential-read friendly on spinning disks; streamable from NFS/S3 via fsspec.
+- `data/tile_loader.py` — `TileLoader` torch `IterableDataset` over any backend; applies load-time random / center crop using the `tile_model_input_size` metadata (the on-disk side of the `oversize_factor` story).
+- `data/stats.py` — `compute_per_channel_stats` Welford mean/std probe over any TileStore (multispectral normalization).
+- `cli/__main__.py` — new subcommands `convert-store` + `stats`.
+- `[project.optional-dependencies.webdataset]` — `webdataset` + `braceexpand`; `setup_audit` probes for both under the new `webdataset` group.
+- `docs/storage.md` — design + backends + load-time-crop discussion + CLIs + what's deferred.
+- Tests: `test_tile_store.py` (round-trip kwcoco ↔ wds), `test_tile_loader.py` (crop/flip/normalize/tensors), `test_stats.py` (Welford correctness).
+
+Phase 2 acceptance: 292 tests pass in 20s on CPU. `examples/kwcoco_demo/run_smoke.sh` still completes in 9.3s producing `HOST_PROMISING + AP=...` — kwcoco_jpeg is the default and unchanged.
+
 ## Phase 2 additions
 - `trainers/opengroundingdino.py` — OpenGroundingDINO trainer plugin covering `opengroundingdino_swint` (Swin-Tiny @ tier L) + `opengroundingdino_swinb` (Swin-Base @ tier XL). Python rewrite of the v9 shell pipeline: kwcoco → MSCOCO → ODVG → `train_dist.sh` subprocess. SAM2 segmenter co-training is deferred to v1.1.
 - `orchestration/pareto_sweep.py` — added `--distributed` flag for opt-in DDP via the trainer plugin's `launch(num_gpus=N, distributed=True)`.

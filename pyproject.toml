@@ -69,9 +69,10 @@ opengroundingdino = [
     # tools/coco2odvg.py reads/writes JSON Lines for the ODVG format.
     "jsonlines",
 ]
-# Webdataset — Phase 3 storage backend. Soft-imported; not loaded in Phase 1.
+# Webdataset — Phase 3 alternative TileStore backend. Soft-imported.
 webdataset = [
     "webdataset>=0.2",
+    "braceexpand",
 ]
 # Dev / test
 dev = [

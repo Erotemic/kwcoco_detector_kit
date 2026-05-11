@@ -59,6 +59,9 @@ PROBES: List[Probe] = [
     Probe("addict",           "addict",           "opengroundingdino", ("trainers",)),
     Probe("yapf",             "yapf",             "opengroundingdino", ("trainers",)),
     Probe("jsonlines",        "jsonlines",        "opengroundingdino", ("trainers",)),
+    # Webdataset — Phase 3 alternative TileStore backend.
+    Probe("webdataset",       "webdataset",       "webdataset",        ("data",)),
+    Probe("braceexpand",      "braceexpand",      "webdataset",        ("data",)),
 ]
 
 

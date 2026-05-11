@@ -1,0 +1,94 @@
+# Byte-compiled / build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+build/
+dist/
+sdist/
+wheels/
+*.egg-info/
+*.egg
+MANIFEST
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Type-checker / linter caches
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+.dmypy.json
+dmypy.json
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Per-user notes / scratch
+scratch/
+*.scratch.md
+notes.local.md
+
+# Local config / secrets
+.env
+.env.*
+!.env.example
+
+# DVC
+/.dvc/cache/
+/.dvc/tmp/
+
+# Training artifacts that should NEVER be committed
+# (use DVC or regen scripts for these)
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.tar
+*.tar.gz
+
+# Sweep / training output directories (workdirs)
+workdirs/
+output/
+output_*/
+runs/
+lightning_logs/
+wandb/
+mlruns/
+
+# Big data — kwcoco bundles + image dirs live elsewhere (DVC)
+*.kwcoco.json
+*.kwcoco.zip
+*.mscoco.json
+data/
+datasets/
+images/
+shards/
+*.tar.shard
+*.tar.shards

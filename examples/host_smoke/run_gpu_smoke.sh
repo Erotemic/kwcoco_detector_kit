@@ -94,8 +94,15 @@ if torch.cuda.is_available():
 "
 "$PYTHON_BIN" -c "import kwcoco_detector_kit; print(f'  kwcoco_detector_kit  {kwcoco_detector_kit.__version__}')"
 echo
-echo "  --- check-env ---"
-"$PYTHON_BIN" -m kwcoco_detector_kit check-env --groups core,onnx,deimv2 2>&1 | tail -20 || true
+echo "  --- check-env (strict import for deimv2 group to catch version conflicts) ---"
+set +e
+"$PYTHON_BIN" -m kwcoco_detector_kit check-env --groups core,onnx,deimv2 2>&1 | tail -25
+ENV_RC=$?
+set -e
+if [ "$ENV_RC" -ne 0 ]; then
+    echo "  WARNING: check-env reported missing or broken deps (rc=$ENV_RC)."
+    echo "  Fix what's missing before relying on Stage 2/3 results."
+fi
 echo
 echo "  --- detect_tier ---"
 "$PYTHON_BIN" -c "

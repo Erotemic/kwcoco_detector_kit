@@ -8,6 +8,42 @@ The bar is "took >1 hour" or "would have been ≥10× faster with this entry on 
 
 ---
 
+### Lesson #23 — torch 2.10's optimizer constructor lazily imports `torch._dynamo` → ~20-30s cold-cache hang
+
+**Symptom:** A second invocation of an in-process trainer in the same shell session appears to hang for 20-30s on `torch.optim.Adam(model.parameters(), ...)`. Ctrl-C shows the stack inside `torch.fx.experimental.symbolic_shapes`'s sympy import chain.
+
+**Root cause:** torch 2.10+ wraps `Optimizer.add_param_group` with a `_compile.py:inner` decorator that lazily imports `torch._dynamo` on first call. `_dynamo` imports sympy, which itself has thousands of files. On a cold filesystem cache the import chain takes 20-30s. The first invocation in a shell session warms the cache; later subprocesses (e.g. the round_loop following the sweep) hit cold pages again because the kernel evicted them under other workload.
+
+**Fix:** Print a visible "loading torch optimizer machinery (one-time)" line right before the Adam constructor, with the elapsed seconds when done. Users no longer mistake the wait for a hang. Eagerly importing `torch._dynamo` doesn't speed up the cold-cache case — sympy is the time sink — but the visible message removes the diagnostic ambiguity.
+
+**Takeaway:** Long lazy imports on user-visible critical paths need a "loading X (one-time)" line. Silent waits look like hangs. A 30s wait the user knew about is fine; a 30s wait with no output is a Ctrl-C waiting to happen.
+
+---
+
+### Lesson #22 — `transformers` ≤ 4.46 + `huggingface-hub` 1.x silently incompatible
+
+**Symptom:** Running DEIMv2's `train.py` subprocess crashes at `from transformers import AutoTokenizer` (called transitively via `calflops`) with `ImportError: huggingface-hub>=0.34.0,<1.0 is required for a normal functioning of this module, but found huggingface-hub==1.14.0.`
+
+**Root cause:** `transformers` versions through ~4.46 pin `huggingface-hub<1.0`. HF Hub released 1.0 in early 2026. A user who has `huggingface-hub==1.14.0` installed (a transitive of some other package) and an older `transformers` gets the conflict at `transformers/__init__.py` import time. `importlib.util.find_spec("transformers")` returns the spec — module is "present" — so the kit's original `setup_audit` find_spec check reported "all probes ok".
+
+**Fix:** Two-tier env probe. For groups where transitive version conflicts are common (`deimv2`, `opengroundingdino`), the kit's `setup_audit` now does a real `__import__` and reports the ImportError text. A per-module heuristic table maps known error patterns to actionable fix lines — for transformers/HF-Hub the hint is `pip install -U transformers` or `pip install 'huggingface-hub<1.0'`.
+
+**Takeaway:** `find_spec` checks "is the module present"; the user needs "does it actually import." For dep groups where the upstream stack has tight transitive pins, do the real import. Add a `--strict_import` flag for users who want to force the slower check across all groups.
+
+---
+
+### Lesson #21.5 — Smoke driver `[PASS]` false-positive: subprocess rc=0 ≠ "all sweep cells succeeded"
+
+**Symptom:** A smoke script's status checker shows `[PASS]` for a stage that contains failing cells. Drilling into the log shows `[sweep] <cell_id> FAILED at <stage>: <error>` but the sweep CLI returned exit code 0 and the smoke driver trusted the rc.
+
+**Root cause:** The kit's `pareto_sweep` defaults to `--keep_going True` — useful for catching all failures in one pass — but the CLI used to exit 0 regardless of cell outcomes. A smoke or CI driver that checks subprocess rc alone misses cell-level failures.
+
+**Fix:** `pareto_sweep` now writes the index TSV first, then exits with `min(255, N_FAILED)`. Drivers using `--keep_going True` still see all cell results in the TSV; the process exit code surfaces the aggregate.
+
+**Takeaway:** "Continue past failures" and "report the aggregate exit code" are independent knobs. The kit's design now separates them: `--keep_going` controls in-process behaviour, but the rc always reflects pass/fail across all cells.
+
+---
+
 ### Lesson #20 — scriptconfig's smartcast auto-splits comma-strings into lists
 
 **Symptom:** Passing `--source_scales "1.0,0.66"` to a CLI built on scriptconfig delivered `[1.0, 0.66]` (list of floats parsed as strings) to the receiving function — but the function called `str(scales).split(',')` and saw `'[1.0, 0.66]'`, hitting `ValueError: could not convert string to float: '[1.0'`.

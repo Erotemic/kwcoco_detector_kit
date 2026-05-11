@@ -437,6 +437,7 @@ class MockTinyTrainer:
 
 def _train_inproc(cfg: dict, workdir: Path, *, resume=None) -> Path:
     """Run a tiny training loop given the parsed config dict."""
+    import time as _time
     import torch
 
     workdir = Path(workdir)
@@ -452,7 +453,19 @@ def _train_inproc(cfg: dict, workdir: Path, *, resume=None) -> Path:
     if resume is not None and Path(str(resume)).exists():
         state = torch.load(str(resume), map_location="cpu", weights_only=False)
         model.load_state_dict(state["model"])
+
+    # torch 2.10+ lazily imports torch._dynamo from inside `add_param_group`
+    # on first optimizer construction. That chain pulls in sympy (slow on
+    # a cold filesystem cache, ~20-30s). Print a visible "loading" line so
+    # users don't mistake the wait for a hang.
+    print("  loading torch optimizer machinery (one-time)... ", end="", flush=True)
+    _t0 = _time.perf_counter()
+    try:
+        import torch._dynamo  # noqa: F401
+    except Exception:
+        pass
     opt = torch.optim.Adam(model.parameters(), lr=float(cfg["lr"]))
+    print(f"ok ({_time.perf_counter() - _t0:.1f}s)")
     model.train()
 
     n_params = sum(p.numel() for p in model.parameters())

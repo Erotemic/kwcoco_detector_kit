@@ -62,20 +62,71 @@ PROBES: List[Probe] = [
 
 
 def _present(module: str) -> bool:
+    """Cheap check: is the module importable by `importlib.util.find_spec`?
+
+    Returns False for missing modules and for modules whose spec can't be
+    resolved (corrupt install). Does NOT trigger the module's __init__
+    so it can't catch version-conflict errors that raise at import time.
+    """
     try:
         return importlib.util.find_spec(module) is not None
     except (ValueError, ModuleNotFoundError, ImportError):
         return False
 
 
-def probe_env(*, groups: Optional[Iterable[str]] = None) -> List[Probe]:
+def _strict_import(module: str) -> tuple[bool, Optional[str]]:
+    """Actually import the module in this process; return (ok, error_str).
+
+    Catches version-conflict errors that raise from __init__ — e.g.
+    transformers requiring huggingface-hub < 1.0 (failure mode hit in
+    the prior agent's host smoke on torch 2.10 + huggingface-hub 1.14).
+    """
+    try:
+        __import__(module)
+        return True, None
+    except Exception as ex:
+        return False, f"{type(ex).__name__}: {ex}"
+
+
+# Groups for which find_spec isn't sufficient — actually try to import
+# the canonical entry points so we catch transitive version conflicts.
+_STRICT_IMPORT_GROUPS = {"deimv2", "opengroundingdino"}
+
+
+def probe_env(*, groups: Optional[Iterable[str]] = None,
+              strict_import: bool = False) -> List[Probe]:
     """Return the list of probes that are MISSING in the current env.
 
-    ``groups`` filters: pass ``("core", "onnx")`` to skip the DEIMv2 +
-    OpenGroundingDINO checks.
+    Args:
+        groups: subset of probe groups to run; None = all.
+        strict_import: when True, do a real ``__import__`` for every
+            probe (catches version-conflict raises). When False (default),
+            do real imports only for groups in ``_STRICT_IMPORT_GROUPS``
+            (deimv2, opengroundingdino) and find_spec for the rest.
     """
-    selected = [p for p in PROBES if (groups is None or p.group in set(groups))]
-    return [p for p in selected if not _present(p.module)]
+    selected_groups = set(groups) if groups is not None else None
+    selected = [p for p in PROBES if (selected_groups is None or p.group in selected_groups)]
+    missing: List[Probe] = []
+    for p in selected:
+        use_strict = strict_import or (p.group in _STRICT_IMPORT_GROUPS)
+        if use_strict:
+            ok, err = _strict_import(p.module)
+            if not ok:
+                # Annotate the probe with the import error so the CLI
+                # can show actionable hints (e.g. "found vX but transformers
+                # requires <vY"). We use a copy so PROBES stays clean.
+                annotated = Probe(
+                    module=p.module, pip_name=p.pip_name, group=p.group,
+                    required_in=p.required_in,
+                )
+                # Stash error on the dataclass via __dict__ since the
+                # frozen-ish Probe doesn't have an error field.
+                annotated.__dict__["_error"] = err
+                missing.append(annotated)
+        else:
+            if not _present(p.module):
+                missing.append(p)
+    return missing
 
 
 def install_missing(missing: List[Probe], *, python_executable: Optional[str] = None) -> int:
@@ -89,6 +140,15 @@ def install_missing(missing: List[Probe], *, python_executable: Optional[str] = 
     return subprocess.call(args)
 
 
+def _parse_groups(value) -> List[str]:
+    """Tolerate both 'a,b,c' and ['a','b','c'] inputs (scriptconfig smartcast)."""
+    if isinstance(value, (list, tuple)):
+        items = [str(v) for v in value]
+    else:
+        items = str(value).strip("[]").split(",")
+    return [g.strip().strip("'\"") for g in items if g.strip().strip("'\"")]
+
+
 class CheckEnvConfig(scfg.DataConfig):
     """Audit the env for every transitive runtime dep the kit + its trainers need."""
 
@@ -100,6 +160,10 @@ class CheckEnvConfig(scfg.DataConfig):
         False, isflag=True,
         help="attempt to pip install missing modules",
     )
+    strict_import = scfg.Value(
+        False, isflag=True,
+        help="real __import__ for every probe (catches version conflicts)",
+    )
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -108,16 +172,24 @@ class CheckEnvConfig(scfg.DataConfig):
 
 
 def run(config) -> int:
-    groups = [g.strip() for g in str(config.groups).split(",") if g.strip()]
-    missing = probe_env(groups=groups)
+    groups = _parse_groups(config.groups)
+    missing = probe_env(groups=groups, strict_import=bool(config.strict_import))
     if not missing:
         print(f"[check-env] all probes ok for groups={groups}")
         return 0
 
-    print(f"[check-env] {len(missing)} missing modules across groups={groups}:")
+    print(f"[check-env] {len(missing)} probe(s) failed across groups={groups}:")
     for p in missing:
-        hint = f"pip install {p.pip_name}" if p.pip_name else "(install manually)"
-        print(f"  - {p.module:25s} group={p.group:18s} -> {hint}")
+        err = p.__dict__.get("_error")
+        if err:
+            # Real-import probe caught a version conflict or broken install.
+            print(f"  - {p.module:25s} group={p.group:18s} import error: {err}")
+            hint = _hint_for_error(p.module, err)
+            if hint:
+                print(f"      fix: {hint}")
+        else:
+            hint = f"pip install {p.pip_name}" if p.pip_name else "(install manually)"
+            print(f"  - {p.module:25s} group={p.group:18s} -> {hint}")
 
     if not bool(config.install):
         print("\npass --install to attempt automatic pip install.")
@@ -129,13 +201,27 @@ def run(config) -> int:
         return rc
 
     # Re-probe
-    still_missing = probe_env(groups=groups)
+    still_missing = probe_env(groups=groups, strict_import=bool(config.strict_import))
     if still_missing:
         names = ", ".join(p.module for p in still_missing)
         print(f"[check-env] still missing after install: {names}")
         return 2
     print("[check-env] all probes ok after install.")
     return 0
+
+
+def _hint_for_error(module: str, err: str) -> Optional[str]:
+    """Per-module heuristics for actionable fix hints based on the import error."""
+    # transformers requires huggingface-hub < 1.0 in versions <= 4.46;
+    # users with HF Hub 1.x get the conflict at import time.
+    if module == "transformers" and "huggingface-hub" in err and ("<1.0" in err or "<1, " in err):
+        return (
+            "pip install -U transformers   "
+            "# OR  pip install 'huggingface-hub<1.0'"
+        )
+    if "huggingface-hub" in err and "<1.0" in err:
+        return "pip install 'huggingface-hub<1.0'"
+    return None
 
 
 __cli__ = CheckEnvConfig

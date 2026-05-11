@@ -268,6 +268,21 @@ def run(config):
         for row in index_rows:
             w.writerow(row)
     print(f"\nsweep index -> {index_fpath}")
+
+    # Exit non-zero when any cell failed, even with --keep_going. The
+    # index TSV records the cell-level pass/fail; the process exit code
+    # reflects the aggregate so CI / smoke drivers can rely on it.
+    failed = [r for r in index_rows if r.get("status", "").startswith("fail_")]
+    if failed:
+        import sys as _sys
+        print(
+            f"\n[sweep] {len(failed)} cell(s) failed: "
+            + ", ".join(f"{r['candidate_id']} ({r['stage_failed']})" for r in failed),
+            file=_sys.stderr,
+        )
+        # Use a clamped non-zero exit code so the shell can read it.
+        _sys.exit(min(255, len(failed)))
+
     return index_fpath
 
 

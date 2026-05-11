@@ -1,0 +1,315 @@
+(uvpy3.13.2) joncrall@toothbrush:~/code/kwcoco_detector_kit$ export CUDA_VISIBLE_DEVICES=1,
+(uvpy3.13.2) joncrall@toothbrush:~/code/kwcoco_detector_kit$ export CUDA_VISIBLE_DEVICES=1
+(uvpy3.13.2) joncrall@toothbrush:~/code/kwcoco_detector_kit$ export KCD_DEIMV2_REPO_DPATH=$HOME/code/shitspotter/tpl/DEIMv2
+(uvpy3.13.2) joncrall@toothbrush:~/code/kwcoco_detector_kit$
+(uvpy3.13.2) joncrall@toothbrush:~/code/kwcoco_detector_kit$ KEEP_WORKDIR=1 bash examples/host_smoke/run_gpu_smoke.sh
+
+==================================================================
+  Stage 1 — env probe
+==================================================================
+  KCD_ROOT              = /tmp/kcd_gpu_smoke
+  PYTHON_BIN            = python
+  CUDA_VISIBLE_DEVICES  = 1
+  KCD_DEIMV2_REPO_DPATH = /home/joncrall/code/shitspotter/tpl/DEIMv2
+
+0, NVIDIA GeForce RTX 3090, 16357 MiB, 16
+1, NVIDIA GeForce RTX 3090, 24052 MiB, 2
+
+Python 3.13.2
+  torch                2.10.0+cu128
+  cuda available       True
+  device count         1
+  device 0             NVIDIA GeForce RTX 3090 (23.6 GB total, 23.2 GB free)
+  kwcoco_detector_kit  0.1.0.dev0
+
+  --- check-env ---
+/home/joncrall/code/scriptconfig/scriptconfig/smartcast.py:144: UserWarning: smartcast has been given a string with commas and the allow_split="auto". Currently this will default t
+o True and split the string into a list. After version 1.0 the default will change to False and strings will not be split into lists by default To disable this warning explicitly s
+et allow_split=True to keep the string splitting behavior or allow_split=False to disable it and use the new default behavior. If using this in a Value object, you can prevent futu
+re incompatibility by setting type=str and handling casting in the __post_init__ method of the DataConfig
+  warnings.warn(
+[check-env] all probes ok for groups=["['core'", "'onnx'", "'deimv2']"]
+
+  --- detect_tier ---
+  tier=M aggregate_vram=23.6GB visible_gpus=1
+  [PASS]  Stage 1 — env probe
+
+==================================================================
+  Stage 2 — CPU baseline (mock_tiny)
+==================================================================
+/home/joncrall/code/scriptconfig/scriptconfig/smartcast.py:144: UserWarning: smartcast has been given a string with commas and the allow_split="auto". Currently this will default t
+o True and split the string into a list. After version 1.0 the default will change to False and strings will not be split into lists by default To disable this warning explicitly s
+et allow_split=True to keep the string splitting behavior or allow_split=False to disable it and use the new default behavior. If using this in a Value object, you can prevent futu
+re incompatibility by setting type=str and handling casting in the __post_init__ method of the DataConfig
+  warnings.warn(
+wrote /tmp/kcd_gpu_smoke/raw.kwcoco.zip (8 images)
+/home/joncrall/code/scriptconfig/scriptconfig/smartcast.py:144: UserWarning: smartcast has been given a string with commas and the allow_split="auto". Currently this will default t
+o True and split the string into a list. After version 1.0 the default will change to False and strings will not be split into lists by default To disable this warning explicitly s
+et allow_split=True to keep the string splitting behavior or allow_split=False to disable it and use the new default behavior. If using this in a Value object, you can prevent futu
+re incompatibility by setting type=str and handling casting in the __post_init__ method of the DataConfig
+  warnings.warn(
+tile.multiscale 0.00% 0/8... rate=0 Hz, eta=?, total=0:00:00/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/osgeo/gdal.py:543: FutureWarning: Neither gdal.Use
+Exceptions() nor gdal.DontUseExceptions() has been explicitly called. In GDAL 4.0, exceptions will be enabled by default.
+  warnings.warn(
+tile.multiscale 100.00% 8/8... rate=24.98 Hz, eta=0:00:00, total=0:00:00
+tile.multiscale: wrote 40 tiles (pos=18, neg=22, dropped_neg=0)
+  annotations: 18
+  scales: s10=1.0, s05=0.5
+  -> /tmp/kcd_gpu_smoke/tiles.kwcoco.zip
+/home/joncrall/code/scriptconfig/scriptconfig/smartcast.py:144: UserWarning: smartcast has been given a string with commas and the allow_split="auto". Currently this will default t
+o True and split the string into a list. After version 1.0 the default will change to False and strings will not be split into lists by default To disable this warning explicitly s
+et allow_split=True to keep the string splitting behavior or allow_split=False to disable it and use the new default behavior. If using this in a Value object, you can prevent futu
+re incompatibility by setting type=str and handling casting in the __post_init__ method of the DataConfig
+  warnings.warn(
+mock_tiny train: 30 parameters
+/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/osgeo/gdal.py:543: FutureWarning: Neither gdal.UseExceptions() nor gdal.DontUseExceptions() has been explicitl
+y called. In GDAL 4.0, exceptions will be enabled by default.
+  warnings.warn(
+  epoch=0 step=0 loss=1.3288 (box=0.0000 obj=1.3288)
+  epoch=0 step=1 loss=2.5688 (box=0.0000 obj=2.5688)
+  epoch=0 step=2 loss=0.0809 (box=0.0000 obj=0.0809)
+  epoch=0 step=3 loss=0.0816 (box=0.0000 obj=0.0816)
+  epoch=0 step=4 loss=2.5407 (box=0.0000 obj=2.5407)
+  epoch=0 step=5 loss=1.3055 (box=0.0000 obj=1.3055)
+  epoch=0 step=6 loss=1.2986 (box=0.0000 obj=1.2986)
+  epoch=0 step=7 loss=2.4974 (box=0.0000 obj=2.4974)
+  epoch=0 step=8 loss=2.4753 (box=0.0000 obj=2.4753)
+  epoch=0 step=9 loss=1.2733 (box=0.0000 obj=1.2733)
+  epoch=0 step=10 loss=0.0920 (box=0.0000 obj=0.0920)
+  epoch=0 step=11 loss=1.2507 (box=0.0000 obj=1.2507)
+  epoch=0 step=12 loss=0.0970 (box=0.0000 obj=0.0970)
+  epoch=0 step=13 loss=0.0993 (box=0.0000 obj=0.0993)
+  epoch=0 step=14 loss=1.2214 (box=0.0000 obj=1.2214)
+  epoch=0 step=15 loss=2.3165 (box=0.0000 obj=2.3165)
+  epoch=0 step=16 loss=0.1071 (box=0.0000 obj=0.1071)
+  epoch=0 step=17 loss=1.1851 (box=0.0000 obj=1.1851)
+  epoch=0 step=18 loss=1.1723 (box=0.0000 obj=1.1723)
+  epoch=0 step=19 loss=0.1173 (box=0.0000 obj=0.1173)
+  vali_mean_loss = 1.0439
+  saved /tmp/kcd_gpu_smoke/runs/mock_tiny_128x128_fixed/best_stg2.pth
+  wrote /tmp/kcd_gpu_smoke/runs/mock_tiny_128x128_fixed/policy.json
+  first_loss=1.3288 last_loss=0.1173 delta=+1.2115
+
+[sweep] mock_tiny_128x128_fixed FAILED at export: No module named 'onnxscript'
+Traceback (most recent call last):
+  File "/home/joncrall/code/kwcoco_detector_kit/kwcoco_detector_kit/orchestration/pareto_sweep.py", line 217, in run
+    _run_export(trainer, workdir=workdir, cell=cell)
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/joncrall/code/kwcoco_detector_kit/kwcoco_detector_kit/orchestration/pareto_sweep.py", line 133, in _run_export
+    return export_onnx(
+        trainer=trainer,
+        workdir=workdir,
+        input_hw=tuple(cell["input_hw"]),
+    )
+  File "/home/joncrall/code/kwcoco_detector_kit/kwcoco_detector_kit/export/onnx.py", line 72, in export_onnx
+    return _export_inproc(
+        trainer=trainer,
+    ...<5 lines>...
+        category_name=category_name,
+    )
+  File "/home/joncrall/code/kwcoco_detector_kit/kwcoco_detector_kit/export/onnx.py", line 124, in _export_inproc
+    torch.onnx.export(
+    ~~~~~~~~~~~~~~~~~^
+        model,
+        ^^^^^^
+    ...<6 lines>...
+        dynamic_axes={"images": {0: "N"}, "orig_target_sizes": {0: "N"}},
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/torch/onnx/__init__.py", line 282, in export
+    from torch.onnx._internal.exporter import _compat
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/torch/onnx/_internal/exporter/_compat.py", line 16, in <module>
+    from torch.onnx._internal.exporter import (
+    ...<5 lines>...
+    )
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/torch/onnx/_internal/exporter/_core.py", line 19, in <module>
+    import onnxscript
+ModuleNotFoundError: No module named 'onnxscript'
+
+
+sweep index -> /tmp/kcd_gpu_smoke/sweeps/20260511T125021/index.tsv
+  [PASS]  Stage 2 — mock_tiny CPU
+
+==================================================================
+  Stage 3 — DEIMv2 hgnetv2_atto on CUDA_VISIBLE_DEVICES=1
+==================================================================
+/home/joncrall/code/scriptconfig/scriptconfig/smartcast.py:144: UserWarning: smartcast has been given a string with commas and the allow_split="auto". Currently this will default t
+o True and split the string into a list. After version 1.0 the default will change to False and strings will not be split into lists by default To disable this warning explicitly s
+et allow_split=True to keep the string splitting behavior or allow_split=False to disable it and use the new default behavior. If using this in a Value object, you can prevent futu
+re incompatibility by setting type=str and handling casting in the __post_init__ method of the DataConfig
+  warnings.warn(
+2026-05-11 12:50:28.071751: I tensorflow/core/util/port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off er
+rors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+2026-05-11 12:50:28.415712: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical opera
+tions.
+To enable the following instructions: AVX2 AVX512F AVX512_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+2026-05-11 12:50:29.999265: I tensorflow/core/util/port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off er
+rors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+Traceback (most recent call last):
+  File "/home/joncrall/code/shitspotter/tpl/DEIMv2/train.py", line 18, in <module>
+    from engine.misc import dist_utils
+  File "/home/joncrall/code/shitspotter/tpl/DEIMv2/engine/__init__.py", line 6, in <module>
+    from . import optim
+  File "/home/joncrall/code/shitspotter/tpl/DEIMv2/engine/optim/__init__.py", line 6, in <module>
+    from .ema import *
+  File "/home/joncrall/code/shitspotter/tpl/DEIMv2/engine/optim/ema.py", line 17, in <module>
+    from ..misc import dist_utils
+  File "/home/joncrall/code/shitspotter/tpl/DEIMv2/engine/misc/__init__.py", line 9, in <module>
+    from .profiler_utils import stats
+  File "/home/joncrall/code/shitspotter/tpl/DEIMv2/engine/misc/profiler_utils.py", line 6, in <module>
+    from calflops import calculate_flops
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/calflops/__init__.py", line 16, in <module>
+    from .flops_counter_hf import calculate_flops_hf
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/calflops/flops_counter_hf.py", line 18, in <module>
+    from transformers import AutoTokenizer
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/transformers/__init__.py", line 27, in <module>
+    from . import dependency_versions_check
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/transformers/dependency_versions_check.py", line 57, in <module>
+    require_version_core(deps[pkg])
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/transformers/utils/versions.py", line 117, in require_version_core
+    return require_version(requirement, hint)
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/transformers/utils/versions.py", line 111, in require_version
+    _compare_versions(op, got_ver, want_ver, requirement, pkg, hint)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/transformers/utils/versions.py", line 44, in _compare_versions
+    raise ImportError(
+        f"{requirement} is required for a normal functioning of this module, but found {pkg}=={got_ver}.{hint}"
+    )
+ImportError: huggingface-hub>=0.34.0,<1.0 is required for a normal functioning of this module, but found huggingface-hub==1.14.0.
+Try: `pip install transformers -U` or `pip install -e '.[dev]'` if you're working with git main
+
+[sweep] deimv2_hgnetv2_atto_256x256_fixed FAILED at train: Command '['/home/joncrall/.local/uv/envs/uvpy3.13.2/bin/python', '/home/joncrall/code/shitspotter/tpl/DEIMv2/train.py', '
+-c', '/tmp/kcd_gpu_smoke/runs/deimv2_hgnetv2_atto_256x256_fixed/generated_configs/train.yml']' returned non-zero exit status 1.
+Traceback (most recent call last):
+  File "/home/joncrall/code/kwcoco_detector_kit/kwcoco_detector_kit/orchestration/pareto_sweep.py", line 201, in run
+    _run_train(
+    ~~~~~~~~~~^
+        trainer, config=config, cell=cell, workdir=workdir,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        candidate_id=candidate_id,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/joncrall/code/kwcoco_detector_kit/kwcoco_detector_kit/orchestration/pareto_sweep.py", line 123, in _run_train
+    trainer.launch(
+    ~~~~~~~~~~~~~~^
+        cfg_fpath,
+        ^^^^^^^^^^
+        num_gpus=int(config.num_gpus),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        distributed=bool(config.distributed),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/joncrall/code/kwcoco_detector_kit/kwcoco_detector_kit/trainers/deimv2.py", line 758, in launch
+    subprocess.run(args, check=True, env=env, cwd=str(repo))
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/joncrall/.local/share/uv/python/cpython-3.13.2-linux-x86_64-gnu/lib/python3.13/subprocess.py", line 579, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['/home/joncrall/.local/uv/envs/uvpy3.13.2/bin/python', '/home/joncrall/code/shitspotter/tpl/DEIMv2/train.py', '-c', '/tmp/kcd_gpu_smoke/run
+s/deimv2_hgnetv2_atto_256x256_fixed/generated_configs/train.yml']' returned non-zero exit status 1.
+
+
+sweep index -> /tmp/kcd_gpu_smoke/sweeps/20260511T125026/index.tsv
+  [PASS]  Stage 3 — DEIMv2 GPU
+
+==================================================================
+  Stage 4 — round_loop (mock_tiny CPU) — exercises mine + merge
+==================================================================
+  split role=positive: 18 imgs, 18 anns -> /tmp/kcd_gpu_smoke/pos.kwcoco.zip
+  split role=negative: 22 imgs, 0 anns -> /tmp/kcd_gpu_smoke/neg.kwcoco.zip
+/home/joncrall/code/scriptconfig/scriptconfig/smartcast.py:144: UserWarning: smartcast has been given a string with commas and the allow_split="auto". Currently this will default t
+o True and split the string into a list. After version 1.0 the default will change to False and strings will not be split into lists by default To disable this warning explicitly s
+et allow_split=True to keep the string splitting behavior or allow_split=False to disable it and use the new default behavior. If using this in a Value object, you can prevent futu
+re incompatibility by setting type=str and handling casting in the __post_init__ method of the DataConfig
+  warnings.warn(
+merge: round=0 pos=18 neg_pool=22 neg_picked=18 (target ratio neg/pos=1.0)
+  wrote 18 pos + 18 neg images, 18 annots to /tmp/kcd_gpu_smoke/rounds/round0/train_round.kwcoco.zip
+^CTraceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/joncrall/code/kwcoco_detector_kit/kwcoco_detector_kit/__main__.py", line 5, in <module>
+    main()
+    ~~~~^^
+  File "/home/joncrall/code/kwcoco_detector_kit/kwcoco_detector_kit/cli/__main__.py", line 201, in main
+    ModalKit.main()
+    ~~~~~~~~~~~~~^^
+  File "/home/joncrall/code/scriptconfig/scriptconfig/modal.py", line 772, in main
+    ret = sub_main(**control_kw, **kw)
+  File "/home/joncrall/code/kwcoco_detector_kit/kwcoco_detector_kit/orchestration/round_loop.py", line 62, in main
+    run(config)
+    ~~~^^^^^^^^
+  File "/home/joncrall/code/kwcoco_detector_kit/kwcoco_detector_kit/orchestration/round_loop.py", line 191, in run
+    _train_round(
+    ~~~~~~~~~~~~^
+        trainer, train_kwcoco=train_kwcoco, vali_kwcoco=str(config.vali_kwcoco),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+        category_name=str(config.category_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/joncrall/code/kwcoco_detector_kit/kwcoco_detector_kit/orchestration/round_loop.py", line 148, in _train_round
+    trainer.launch(cfg_fpath, num_gpus=int(num_gpus))
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/joncrall/code/kwcoco_detector_kit/kwcoco_detector_kit/trainers/mock_tiny.py", line 405, in launch
+    _train_inproc(cfg, workdir, resume=resume)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/joncrall/code/kwcoco_detector_kit/kwcoco_detector_kit/trainers/mock_tiny.py", line 455, in _train_inproc
+    opt = torch.optim.Adam(model.parameters(), lr=float(cfg["lr"]))
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/torch/optim/adam.py", line 102, in __init__
+    super().__init__(params, defaults)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/torch/optim/optimizer.py", line 408, in __init__
+    self.add_param_group(cast(dict, param_group))
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/torch/_compile.py", line 47, in inner
+    import torch._dynamo
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/torch/_dynamo/__init__.py", line 13, in <module>
+    from . import (
+    ...<6 lines>...
+    )
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/torch/_dynamo/aot_compile.py", line 14, in <module>
+    from torch._dynamo.convert_frame import GraphRuntimeEnv
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/torch/_dynamo/convert_frame.py", line 60, in <module>
+    from torch._dynamo.symbolic_convert import TensorifyState
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/torch/_dynamo/symbolic_convert.py", line 53, in <module>
+    from torch._dynamo.exc import ObservedException, TensorifyScalarRestartAnalysis
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/torch/_dynamo/exc.py", line 44, in <module>
+    from .utils import counters
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/torch/_dynamo/utils.py", line 69, in <module>
+    import torch.fx.experimental.symbolic_shapes
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/torch/fx/experimental/symbolic_shapes.py", line 3, in <module>
+    import sympy
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/sympy/__init__.py", line 203, in <module>
+    from .geometry import (Point, Point2D, Point3D, Line, Ray, Segment, Line2D,
+    ...<3 lines>...
+            GeometryError, Curve, Parabola)
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/sympy/geometry/__init__.py", line 13, in <module>
+    from sympy.geometry.point import Point, Point2D, Point3D
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/sympy/geometry/point.py", line 37, in <module>
+    from .entity import GeometryEntity
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/sympy/geometry/entity.py", line 35, in <module>
+    from sympy.sets.handlers.intersection import intersection_sets
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/sympy/sets/handlers/intersection.py", line 510, in <module>
+    @intersection_sets.register(Naturals, Rationals)
+     ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/sympy/multipledispatch/dispatcher.py", line 148, in _
+    self.add(types, func, **kwargs)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/sympy/multipledispatch/dispatcher.py", line 219, in add
+    self.reorder(on_ambiguity=on_ambiguity)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/sympy/multipledispatch/dispatcher.py", line 225, in reorder
+    amb = ambiguities(self.funcs)
+  File "/home/joncrall/.local/uv/envs/uvpy3.13.2/lib/python3.13/site-packages/sympy/multipledispatch/conflict.py", line 28, in ambiguities
+    if hash(a) < hash(b)
+                 ~~~~^^^
+KeyboardInterrupt
+
+(uvpy3.13.2) joncrall@toothbrush:~/code/kwcoco_detector_kit$ ^C
+(uvpy3.13.2) joncrall@toothbrush:~/code/kwcoco_detector_kit$ tmux-dump-pane
+

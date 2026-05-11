@@ -95,9 +95,21 @@ epochs = {num_epochs}
 
 
 def _resolve_repo() -> Optional[Path]:
+    """The Open-GroundingDino checkout, in priority order:
+
+    1. ``$KCD_OPENGROUNDINGDINO_REPO_DPATH`` (explicit override)
+    2. ``<kit_root>/tpl/Open-GroundingDino`` (the kit's own submodule)
+    3. None
+    """
     repo = os.environ.get("KCD_OPENGROUNDINGDINO_REPO_DPATH")
     if repo:
         return Path(repo).expanduser().resolve()
+    # Fall back to the kit's tpl submodule when on disk.
+    import kwcoco_detector_kit
+    pkg_init = Path(kwcoco_detector_kit.__file__).resolve()
+    candidate = pkg_init.parent.parent / "tpl" / "Open-GroundingDino"
+    if candidate.is_dir() and any(candidate.iterdir()):
+        return candidate
     return None
 
 
@@ -423,7 +435,10 @@ class OpenGroundingDINOTrainer:
         repo = _resolve_repo()
         if not repo:
             raise EnvironmentError(
-                "OpenGroundingDINO launch needs $KCD_OPENGROUNDINGDINO_REPO_DPATH."
+                "OpenGroundingDINO launch needs a checkout. Either set "
+                "$KCD_OPENGROUNDINGDINO_REPO_DPATH or run "
+                "`git submodule update --init tpl/Open-GroundingDino` from "
+                "the kit's repo root."
             )
         train_sh = repo / "train_dist.sh"
         if not train_sh.exists():

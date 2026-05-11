@@ -1,0 +1,6 @@
+[submodule "tpl/DEIMv2"]
+	path = tpl/DEIMv2
+	url = https://github.com/Erotemic/DEIMv2.git
+[submodule "tpl/Open-GroundingDino"]
+	path = tpl/Open-GroundingDino
+	url = https://github.com/Erotemic/Open-GroundingDino.git

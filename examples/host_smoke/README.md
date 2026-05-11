@@ -38,7 +38,7 @@ DEIMv2's HGNetv2 backbone is initialized from upstream pretrained weights downlo
 
 ## Prerequisites
 
-- `pip install -e ".[deimv2]"` from the kit's root.
-- `$KCD_DEIMV2_REPO_DPATH` set to a DEIMv2 checkout. The script defaults to `$HOME/code/shitspotter/tpl/DEIMv2`; override if yours lives elsewhere.
+- `git submodule update --init tpl/DEIMv2` from the kit's repo root (the script falls back to `$KCD_DEIMV2_REPO_DPATH` if the submodule isn't initialised).
+- `pip install -e ".[deimv2]"` from the kit's root — pulls in `faster_coco_eval`, `calflops`, `transformers`, `tensorboard`, `scipy`.
 
-If `--check-env` reports any missing modules, the script keeps going but prints the install command for each.
+If `--check-env --strict_import` reports missing or broken transitive deps, the script keeps going but prints the install command for each. Common gotcha: older `transformers` ↔ `huggingface-hub` 1.x conflict — see lesson #22.

@@ -5,7 +5,10 @@ Domain-agnostic object-detector training pipeline on **kwcoco** datasets. Scales
 ## Quick start
 
 ```bash
-pip install -e .
+git clone https://github.com/Erotemic/kwcoco-detector-kit.git
+cd kwcoco-detector-kit
+git submodule update --init --recursive          # tpl/DEIMv2 + tpl/Open-GroundingDino
+pip install -e ".[dev]"
 bash examples/kwcoco_demo/run_smoke.sh
 ```
 

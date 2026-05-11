@@ -160,12 +160,14 @@ def _export_deimv2(
     Falls back to recovering the .onnx if the post-export `--simplify`
     step crashed (failure #10).
     """
-    repo = os.environ.get("KCD_DEIMV2_REPO_DPATH")
+    from kwcoco_detector_kit.trainers.deimv2 import _resolve_deimv2_repo
+    repo = _resolve_deimv2_repo()
     if not repo:
         raise EnvironmentError(
-            "DEIMv2 ONNX export needs $KCD_DEIMV2_REPO_DPATH."
+            "DEIMv2 ONNX export needs a DEIMv2 checkout. Either set "
+            "$KCD_DEIMV2_REPO_DPATH or run `git submodule update --init "
+            "tpl/DEIMv2` from the kit's repo root."
         )
-    repo = Path(repo).expanduser().resolve()
     export_script = repo / "tools" / "deployment" / "export_onnx.py"
     if not export_script.exists():
         raise FileNotFoundError(export_script)

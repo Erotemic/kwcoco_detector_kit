@@ -15,7 +15,9 @@
 #   KCD_ROOT                 workspace (default /tmp/kcd_gpu_smoke)
 #   CUDA_VISIBLE_DEVICES     GPU index (default 1)
 #   PYTHON_BIN               python interpreter (default python)
-#   KCD_DEIMV2_REPO_DPATH    DEIMv2 checkout (default $HOME/code/shitspotter/tpl/DEIMv2)
+#   KCD_DEIMV2_REPO_DPATH    DEIMv2 checkout override. By default the kit
+#                            resolves $repo/tpl/DEIMv2 (init the submodule
+#                            via `git submodule update --init tpl/DEIMv2`).
 #   SKIP_DEIMV2=1            skip the DEIMv2 GPU stage
 #   SKIP_ROUND_LOOP=1        skip the round-loop CPU stage
 #   SKIP_CPU_BASELINE=1      skip the mock_tiny CPU baseline
@@ -24,15 +26,24 @@ set -euo pipefail
 
 KCD_ROOT="${KCD_ROOT:-/tmp/kcd_gpu_smoke}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
-KCD_DEIMV2_REPO_DPATH="${KCD_DEIMV2_REPO_DPATH:-$HOME/code/shitspotter/tpl/DEIMv2}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-1}"
 SKIP_DEIMV2="${SKIP_DEIMV2:-0}"
 SKIP_ROUND_LOOP="${SKIP_ROUND_LOOP:-0}"
 SKIP_CPU_BASELINE="${SKIP_CPU_BASELINE:-0}"
 KEEP_WORKDIR="${KEEP_WORKDIR:-0}"
 
+# DEIMv2 resolution: kit's auto-resolver (env var first, then tpl/DEIMv2).
+# We compute the effective path here just for the [PASS]/[SKIP] status logic.
+KCD_DEIMV2_REPO_DPATH="${KCD_DEIMV2_REPO_DPATH:-}"
+if [ -z "$KCD_DEIMV2_REPO_DPATH" ]; then
+    _kit_tpl_deimv2="$(dirname "$(dirname "$(readlink -f "$0")")")/tpl/DEIMv2"
+    if [ -d "$_kit_tpl_deimv2" ] && [ -n "$(ls -A "$_kit_tpl_deimv2" 2>/dev/null)" ]; then
+        KCD_DEIMV2_REPO_DPATH="$_kit_tpl_deimv2"
+    fi
+fi
+
 export CUDA_VISIBLE_DEVICES
-export KCD_DEIMV2_REPO_DPATH
+[ -n "$KCD_DEIMV2_REPO_DPATH" ] && export KCD_DEIMV2_REPO_DPATH
 
 declare -i N_PASS=0
 declare -i N_FAIL=0

@@ -11,8 +11,39 @@ pip install kwcoco-detector-kit
 ```bash
 git clone https://github.com/Erotemic/kwcoco-detector-kit.git
 cd kwcoco-detector-kit
+git submodule update --init --recursive   # clones tpl/DEIMv2, tpl/Open-GroundingDino
 pip install -e ".[dev]"
 ```
+
+## Third-party trainer codebases (submodules)
+
+The kit drives the real DEIMv2 and OpenGroundingDINO trainers via subprocess. Their source lives as **git submodules** under [`tpl/`](../tpl/):
+
+```text
+tpl/
+├── DEIMv2/               https://github.com/Erotemic/DEIMv2.git @ 377e10a2 (Phase 1+2)
+└── Open-GroundingDino/   https://github.com/Erotemic/Open-GroundingDino.git @ b59dd5e7 (Phase 2)
+```
+
+A fresh clone of this repo gets empty `tpl/` directories. Initialize them with:
+
+```bash
+git submodule update --init --recursive
+```
+
+After that, the kit's trainer plugins find the submodules automatically — no env vars needed. Override the lookup with `$KCD_DEIMV2_REPO_DPATH` / `$KCD_OPENGROUNDINGDINO_REPO_DPATH` if you keep checkouts elsewhere.
+
+To bump a submodule to a newer commit:
+
+```bash
+cd tpl/DEIMv2
+git fetch && git checkout <sha>
+cd ../..
+git add tpl/DEIMv2
+git commit -m "tpl: bump DEIMv2 to <short-sha>"
+```
+
+The kit's `pyproject.toml` doesn't `pip install` these — they're consumed as subprocess targets, not Python packages. (DEIMv2's hidden transitive runtime deps are declared in `[project.optional-dependencies.deimv2]`; install via `pip install -e ".[deimv2]"`.)
 
 ## Optional trainer-plugin deps
 

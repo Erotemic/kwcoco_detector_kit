@@ -444,18 +444,48 @@ def _ensure_mscoco(input_fpath, dst_fpath: Path, *, category_name: str) -> Path:
     return dst_fpath
 
 
+def _kit_root_tpl_path(submodule_name: str) -> Optional[Path]:
+    """Return ``<kit_root>/tpl/<submodule_name>`` if that submodule is on disk.
+
+    Used as the fallback when ``$KCD_DEIMV2_REPO_DPATH`` is unset. `<kit_root>`
+    is `Path(kwcoco_detector_kit.__file__).parent.parent` — the kit's working
+    copy when installed editable; in a site-packages install this typically
+    won't have ``tpl/`` so we return None.
+    """
+    import kwcoco_detector_kit
+    pkg_init = Path(kwcoco_detector_kit.__file__).resolve()
+    candidate = pkg_init.parent.parent / "tpl" / submodule_name
+    if candidate.is_dir() and any(candidate.iterdir()):
+        return candidate
+    return None
+
+
+def _resolve_deimv2_repo() -> Optional[Path]:
+    """The DEIMv2 checkout, in priority order:
+
+    1. ``$KCD_DEIMV2_REPO_DPATH`` (explicit override)
+    2. ``<kit_root>/tpl/DEIMv2`` (the kit's own submodule, if initialised)
+    3. None (config-gen still works; launch() raises with a clear hint)
+    """
+    repo = os.environ.get("KCD_DEIMV2_REPO_DPATH")
+    if repo:
+        return Path(repo).expanduser().resolve()
+    return _kit_root_tpl_path("DEIMv2")
+
+
 def _resolve_upstream_cfg_fpath(variant_name: str) -> str:
     """Compose the absolute path to the upstream DEIMv2 config.
 
-    Reads ``$KCD_DEIMV2_REPO_DPATH``. Returns a relative path when unset
-    — the YAML will still parse, but the upstream consumer must be
+    Reads ``$KCD_DEIMV2_REPO_DPATH`` first, then falls back to
+    ``<kit_root>/tpl/DEIMv2``. Returns a relative path when neither is
+    found — the YAML will still parse, but the upstream consumer must be
     launched with cwd inside the DEIMv2 repo.
     """
     info = VARIANTS[_resolve_variant(variant_name)]
     rel = info["upstream_config_relpath"]
-    repo = os.environ.get("KCD_DEIMV2_REPO_DPATH")
+    repo = _resolve_deimv2_repo()
     if repo:
-        return str(Path(repo).expanduser().resolve() / rel)
+        return str(repo / rel)
     return str(rel)
 
 
@@ -509,7 +539,7 @@ class DEIMv2Predictor:
         import torch
         from torch import nn
 
-        repo = os.environ.get("KCD_DEIMV2_REPO_DPATH")
+        repo = _resolve_deimv2_repo()
         if repo and str(repo) not in sys.path:
             sys.path.insert(0, str(repo))
 
@@ -517,8 +547,9 @@ class DEIMv2Predictor:
             YAMLConfig = __import__("engine.core", fromlist=["YAMLConfig"]).YAMLConfig
         except Exception as ex:
             raise ImportError(
-                "DEIMv2Predictor needs the DEIMv2 submodule on PYTHONPATH; "
-                "set KCD_DEIMV2_REPO_DPATH to your DEIMv2 checkout."
+                "DEIMv2Predictor needs a DEIMv2 checkout. Either set "
+                "$KCD_DEIMV2_REPO_DPATH or run "
+                "`git submodule update --init tpl/DEIMv2` from the kit's repo root."
             ) from ex
 
         ckpt_fpath = str(ckpt_fpath)
@@ -718,18 +749,19 @@ class DEIMv2Trainer:
     ) -> Path:
         """Subprocess DEIMv2's train.py against the generated config.
 
-        Requires ``$KCD_DEIMV2_REPO_DPATH``. Returns the workdir.
+        Uses ``_resolve_deimv2_repo()`` — ``$KCD_DEIMV2_REPO_DPATH`` then
+        ``<kit_root>/tpl/DEIMv2``. Returns the workdir.
         """
         cfg_fpath = Path(config_fpath)
         workdir = cfg_fpath.parent.parent
 
-        repo = os.environ.get("KCD_DEIMV2_REPO_DPATH")
+        repo = _resolve_deimv2_repo()
         if not repo:
             raise EnvironmentError(
-                "DEIMv2Trainer.launch needs $KCD_DEIMV2_REPO_DPATH pointing at "
-                "a DEIMv2 checkout."
+                "DEIMv2Trainer.launch needs a DEIMv2 checkout. Either set "
+                "$KCD_DEIMV2_REPO_DPATH or run "
+                "`git submodule update --init tpl/DEIMv2` from the kit's repo root."
             )
-        repo = Path(repo).expanduser().resolve()
         train_py = repo / "train.py"
         if not train_py.exists():
             raise FileNotFoundError(train_py)

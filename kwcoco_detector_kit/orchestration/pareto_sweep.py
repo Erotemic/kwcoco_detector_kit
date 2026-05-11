@@ -59,6 +59,7 @@ class SweepConfig(scfg.DataConfig):
     use_amp = scfg.Value(False)
     scale_tier = scfg.Value("S")
     num_gpus = scfg.Value(1)
+    distributed = scfg.Value(False, isflag=True, help="enable torch.distributed.run for num_gpus > 1")
 
     keep_going = scfg.Value(True, isflag=True, help="continue past failed cells")
     do_export = scfg.Value(True, isflag=True, help="run ONNX export per cell")
@@ -119,7 +120,11 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
         extra={"category_name": str(config.category_name),
                "candidate_id": candidate_id},
     )
-    trainer.launch(cfg_fpath, num_gpus=int(config.num_gpus))
+    trainer.launch(
+        cfg_fpath,
+        num_gpus=int(config.num_gpus),
+        distributed=bool(config.distributed),
+    )
     return workdir
 
 

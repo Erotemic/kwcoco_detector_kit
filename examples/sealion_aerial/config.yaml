@@ -1,0 +1,48 @@
+# sealion_aerial — end-to-end config for `kwcoco-detector-kit run-all`.
+# Knob conventions match the CLI (snake_case; comma-separated lists).
+
+category_name: sealion
+trainer: deimv2
+variant: deimv2_dinov3_s
+tier: L
+input_hw: [640, 640]
+num_epochs: 30
+batch_size: 16
+val_batch_size: 32
+num_classes: 1
+lr: 5.0e-4
+backbone_lr: 2.5e-5
+use_amp: true
+
+# multi-scale tile augmentation — sealion targets are small relative
+# to the 5616x3744 source frame, so we sample multiple downscale
+# factors to expose the detector to objects at several apparent sizes.
+tile:
+  mode: multiscale
+  tile_size: 640
+  source_scales: "1.0,0.5,0.25,0.125"
+  stride_frac: 0.5
+  min_gt_area_frac: 0.0005
+  min_keep_fraction: 0.20
+  keep_negative: true
+  # oversize_factor = 1.2 reserves margin for the trainer's load-time
+  # crop augmentation (Phase 3 will consume this; Phase 2 still trains
+  # at the on-disk tile size).
+  oversize_factor: 1.2
+
+round_loop:
+  num_rounds: 3
+  round0_neg_over_pos: 3.0
+  mine_score_thresh: 0.25
+  max_hard_per_round: 5000
+
+train_policy: multiscale_512_768
+
+export:
+  onnx: false
+  package: true
+
+# Multi-GPU — toggled via env vars KCD_NUM_GPUS + KCD_DISTRIBUTED.
+multi_gpu:
+  num_gpus: 1
+  distributed: false

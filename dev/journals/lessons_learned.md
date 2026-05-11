@@ -8,6 +8,32 @@ The bar is "took >1 hour" or "would have been ≥10× faster with this entry on 
 
 ---
 
+### Lesson #20 — scriptconfig's smartcast auto-splits comma-strings into lists
+
+**Symptom:** Passing `--source_scales "1.0,0.66"` to a CLI built on scriptconfig delivered `[1.0, 0.66]` (list of floats parsed as strings) to the receiving function — but the function called `str(scales).split(',')` and saw `'[1.0, 0.66]'`, hitting `ValueError: could not convert string to float: '[1.0'`.
+
+**Root cause:** scriptconfig 0.9.1's `Value` uses smartcast with `allow_split="auto"` — strings containing commas are split into lists. The warning surfaces at parse-time but the cast happens silently. A field declared as `scfg.Value("1.0,0.66,0.40,0.25", help="comma-separated factors")` looks like a string but ends up as a list at the receiver.
+
+**Fix:** Make the consumer tolerant of both shapes — `isinstance(scales, (list, tuple)) and ...` branches before string-splitting. Don't trust the Value's declared default type to match the runtime type.
+
+**Takeaway:** When using scriptconfig, comma-string config fields are not stable as strings. Either declare `type=str` + `allow_split=False`, or make the consumer accept both list-of-X and comma-string-of-X. The kit's `_parse_scales` shows the consumer-side pattern.
+
+---
+
+### Lesson #21 — `kwcoco eval` confusion-sidecar dump can crash on cross-bundle relative paths
+
+**Symptom:** `python -m kwcoco eval --true_dataset T.kwcoco.zip --pred_dataset P.kwcoco.zip --out_dpath ...` printed the computed `nocls_measures.ap` to stdout but exited non-zero. The trace showed "Failed to reroot gid=1 with fpaths=[...]" deep inside the confusion-sidecar dump.
+
+**Root cause:** When `pred.kwcoco.zip` was written to a different bundle directory from `true.kwcoco.zip`, the pred bundle's `file_name="raw_assets/foo.jpg"` got resolved relative to the pred bundle's parent — pointing at a path that didn't exist (the actual JPEGs live next to the true bundle). The eval computed metrics fine because the image data isn't loaded for the AP calculation, but the confusion-sidecar writer tried to load the actual pixels to draw the heatmap and failed.
+
+**Fix:** Two-layer defense.
+1. When writing the pred kwcoco, rewrite `file_name` to the absolute path of the source asset (`true.get_image_fpath(gid)`).
+2. When the eval subprocess returns non-zero but `detect_metrics.json` is on disk, recover the metrics and continue — same pattern as the ONNX export's `--simplify` crash recovery.
+
+**Takeaway:** Don't trust subprocesses' all-or-nothing exit codes — check for the artifact too. Don't trust that a pred kwcoco's relative file_name resolves the same in a new bundle directory; rewrite to absolute when copying image rows.
+
+---
+
 ## SEED ENTRIES — from `/home/joncrall/code/shitspotter/dev/journals/lessons_learned.md`
 
 The following entries are scrubbed and ported from the prior project. They capture the 19 failure modes that cost real time in the v4/v5 prototype. They are pre-seeded here so the kit doesn't have to re-encounter them.

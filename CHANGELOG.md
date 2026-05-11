@@ -22,3 +22,10 @@ All notable changes to `kwcoco-detector-kit` are recorded here. Format follows [
 ### Notes
 - Phase 1 test bar: structural YAML invariants via `yaml.safe_load` + dict-shape assertions. The DEIMv2 `engine.core.YAMLConfig` drive-through is gated behind `pytest -m requires_deimv2`.
 - Storage format for intermediate training data is intentionally JPEG-on-disk + kwcoco manifest in Phase 1. Webdataset is deferred to Phase 3 and treated as one possible backend behind a `TileStore` interface (user's design constraint: oversized tiles for crop-aug, streamable from spinning disk / slow network).
+
+## Phase 2 additions
+- `trainers/opengroundingdino.py` — OpenGroundingDINO trainer plugin covering `opengroundingdino_swint` (Swin-Tiny @ tier L) + `opengroundingdino_swinb` (Swin-Base @ tier XL). Python rewrite of the v9 shell pipeline: kwcoco → MSCOCO → ODVG → `train_dist.sh` subprocess. SAM2 segmenter co-training is deferred to v1.1.
+- `orchestration/pareto_sweep.py` — added `--distributed` flag for opt-in DDP via the trainer plugin's `launch(num_gpus=N, distributed=True)`.
+- `examples/sealion_aerial/` — scaffold (`README.md`, `prepare_kwcoco.py` for NOAA Steller dataset conversion, `config.yaml`, `run_all.sh`). NOAA-side validation deferred to host with GPU.
+- `docs/multi_gpu.md` — CLI + tier auto-detect + PCIe-link-width caveat + SLURM submit pattern.
+- `dev/journals/lessons_learned.md` — Lessons #20 (scriptconfig smartcast comma-string surprise) + #21 (kwcoco-eval confusion-sidecar crash recovery).

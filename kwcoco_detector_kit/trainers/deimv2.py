@@ -423,6 +423,27 @@ def _build_train_yml(
     }
 
 
+def _ensure_mscoco(input_fpath, dst_fpath: Path, *, category_name: str) -> Path:
+    """If `input_fpath` is already a .mscoco.json, return it unchanged.
+    Otherwise (kwcoco bundle), export to MSCOCO at `dst_fpath` and return that.
+
+    DEIMv2's train.py consumes MSCOCO; the kit's pipeline gives us kwcoco.
+    This helper isolates the conversion at the trainer-plugin boundary.
+    """
+    from kwcoco_detector_kit.data.coco_export import export_mscoco
+
+    src = str(input_fpath)
+    dst_fpath = Path(dst_fpath)
+    if src.endswith(".mscoco.json") or src.endswith(".coco.json"):
+        return Path(src)
+    dst_fpath.parent.mkdir(parents=True, exist_ok=True)
+    export_mscoco(
+        src, dst_fpath, category_name=category_name,
+        include_segmentations=False, category_id=0,
+    )
+    return dst_fpath
+
+
 def _resolve_upstream_cfg_fpath(variant_name: str) -> str:
     """Compose the absolute path to the upstream DEIMv2 config.
 
@@ -617,6 +638,19 @@ class DEIMv2Trainer:
         gen_dpath.mkdir(parents=True, exist_ok=True)
         cfg_fpath = gen_dpath / "train.yml"
 
+        # DEIMv2's train.py reads MSCOCO json (not kwcoco). When the caller
+        # hands us a .kwcoco path, convert it to MSCOCO inside the workdir.
+        # Already-MSCOCO inputs (.mscoco.json) pass through unchanged.
+        category_name = (extra or {}).get("category_name", "widget")
+        train_ann_fpath = _ensure_mscoco(
+            train_kwcoco_fpath, workdir / "detector_prepared" / "train.mscoco.json",
+            category_name=category_name,
+        )
+        vali_ann_fpath = _ensure_mscoco(
+            vali_kwcoco_fpath, workdir / "detector_prepared" / "vali.mscoco.json",
+            category_name=category_name,
+        )
+
         policy = _resolve_policy(
             train_policy, input_hw, num_epochs,
             supports_dynamic=supports_dynamic,
@@ -626,8 +660,8 @@ class DEIMv2Trainer:
         yml = _build_train_yml(
             workdir=workdir,
             upstream_cfg_fpath=upstream_cfg,
-            train_mscoco_fpath=str(train_kwcoco_fpath),
-            vali_mscoco_fpath=str(vali_kwcoco_fpath),
+            train_mscoco_fpath=str(train_ann_fpath),
+            vali_mscoco_fpath=str(vali_ann_fpath),
             family=family,
             input_hw=tuple(input_hw),
             num_classes=int(num_classes),

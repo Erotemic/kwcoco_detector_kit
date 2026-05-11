@@ -1,0 +1,103 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kwcoco-detector-kit"
+dynamic = ["version"]
+description = "Domain-agnostic object-detector training pipeline on kwcoco datasets — DEIMv2 + OpenGroundingDINO."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Jon Crall", email = "jon.crall@kitware.com" }]
+keywords = ["kwcoco", "object-detection", "deimv2", "dinov2", "dinov3", "opengroundingdino", "training", "pipeline"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
+dependencies = [
+    # Core kwcoco / kwimage stack
+    "kwcoco>=0.8",
+    "kwimage>=0.11",
+    "ubelt>=1.4",
+    "scriptconfig>=0.9",
+    "numpy>=1.24",
+    "pyyaml>=6.0",
+    # torch is required by the trainer plugins and mock detector. Pin the
+    # ABI-matched torchvision per failure #8 — torch X.Y must always be
+    # installed alongside torchvision Z.W from the same matched pair.
+    "torch>=2.5",
+    "torchvision>=0.20",
+    # ONNX export — failure #9 (torch.onnx.export calls onnxscript at
+    # function-call time) and failure #10 (DEIMv2 export wants onnxsim,
+    # default opset 18 on torch >= 2.5).
+    "onnx>=1.16",
+    "onnxruntime>=1.18",
+    "onnxscript>=0.1",
+    "onnxsim>=0.4",
+    # Tile cv2 path — kwimage.imresize(interp='area') needs cv2 backend
+    # (failure #5). opencv-python-headless avoids X11 deps on servers.
+    "opencv-python-headless>=4.8",
+    "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+# Bring in DEIMv2's hidden transitive deps (failure #11). These mirror
+# tpl/DEIMv2/requirements.txt; we don't pin to specific versions to avoid
+# fighting upstream pins. setup_audit's --check-env probes for each.
+deimv2 = [
+    "faster_coco_eval",
+    "calflops",
+    "transformers",
+    "tensorboard",
+    "scipy",
+]
+# OpenGroundingDINO + SAM2 — Phase 2 deps. Soft-imported.
+opengroundingdino = [
+    "transformers",
+    "addict",
+    "yapf",
+]
+# Webdataset — Phase 3 storage backend. Soft-imported; not loaded in Phase 1.
+webdataset = [
+    "webdataset>=0.2",
+]
+# Dev / test
+dev = [
+    "pytest>=8",
+    "pytest-cov>=4",
+]
+
+[project.scripts]
+kwcoco-detector-kit = "kwcoco_detector_kit.cli.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/Erotemic/kwcoco-detector-kit"
+
+[tool.setuptools]
+packages = { find = { include = ["kwcoco_detector_kit*"] } }
+
+[tool.setuptools.dynamic]
+version = { attr = "kwcoco_detector_kit._version.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "slow: tests that take more than a few seconds (deselect via -m 'not slow')",
+    "requires_torch: tests that import torch",
+    "requires_gpu: tests that require a CUDA-capable GPU",
+    "requires_deimv2: tests that drive through the DEIMv2 submodule's engine.core.YAMLConfig",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:kwcoco.*",
+]

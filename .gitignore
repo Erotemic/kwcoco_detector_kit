@@ -86,7 +86,7 @@ mlruns/
 *.kwcoco.json
 *.kwcoco.zip
 *.mscoco.json
-data/
+/data/
 datasets/
 images/
 shards/

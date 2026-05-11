@@ -1,64 +1,48 @@
-# kwcoco_detector_kit
+# kwcoco-detector-kit
 
-A domain-agnostic Python package for training object detectors on **kwcoco**
-datasets. Scales from a single 12 GB GTX 1080 Ti up through 4× 96 GB Blackwell /
-A100 / H100 clusters, and from small mobile detectors (DEIMv2 HGNetv2 Atto,
-~0.5 M params) to large DINOv2/DINOv3-backed transformer detectors
-(OpenGroundingDINO, ~200 M params). Targets land photos, aerial mosaics,
-underwater, and (eventually) multispectral satellite imagery — anywhere a kwcoco
-file with bounding-box annotations is a reasonable input.
+Domain-agnostic object-detector training pipeline on **kwcoco** datasets. Scales from a single 12 GB GTX 1080 Ti to multi-GPU A100 / H100 / Blackwell clusters. Ships two trainer plugins (DEIMv2, OpenGroundingDINO) plus a mock CPU detector for CI smoke.
 
-## Status — pre-Phase-1 handoff
+## Quick start
 
-This repository contains the handoff plan + engineering-memory seed for an
-incoming agent. **No package code has been written yet.**
-
-```text
-kwcoco_detector_kit/
-├── README.md           ← you are here (orientation)
-├── AGENT_PROMPT.md     ← FIRST PROMPT for the next agent — start here
-├── PLAN.md             ← 740-line handoff plan (the authoritative spec)
-├── .gitignore
-└── dev/                ← engineering memory (read before writing code)
-    ├── README.md
-    ├── benchmark-candidates/
-    │   ├── README.md                       ← workflow + quality bar
-    │   ├── pipeline-bootstrap-questions.md ← 4 seeded hard-problem invariants
-    │   └── compositions.md                 ← multi-invariant questions (placeholder)
-    └── journals/
-        └── lessons_learned.md              ← 19 seeded >1hr-debug postmortems
+```bash
+pip install -e .
+bash examples/kwcoco_demo/run_smoke.sh
 ```
 
-## For agents starting work here
+`run_smoke.sh` exercises the full pipeline (synth kwcoco → tile → train mock → ONNX export → eval → eligibility manifest) in <90 s on a 1-CPU laptop.
 
-1. Read **`AGENT_PROMPT.md`** first. It tells you what to read, what to confirm
-   with the user, and what Phase 1 scope is.
-2. Read **`PLAN.md`** cover-to-cover. It is the spec.
-3. Read **`dev/README.md`** so you understand what the engineering memory tree
-   is for, then skim the seeded entries in `dev/benchmark-candidates/` and
-   `dev/journals/lessons_learned.md` — they encode hard-won invariants from the
-   prior project that this kit must preserve.
+## What's in the box
 
-## For humans browsing this repo
+- **`data/`** — kwcoco tile augmentation (three modes: full-only, quadrant grid, multi-scale fixed-size), positive + hard-negative merging, offline hard-negative mining, kwcoco → MSCOCO export.
+- **`trainers/`** — pluggable trainer interface; `deimv2` covers 12 variants (HGNetv2 Atto/Femto/Pico/N/S/M/L/X + DINOv3 S/M/L/X); `opengroundingdino` covers DINOv2 + BERT + DETR; `mock_tiny` is a CPU smoke detector.
+- **`predictors/`** — trained-checkpoint inference adapters used by the eval + hard-neg mining paths.
+- **`export/`** — ONNX export + modelspec sidecar, torch ↔ ONNX parity guard, deployment package YAML.
+- **`eval/`** — kwcoco eval driver, checkpoint shortlist sweep, ONNX desktop benchmark.
+- **`orchestration/`** — Pareto sweep state machine, round-based hard-negative mining driver, eligibility manifest, setup-time `--check-env` probe.
 
-The two prior prototypes whose patterns are being lifted (read-only sources):
+All CLIs are [scriptconfig](https://gitlab.kitware.com/utils/scriptconfig)-based; `python -m kwcoco_detector_kit --help` or `kwcoco-detector-kit --help`.
 
-- `/home/joncrall/code/shitspotter/experiments/mobile_app_training_v4/` — small-detector lineage (DEIMv2 Atto/Femto/Pico/N)
-- `/home/joncrall/code/shitspotter/experiments/mobile_app_training_v5/` — multi-scale tiles + hard-negative mining
-- `/home/joncrall/code/shitspotter/experiments/foundation_detseg_v3/` — big-DINO lineage (OpenGroundingDINO + SAM2)
+## Scale tiers
 
-The kit's job is to absorb the engineering invariants from those prototypes
-without absorbing the project-specific names ("poop", "shitspotter", "Pixel 5",
-"v9 baseline", etc.).
+| Tier | Hardware | Recommended variants |
+|---|---|---|
+| **S** | 1× 12–16 GB (GTX 1080 Ti / Titan X) | DEIMv2 HGNetv2 Atto / Femto / Pico |
+| **M** | 1× 24 GB (RTX 3090 / 4090) | DEIMv2 HGNetv2 N / S, DEIMv2 DINOv3-S |
+| **L** | 1× 48 GB (L40S / RTX 6000 Ada) | DEIMv2 DINOv3-M, OGDino-Swin-Tiny |
+| **XL** | 1× 80 GB (A100 / H100) | DEIMv2 DINOv3-L/X, OGDino-Swin-Base |
+| **2-4×L / 4×XL** | DDP cluster | full sweep, larger effective batches |
+| **cloud** | SLURM / k8s | tier-L/XL × N nodes with cloud-mount kwcoco |
 
-## Three phases (per `PLAN.md`)
+See [`docs/scale_tiers.md`](docs/scale_tiers.md).
 
-- **Phase 1** — package scaffold + DEIMv2 small-detector lineage + kwcoco-demo
-  example + pytest suite (≥ 80 tests). Single-GPU + CPU smoke. Target: `pip
-  install -e . && pytest -q` passes; `run_smoke.sh` produces a `.onnx` in <90s.
-- **Phase 2** — OpenGroundingDINO big-detector lineage, multi-GPU DDP, NOAA
-  Steller sealion example.
-- **Phase 3** — webdataset shard pipeline (via `kwcoco_dataloader`),
-  multispectral support, cloud-cluster target.
+## Engineering memory
 
-Stop at each phase boundary and confirm with the user.
+This kit ships agent-readable engineering memory in [`dev/`](dev/) — 19 documented failure modes from the prior prototype + 4 distilled benchmark candidates. New >1 h-debug bugs land in [`dev/journals/lessons_learned.md`](dev/journals/lessons_learned.md) above the seed divider.
+
+## Project status
+
+Phase 1 in flight (port + RGB + tier M/L single-GPU). See [`CHANGELOG.md`](CHANGELOG.md) and [`PLAN.md`](PLAN.md) for the full roadmap.
+
+## License
+
+Apache-2.0.

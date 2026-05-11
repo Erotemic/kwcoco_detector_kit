@@ -92,3 +92,6 @@ images/
 shards/
 *.tar.shard
 *.tar.shards
+
+# Tmux pane dump logs
+[0-9]*_bash_*.log

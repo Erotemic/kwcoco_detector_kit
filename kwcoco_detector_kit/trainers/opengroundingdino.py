@@ -479,6 +479,11 @@ class OpenGroundingDINOTrainer:
         if init_checkpoint:
             env["PRETRAIN_MODEL_PATH"] = str(init_checkpoint)
         env.setdefault("TEXT_ENCODER_TYPE", "bert-base-uncased")
+        policy_fpath = workdir / "policy.json"
+        if policy_fpath.exists():
+            policy = json.loads(policy_fpath.read_text())
+            if bool(policy.get("use_amp", False)):
+                env["USE_AMP"] = "1"
 
         cmd = [
             "bash", str(train_sh),

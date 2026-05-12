@@ -48,6 +48,7 @@ def export_onnx(
     opset: int = DEFAULT_OPSET,
     score_thresh: float = 0.30,
     category_name: str = "widget",
+    force: bool = False,
 ) -> Path:
     """Dispatch to the trainer-appropriate ONNX exporter.
 
@@ -67,6 +68,7 @@ def export_onnx(
             opset=opset,
             score_thresh=score_thresh,
             category_name=category_name,
+            force=force,
         )
     # Default: torch.onnx.export against the predictor's underlying model.
     return _export_inproc(
@@ -77,6 +79,7 @@ def export_onnx(
         opset=opset,
         score_thresh=score_thresh,
         category_name=category_name,
+        force=force,
     )
 
 
@@ -89,6 +92,7 @@ def _export_inproc(
     opset: int,
     score_thresh: float,
     category_name: str,
+    force: bool,
 ) -> Path:
     """In-process torch.onnx.export for trainer plugins (mock_tiny etc.).
 
@@ -107,6 +111,9 @@ def _export_inproc(
     candidate_kind = policy.get("candidate_kind", "")
 
     out_fpath = out_fpath or (export_dpath / f"{trainer.name}_h{H}_w{W}.onnx")
+    if out_fpath.exists() and out_fpath.stat().st_size >= 262144 and not bool(force):
+        print(f"  reusing existing ONNX export: {out_fpath}")
+        return out_fpath
 
     # mock_tiny has the load_state_dict + _build_model utilities exposed
     # but the simplest path is to ask the predictor for its wrapped model.
@@ -154,6 +161,7 @@ def _export_deimv2(
     opset: int,
     score_thresh: float,
     category_name: str,
+    force: bool,
 ) -> Path:
     """Subprocess DEIMv2's ``tools/deployment/export_onnx.py``.
 
@@ -176,6 +184,14 @@ def _export_deimv2(
     export_dpath = workdir / "export"
     export_dpath.mkdir(parents=True, exist_ok=True)
     out_fpath = out_fpath or (export_dpath / f"deimv2_h{H}_w{W}.onnx")
+    if out_fpath.exists() and out_fpath.stat().st_size >= 262144 and not bool(force):
+        print(f"  reusing existing ONNX export: {out_fpath}")
+        return out_fpath
+    if out_fpath.exists() and out_fpath.stat().st_size < 262144:
+        print(
+            f"  existing ONNX export is suspiciously small "
+            f"({out_fpath.stat().st_size} bytes); re-exporting"
+        )
 
     ckpt = trainer.find_checkpoint(workdir)
     cfg = workdir / "generated_configs" / "train.yml"

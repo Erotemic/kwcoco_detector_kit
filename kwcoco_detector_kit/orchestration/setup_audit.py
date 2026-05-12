@@ -58,6 +58,9 @@ PROBES: List[Probe] = [
     # OpenGroundingDINO + SAM2 — Phase 2. Soft.
     Probe("addict",           "addict",           "opengroundingdino", ("trainers",)),
     Probe("yapf",             "yapf",             "opengroundingdino", ("trainers",)),
+    Probe("pycocotools",      "pycocotools",      "opengroundingdino", ("trainers",)),
+    Probe("matplotlib",       "matplotlib",       "opengroundingdino", ("trainers",)),
+    Probe("timm",             "timm",             "opengroundingdino", ("trainers",)),
     Probe("jsonlines",        "jsonlines",        "opengroundingdino", ("trainers",)),
     # Webdataset — Phase 3 alternative TileStore backend.
     Probe("webdataset",       "webdataset",       "webdataset",        ("data",)),

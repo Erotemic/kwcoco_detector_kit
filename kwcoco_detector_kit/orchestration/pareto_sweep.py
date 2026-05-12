@@ -65,6 +65,17 @@ class SweepConfig(scfg.DataConfig):
     do_export = scfg.Value(True, isflag=True, help="run ONNX export per cell")
     do_eval = scfg.Value(True, isflag=True, help="run kwcoco eval per cell")
     do_bench = scfg.Value(True, isflag=True, help="run ONNX desktop bench per cell")
+    force_train = scfg.Value(False, isflag=True, help="re-run training even if best_*.pth exists")
+    force_export = scfg.Value(False, isflag=True, help="re-run export even if a plausible .onnx exists")
+    force_eval = scfg.Value(False, isflag=True, help="re-run eval even if detect_metrics.json exists")
+    force_bench = scfg.Value(False, isflag=True, help="re-run bench even if *.bench.json exists")
+    retry_failed = scfg.Value(
+        None,
+        help=(
+            "prior sweep index.tsv; skip cells whose prior status is ok or "
+            "ok_resumed, and run only missing/failed cells"
+        ),
+    )
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -87,6 +98,58 @@ def _load_matrix(config) -> List[dict]:
         "input_hw": list(config.input_hw),
         "train_policy": str(config.train_policy),
     }]
+
+
+def _candidate_id(cell) -> str:
+    H, W = int(cell["input_hw"][0]), int(cell["input_hw"][1])
+    return f"{cell['variant']}_{H}x{W}_{cell.get('train_policy', 'fixed')}"
+
+
+def _filter_retry_failed(matrix: List[dict], prior_index) -> List[dict]:
+    """Drop cells that were already ok in a prior sweep index."""
+    if not prior_index:
+        return matrix
+    prior_index = Path(str(prior_index))
+    if not prior_index.exists():
+        raise FileNotFoundError(f"retry_failed index does not exist: {prior_index}")
+
+    prior_status = {}
+    with prior_index.open(newline="") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        for row in reader:
+            prior_status[row.get("candidate_id", "")] = row.get("status", "")
+
+    kept = []
+    skipped = 0
+    for cell in matrix:
+        status = prior_status.get(_candidate_id(cell), "")
+        if status in {"ok", "ok_resumed"}:
+            skipped += 1
+        else:
+            kept.append(cell)
+    print(
+        f"[sweep] retry_failed kept {len(kept)} of {len(matrix)} cells "
+        f"(skipped {skipped} already-ok cells from {prior_index})"
+    )
+    return kept
+
+
+def _has_best_checkpoint(workdir: Path) -> bool:
+    return (workdir / "best_stg2.pth").exists() or (workdir / "best_stg1.pth").exists()
+
+
+def _find_plausible_onnx(workdir: Path) -> Optional[Path]:
+    export_dpath = workdir / "export"
+    for fpath in sorted(export_dpath.glob("*.onnx")):
+        if fpath.stat().st_size >= 262144:
+            return fpath
+    return None
+
+
+def _find_bench_json(workdir: Path) -> Optional[Path]:
+    export_dpath = workdir / "export"
+    found = sorted(export_dpath.glob("*.bench.json"))
+    return found[0] if found else None
 
 
 # ---------------------------------------------------------------------------
@@ -128,17 +191,19 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
     return workdir
 
 
-def _run_export(trainer, *, workdir: Path, cell) -> Path:
+def _run_export(trainer, *, workdir: Path, cell, force: bool = False) -> Path:
     from kwcoco_detector_kit.export.onnx import export_onnx
     return export_onnx(
         trainer=trainer,
         workdir=workdir,
         input_hw=tuple(cell["input_hw"]),
+        force=force,
     )
 
 
 def _run_eval(trainer, *, workdir: Path, test_kwcoco: str, kcd_root: Path,
-              candidate_id: str, category_name: str, score_thresh: float = 0.30) -> Path:
+              candidate_id: str, category_name: str, score_thresh: float = 0.30,
+              force: bool = False) -> Path:
     from kwcoco_detector_kit.eval.kwcoco_eval import run_kwcoco_eval
     return run_kwcoco_eval(
         trainer=trainer,
@@ -148,6 +213,7 @@ def _run_eval(trainer, *, workdir: Path, test_kwcoco: str, kcd_root: Path,
         candidate_id=candidate_id,
         category_name=category_name,
         score_thresh=score_thresh,
+        force=force,
     )
 
 
@@ -177,12 +243,12 @@ def run(config):
     index_fpath = sweep_dpath / "index.tsv"
 
     trainer = get_trainer(str(config.trainer))
-    matrix = _load_matrix(config)
+    matrix = _filter_retry_failed(_load_matrix(config), config.retry_failed)
 
     index_rows: List[dict] = []
     for cell in matrix:
         H, W = int(cell["input_hw"][0]), int(cell["input_hw"][1])
-        candidate_id = f"{cell['variant']}_{H}x{W}_{cell.get('train_policy', 'fixed')}"
+        candidate_id = _candidate_id(cell)
         workdir = runs_root / candidate_id
         workdir.mkdir(parents=True, exist_ok=True)
 
@@ -196,68 +262,99 @@ def run(config):
             "stage_failed": "",
             "error": "",
         }
-
-        try:
-            _run_train(
-                trainer, config=config, cell=cell, workdir=workdir,
-                candidate_id=candidate_id,
-            )
-        except Exception as ex:
-            row["status"] = "fail_train"
-            row["stage_failed"] = "train"
-            row["error"] = f"{type(ex).__name__}: {ex}"
-            print(f"\n[sweep] {candidate_id} FAILED at train: {ex}\n{traceback.format_exc()}")
-            index_rows.append(row)
-            if not bool(config.keep_going):
-                break
-            continue
-
+        did_any_stage = False
+        enabled_stages = 1
         if bool(config.do_export):
-            try:
-                _run_export(trainer, workdir=workdir, cell=cell)
-            except Exception as ex:
-                row["status"] = "fail_export"
-                row["stage_failed"] = "export"
-                row["error"] = f"{type(ex).__name__}: {ex}"
-                print(f"\n[sweep] {candidate_id} FAILED at export: {ex}\n{traceback.format_exc()}")
-                index_rows.append(row)
-                if not bool(config.keep_going):
-                    break
-                continue
-
+            enabled_stages += 1
         if bool(config.do_eval):
+            enabled_stages += 1
+        if bool(config.do_bench):
+            enabled_stages += 1
+
+        if _has_best_checkpoint(workdir) and not bool(config.force_train):
+            print(f"[sweep] {candidate_id}: skip train; best_*.pth already exists")
+        else:
+            did_any_stage = True
             try:
-                _run_eval(
-                    trainer, workdir=workdir, test_kwcoco=str(config.test_kwcoco),
-                    kcd_root=kcd_root, candidate_id=candidate_id,
-                    category_name=str(config.category_name),
+                _run_train(
+                    trainer, config=config, cell=cell, workdir=workdir,
+                    candidate_id=candidate_id,
                 )
             except Exception as ex:
-                row["status"] = "fail_eval"
-                row["stage_failed"] = "eval"
+                row["status"] = "fail_train"
+                row["stage_failed"] = "train"
                 row["error"] = f"{type(ex).__name__}: {ex}"
-                print(f"\n[sweep] {candidate_id} FAILED at eval: {ex}\n{traceback.format_exc()}")
+                print(f"\n[sweep] {candidate_id} FAILED at train: {ex}\n{traceback.format_exc()}")
                 index_rows.append(row)
                 if not bool(config.keep_going):
                     break
                 continue
+
+        if bool(config.do_export):
+            existing_onnx = _find_plausible_onnx(workdir)
+            if existing_onnx and not bool(config.force_export):
+                print(f"[sweep] {candidate_id}: skip export; {existing_onnx} already exists")
+            else:
+                did_any_stage = True
+                try:
+                    _run_export(
+                        trainer, workdir=workdir, cell=cell,
+                        force=bool(config.force_export),
+                    )
+                except Exception as ex:
+                    row["status"] = "fail_export"
+                    row["stage_failed"] = "export"
+                    row["error"] = f"{type(ex).__name__}: {ex}"
+                    print(f"\n[sweep] {candidate_id} FAILED at export: {ex}\n{traceback.format_exc()}")
+                    index_rows.append(row)
+                    if not bool(config.keep_going):
+                        break
+                    continue
+
+        if bool(config.do_eval):
+            metrics_fpath = kcd_root / "eval" / candidate_id / "eval" / "detect_metrics.json"
+            if metrics_fpath.exists() and not bool(config.force_eval):
+                print(f"[sweep] {candidate_id}: skip eval; {metrics_fpath} already exists")
+            else:
+                did_any_stage = True
+                try:
+                    _run_eval(
+                        trainer, workdir=workdir, test_kwcoco=str(config.test_kwcoco),
+                        kcd_root=kcd_root, candidate_id=candidate_id,
+                        category_name=str(config.category_name),
+                        force=bool(config.force_eval),
+                    )
+                except Exception as ex:
+                    row["status"] = "fail_eval"
+                    row["stage_failed"] = "eval"
+                    row["error"] = f"{type(ex).__name__}: {ex}"
+                    print(f"\n[sweep] {candidate_id} FAILED at eval: {ex}\n{traceback.format_exc()}")
+                    index_rows.append(row)
+                    if not bool(config.keep_going):
+                        break
+                    continue
 
         if bool(config.do_bench):
-            try:
-                _run_bench(workdir=workdir)
-            except Exception as ex:
-                row["status"] = "fail_bench"
-                row["stage_failed"] = "bench"
-                row["error"] = f"{type(ex).__name__}: {ex}"
-                print(f"\n[sweep] {candidate_id} FAILED at bench: {ex}\n{traceback.format_exc()}")
-                index_rows.append(row)
-                if not bool(config.keep_going):
-                    break
-                continue
+            bench_json = _find_bench_json(workdir)
+            if bench_json and not bool(config.force_bench):
+                print(f"[sweep] {candidate_id}: skip bench; {bench_json} already exists")
+            else:
+                did_any_stage = True
+                try:
+                    _run_bench(workdir=workdir)
+                except Exception as ex:
+                    row["status"] = "fail_bench"
+                    row["stage_failed"] = "bench"
+                    row["error"] = f"{type(ex).__name__}: {ex}"
+                    print(f"\n[sweep] {candidate_id} FAILED at bench: {ex}\n{traceback.format_exc()}")
+                    index_rows.append(row)
+                    if not bool(config.keep_going):
+                        break
+                    continue
 
-        row["status"] = "ok"
+        row["status"] = "ok" if did_any_stage or enabled_stages == 0 else "ok_resumed"
         index_rows.append(row)
-        print(f"\n[sweep] {candidate_id} ok\n")
+        print(f"\n[sweep] {candidate_id} {row['status']}\n")
 
     # Write the sweep index
     fields = ["candidate_id", "workdir", "variant", "input_hw", "train_policy",

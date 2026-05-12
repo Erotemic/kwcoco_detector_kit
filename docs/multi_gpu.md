@@ -35,34 +35,66 @@ The kit's defense:
 
 Concrete failure mode from the prior project: a 2× RTX 3090 host where GPU 1 was on a 2× PCIe link trained SLOWER in DDP than single-GPU on GPU 0. Always single-GPU on the fast peer when the slow peer is the bottleneck.
 
-## SLURM / k8s submit pattern
+## SLURM / k8s Submit Pattern
 
-The kit doesn't ship SLURM helpers (yet). A reasonable single-node submit:
+The kit ships a single-node 4x RTX A6000 OpenGroundingDINO template:
 
 ```bash
-#!/bin/bash
-#SBATCH --gres=gpu:4
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
-
-module load cuda/13.0
-source $HOME/venvs/kcd/bin/activate
-
-export KCD_ROOT=/scratch/$USER/kcd_run
-export KCD_DEIMV2_REPO_DPATH=/scratch/$USER/tpl/DEIMv2
-
-python -m kwcoco_detector_kit sweep \
-    --train_kwcoco /scratch/data/train.kwcoco.zip \
-    --vali_kwcoco  /scratch/data/vali.kwcoco.zip \
-    --test_kwcoco  /scratch/data/test.kwcoco.zip \
-    --kcd_root "$KCD_ROOT" \
-    --trainer deimv2 --variant deimv2_dinov3_l \
-    --input_hw 800,800 --train_policy multiscale \
-    --num_gpus 4 --distributed \
-    --scale_tier XL --num_epochs 30 --use_amp true
+sbatch --export=ALL,\
+TRAIN_KWCOCO=/scratch/data/train.kwcoco.zip,\
+VALI_KWCOCO=/scratch/data/vali.kwcoco.zip,\
+TEST_KWCOCO=/scratch/data/test.kwcoco.zip,\
+CATEGORY_NAME=widget \
+    examples/slurm/a6000_4x_opengroundingdino.sbatch
 ```
 
-The cluster's NCCL config (``NCCL_IB_DISABLE``, ``NCCL_SOCKET_IFNAME``, etc.) is the user's responsibility; the kit doesn't override the cluster's defaults.
+The generic template runs:
+
+```bash
+python -m kwcoco_detector_kit sweep ... \
+    --trainer opengroundingdino \
+    --variant opengroundingdino_swint \
+    --num_gpus 4 \
+    --distributed \
+    --scale_tier 2-4xL
+```
+
+For the VIAME sea-lion data specifically, use:
+
+```bash
+sbatch examples/viame_sealions_2026/run_slurm_a6000_opengroundingdino.sbatch
+```
+
+That wrapper reuses the VIAME tile cache before calling the same sweep path.
+
+The cluster's NCCL config (``NCCL_IB_DISABLE``, ``NCCL_SOCKET_IFNAME``, etc.) is the user's responsibility; the kit sets only conservative single-node defaults such as ``TORCH_NCCL_ASYNC_ERROR_HANDLING=1``.
+
+### CUDA Driver vs Toolkit
+
+``nvidia-smi`` reports the driver runtime capability, not the compiler ABI used
+to build PyTorch extensions. For example, a machine may report:
+
+```text
+Driver Version: 595.58.03  CUDA Version: 13.2
+```
+
+That means the driver can run CUDA 13.2-era binaries. It does **not** mean the
+active ``nvcc`` toolkit or the installed PyTorch wheel is CUDA 13.2.
+
+OpenGroundingDINO builds a CUDA extension, so these must match:
+
+```bash
+python - <<'PY'
+import torch
+print(torch.version.cuda)
+PY
+nvcc --version
+```
+
+If PyTorch is a ``cu130`` wheel, load/install CUDA toolkit 13.0 for ``nvcc``
+even when the driver banner says CUDA 13.2. If a ``cu132`` wheel is installed,
+then load CUDA toolkit 13.2. The setup scripts intentionally fail fast when
+``torch.version.cuda`` and ``nvcc --version`` disagree.
 
 ## Heterogeneous-VRAM warning
 

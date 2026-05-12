@@ -15,6 +15,64 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from typing import Tuple
+
+
+def _valid_detection_bbox(bbox) -> bool:
+    """True iff ``bbox`` is a concrete kwcoco detection box."""
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return False
+    return all(v is not None for v in bbox)
+
+
+def filter_bbox_only_kwcoco(src_fpath, dst_fpath) -> Tuple[Path, int, int]:
+    """Write a copy of ``src_fpath`` with non-detection annotations removed.
+
+    Some kwcoco datasets carry image-level/caption-only annotations or other
+    task metadata in the annotation table. Those rows are valid for broader
+    kwcoco workflows, but ``kwcoco eval``'s detection coercion expects every
+    annotation row it sees to have a length-4 ``bbox``. Filtering at the eval
+    boundary keeps this toolkit detection-focused without mutating the user's
+    source dataset.
+
+    Returns:
+        ``(dst_fpath, kept, dropped)``.
+    """
+    import kwcoco
+
+    src_fpath = Path(src_fpath)
+    dst_fpath = Path(dst_fpath)
+    if (
+        dst_fpath.exists()
+        and dst_fpath.stat().st_mtime >= src_fpath.stat().st_mtime
+    ):
+        dset = kwcoco.CocoDataset.coerce(str(dst_fpath))
+        return dst_fpath, len(dset.dataset.get("annotations", [])), 0
+
+    dset = kwcoco.CocoDataset.coerce(str(src_fpath))
+    abs_image_fpaths = {}
+    for img in dset.dataset.get("images", []):
+        try:
+            abs_image_fpaths[img["id"]] = str(dset.get_image_fpath(img["id"]))
+        except Exception:
+            pass
+    drop_ids = []
+    kept = 0
+    for ann in list(dset.anns.values()):
+        if _valid_detection_bbox(ann.get("bbox")):
+            kept += 1
+        else:
+            drop_ids.append(ann["id"])
+    for aid in drop_ids:
+        dset.remove_annotation(aid)
+    for img in dset.dataset.get("images", []):
+        if img["id"] in abs_image_fpaths:
+            img["file_name"] = abs_image_fpaths[img["id"]]
+
+    dst_fpath.parent.mkdir(parents=True, exist_ok=True)
+    dset._update_fpath(str(dst_fpath))
+    dset.dump()
+    return dst_fpath, kept, len(drop_ids)
 
 
 def run_kwcoco_eval(
@@ -26,6 +84,7 @@ def run_kwcoco_eval(
     candidate_id: str,
     category_name: str = "widget",
     score_thresh: float = 0.30,
+    force: bool = False,
 ) -> Path:
     """Score every image in `test_kwcoco` with the trained model; eval."""
     import kwcoco
@@ -35,6 +94,11 @@ def run_kwcoco_eval(
     eval_root.mkdir(parents=True, exist_ok=True)
     eval_inner = eval_root / "eval"
     eval_inner.mkdir(parents=True, exist_ok=True)
+    metrics_fpath = eval_inner / "detect_metrics.json"
+
+    if metrics_fpath.exists() and not bool(force):
+        print(f"  reusing existing eval metrics: {metrics_fpath}")
+        return metrics_fpath
 
     predictor = trainer.build_predictor(workdir, device="cpu")
 
@@ -77,11 +141,21 @@ def run_kwcoco_eval(
             )
     pred.dump()
 
-    metrics_fpath = eval_inner / "detect_metrics.json"
+    true_filtered, true_kept, true_dropped = filter_bbox_only_kwcoco(
+        test_kwcoco, eval_root / "true_bbox_only.kwcoco.zip")
+    pred_filtered, pred_kept, pred_dropped = filter_bbox_only_kwcoco(
+        pred.fpath, eval_root / "pred_boxes_bbox_only.kwcoco.zip")
+    if true_dropped or pred_dropped:
+        print(
+            "  eval bbox filter: "
+            f"true kept={true_kept} dropped={true_dropped}; "
+            f"pred kept={pred_kept} dropped={pred_dropped}"
+        )
+
     cmd = [
         sys.executable, "-m", "kwcoco", "eval",
-        "--true_dataset", str(test_kwcoco),
-        "--pred_dataset", str(pred.fpath),
+        "--true_dataset", str(true_filtered),
+        "--pred_dataset", str(pred_filtered),
         "--out_dpath", str(eval_inner),
         "--out_fpath", str(metrics_fpath),
         "--draw", "False",

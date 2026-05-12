@@ -1,0 +1,17 @@
+.git
+.pytest_cache
+__pycache__
+*.pyc
+*.pyo
+*.deb
+*.egg-info
+build
+dist
+
+# Local data / run outputs can be bind-mounted at runtime.
+training_runs
+**/training_runs
+**/Redacted_Imagery
+**/RAW_Imagery
+**/*.kwcoco.zip
+**/*_assets

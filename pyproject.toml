@@ -66,6 +66,9 @@ opengroundingdino = [
     "transformers",
     "addict",
     "yapf",
+    "pycocotools",
+    "matplotlib",
+    "timm",
     # tools/coco2odvg.py reads/writes JSON Lines for the ODVG format.
     "jsonlines",
 ]

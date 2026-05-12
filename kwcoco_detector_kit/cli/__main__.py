@@ -16,6 +16,9 @@ Subcommands::
   bench           Run desktop ONNX bench.
   manifest        Aggregate sweep outputs into an eligibility manifest.
   check-env       Probe transitive runtime deps; --install to fix.
+  config-init     Write editable environment + dataset YAML configs.
+  config-inspect  Show config values with introspected suggestions.
+  config-edit     Modify config YAML via a text UI or --set overrides.
   run-all         The kwcoco_demo end-to-end smoke driver.
 """
 from __future__ import annotations
@@ -95,7 +98,7 @@ def _register_module(name, module):
     inner_cls = module.__cli__
     bases = (inner_cls,)
     # Copy attributes and inject the __command__ field.
-    attrs = {"__command__": name}
+    attrs = {"__command__": name, "__doc__": inner_cls.__doc__}
     new_cls = type(inner_cls.__name__, bases, attrs)
     ModalKit.register(new_cls)
 
@@ -111,6 +114,7 @@ def _register_subcommands():
     import kwcoco_detector_kit.orchestration.round_loop as _round
     import kwcoco_detector_kit.orchestration.eligibility as _elig
     import kwcoco_detector_kit.orchestration.setup_audit as _audit
+    import kwcoco_detector_kit.configs as _configs
 
     _register_module("tile", _tile)
     _register_module("merge", _merge)
@@ -121,6 +125,9 @@ def _register_subcommands():
     _register_module("round-loop", _round)
     _register_module("manifest", _elig)
     _register_module("check-env", _audit)
+    _register_module("config-init", type("ConfigInitModule", (), {"__cli__": _configs.ConfigInitConfig}))
+    _register_module("config-inspect", type("ConfigInspectModule", (), {"__cli__": _configs.ConfigInspectConfig}))
+    _register_module("config-edit", type("ConfigEditModule", (), {"__cli__": _configs.ConfigEditConfig}))
 
 
 _register_subcommands()

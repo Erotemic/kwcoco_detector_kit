@@ -22,6 +22,7 @@ bash examples/kwcoco_demo/run_smoke.sh
 - **`export/`** — ONNX export + modelspec sidecar, torch ↔ ONNX parity guard, deployment package YAML.
 - **`eval/`** — kwcoco eval driver, checkpoint shortlist sweep, ONNX desktop benchmark.
 - **`orchestration/`** — Pareto sweep state machine, round-based hard-negative mining driver, eligibility manifest, setup-time `--check-env` probe.
+- **`config-init` / `config-inspect` / `config-edit`** — editable environment + dataset YAML configs with host and kwcoco introspection; see [`docs/configs.md`](docs/configs.md).
 
 All CLIs are [scriptconfig](https://gitlab.kitware.com/utils/scriptconfig)-based; `python -m kwcoco_detector_kit --help` or `kwcoco-detector-kit --help`.
 

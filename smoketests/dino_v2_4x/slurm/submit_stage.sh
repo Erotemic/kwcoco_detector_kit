@@ -11,6 +11,7 @@ DEPENDENCY="${DEPENDENCY:-}"
 LOG_DPATH="${LOG_DPATH:-$ROOT_DPATH/smoketests/dino_v2_4x/slurm/logs}"
 SLURM_PARTITION="${SLURM_PARTITION:-}"
 ACCOUNT="${ACCOUNT:-}"
+FOLLOW="${FOLLOW:-auto}"
 
 mkdir -p "$LOG_DPATH"
 
@@ -69,9 +70,11 @@ sbatch_args=(
     --mem="$mem"
     --time="$time_limit"
     --output="$LOG_DPATH/%x-%j.out"
-    --error="$LOG_DPATH/%x-%j.err"
+    --error="$LOG_DPATH/%x-%j.out"
     --export=ALL,STAGE_SCRIPT="$stage_script",NUM_GPUS_REQUESTED="$gpus",HOST_KIT_DPATH="$ROOT_DPATH"
 )
+stdout_template="$LOG_DPATH/kcd-dino2-${stage_id}-%j.out"
+stdout_fpath=""
 
 if [ "$gpus" != "0" ]; then
     sbatch_args+=(--gres="gpu:$gpus")
@@ -87,4 +90,22 @@ if [ -n "$DEPENDENCY" ]; then
 fi
 
 echo "Submitting stage $stage_id ($stage_script): gpus=$gpus cpus=$cpus mem=$mem time=$time_limit" >&2
-sbatch "${sbatch_args[@]}" "$THIS_DPATH/run_stage_in_docker.sh"
+jobid="$(sbatch "${sbatch_args[@]}" "$THIS_DPATH/run_stage_in_docker.sh")"
+jobid="${jobid%%;*}"
+echo "$jobid"
+
+stdout_fpath="${stdout_template//%j/$jobid}"
+echo "stage $stage_id -> job $jobid" >&2
+echo "log: $stdout_fpath" >&2
+
+if [ "$FOLLOW" = "auto" ]; then
+    if [ -t 1 ]; then
+        FOLLOW=1
+    else
+        FOLLOW=0
+    fi
+fi
+
+if [ "$FOLLOW" = "1" ] || [ "$FOLLOW" = "true" ]; then
+    python "$THIS_DPATH/follow_job.py" "$jobid" --stdout "$stdout_fpath"
+fi

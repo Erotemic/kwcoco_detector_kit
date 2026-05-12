@@ -17,6 +17,10 @@ bash smoketests/dino_v2_4x/slurm/submit_stage.sh 02
 bash smoketests/dino_v2_4x/slurm/submit_stage.sh 03
 ```
 
+When run from an interactive terminal, `submit_stage.sh` follows the Slurm
+stdout log until the job finishes and returns the Slurm exit code. Use
+`FOLLOW=0` to only submit and print the job id.
+
 Submit a dependent ladder through the VIAME subset test:
 
 ```bash
@@ -44,6 +48,12 @@ Logs are written to:
 
 ```bash
 smoketests/dino_v2_4x/slurm/logs/
+```
+
+To attach to an already-submitted job:
+
+```bash
+python smoketests/dino_v2_4x/slurm/follow_job.py <jobid>
 ```
 
 ## Debug Run Inside The Container

@@ -3,9 +3,52 @@
 This ladder tests the Docker / CUDA / kwcoco / distributed-training stack from
 cheap to expensive.
 
-## Run Inside The Container
+## Canonical Run: Slurm -> Docker
 
-Example interactive container launch:
+These smoketests are meant to run as Slurm jobs that launch the Docker image
+built by `docker/opengroundingdino/build_arisia_cuda132.sh`.
+
+Submit one stage:
+
+```bash
+bash smoketests/dino_v2_4x/slurm/submit_stage.sh 00
+bash smoketests/dino_v2_4x/slurm/submit_stage.sh 01
+bash smoketests/dino_v2_4x/slurm/submit_stage.sh 02
+bash smoketests/dino_v2_4x/slurm/submit_stage.sh 03
+```
+
+Submit a dependent ladder through the VIAME subset test:
+
+```bash
+MAX_STAGE=03 bash smoketests/dino_v2_4x/slurm/submit_ladder.sh
+```
+
+Submit the full ladder, including the real run:
+
+```bash
+MAX_STAGE=04 bash smoketests/dino_v2_4x/slurm/submit_ladder.sh
+```
+
+Useful outer knobs:
+
+```bash
+IMAGE_TAG=kwcoco-detector-kit:ogdino-cu132-arisia
+DATA_DPATH=/media/joncrall/raid/home/joncrall/data/dvc-repos/viame_sealions_2026
+KCD_SMOKE_ROOT_HOST=${SCRATCH}/kcd_smoketests/dino_v2_4x
+KCD_CACHE_ROOT_HOST=${SCRATCH}/kcd_smoketests/cache/opengroundingdino
+SLURM_PARTITION=<partition-name>
+ACCOUNT=<account-name>
+```
+
+Logs are written to:
+
+```bash
+smoketests/dino_v2_4x/slurm/logs/
+```
+
+## Debug Run Inside The Container
+
+For interactive debugging, launch the container manually:
 
 ```bash
 DATA_DPATH=/media/joncrall/raid/home/joncrall/data/dvc-repos/viame_sealions_2026
@@ -66,4 +109,3 @@ VIAME_SUBSET_TEST_IMAGES=8
 
 The first OpenGroundingDINO stage downloads the Swin-T checkpoint into
 `$KCD_CACHE_ROOT/pretrained/` if `PRETRAIN_MODEL_PATH` does not already exist.
-

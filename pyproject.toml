@@ -69,6 +69,7 @@ opengroundingdino = [
     "pycocotools",
     "matplotlib",
     "timm",
+    "colorlog",
     # tools/coco2odvg.py reads/writes JSON Lines for the ODVG format.
     "jsonlines",
 ]

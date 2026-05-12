@@ -99,6 +99,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         pycocotools \
         matplotlib \
         timm \
+        colorlog \
         jsonlines
 
 # Copy and build the upstream trainer before copying the rest of the kit. The

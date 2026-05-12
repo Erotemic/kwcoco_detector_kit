@@ -17,6 +17,7 @@ CONTAINER_KCD_CACHE_ROOT="${CONTAINER_KCD_CACHE_ROOT:-$KCD_CACHE_ROOT_HOST}"
 
 NUM_GPUS_REQUESTED="${NUM_GPUS_REQUESTED:-0}"
 DOCKER_SHM_SIZE="${DOCKER_SHM_SIZE:-32g}"
+KCD_RUNTIME_PIP_DEPS="${KCD_RUNTIME_PIP_DEPS:-colorlog}"
 
 mkdir -p "$KCD_SMOKE_ROOT_HOST" "$KCD_CACHE_ROOT_HOST"
 
@@ -50,6 +51,7 @@ docker_args=(
     -e VIAME_SUBSET_TRAIN_IMAGES="${VIAME_SUBSET_TRAIN_IMAGES:-}"
     -e VIAME_SUBSET_VALI_IMAGES="${VIAME_SUBSET_VALI_IMAGES:-}"
     -e VIAME_SUBSET_TEST_IMAGES="${VIAME_SUBSET_TEST_IMAGES:-}"
+    -e KCD_RUNTIME_PIP_DEPS="$KCD_RUNTIME_PIP_DEPS"
 )
 
 if [ -d "$DATA_DPATH" ]; then
@@ -71,7 +73,25 @@ fi
 
 docker_args+=(
     "$IMAGE_TAG"
-    bash "$CONTAINER_KIT_DPATH/smoketests/dino_v2_4x/$STAGE_SCRIPT"
+    bash -lc '
+        set -euo pipefail
+        if [ -n "${KCD_RUNTIME_PIP_DEPS:-}" ]; then
+            python - <<PY
+import importlib.util
+import subprocess
+import sys
+
+deps = [d for d in "${KCD_RUNTIME_PIP_DEPS}".split() if d]
+missing = [d for d in deps if importlib.util.find_spec(d.split("==", 1)[0].split(">=", 1)[0]) is None]
+if missing:
+    print("[kcd-runtime-patch] installing missing deps: " + " ".join(missing))
+    subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
+else:
+    print("[kcd-runtime-patch] runtime pip deps already present")
+PY
+        fi
+        bash "$KIT_DPATH/smoketests/dino_v2_4x/$STAGE_SCRIPT"
+    '
 )
 
 echo

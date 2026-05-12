@@ -8,7 +8,7 @@ isn't burned on a `ModuleNotFoundError` (failure #11). Covers:
 - ONNX trio (failures #9 + #10): onnx, onnxruntime, onnxscript, onnxsim.
 - DEIMv2 trainer hidden deps: faster_coco_eval, calflops, transformers,
   tensorboard, scipy.
-- OpenGroundingDINO + SAM2 (Phase 2): transformers, addict, yapf.
+- OpenGroundingDINO + SAM2 (Phase 2): transformers, addict, yapf, colorlog.
 
 Each probe is a one-line ``importlib.util.find_spec`` check. The aggregate
 report exits non-zero when anything required is missing.
@@ -61,6 +61,7 @@ PROBES: List[Probe] = [
     Probe("pycocotools",      "pycocotools",      "opengroundingdino", ("trainers",)),
     Probe("matplotlib",       "matplotlib",       "opengroundingdino", ("trainers",)),
     Probe("timm",             "timm",             "opengroundingdino", ("trainers",)),
+    Probe("colorlog",         "colorlog",         "opengroundingdino", ("trainers",)),
     Probe("jsonlines",        "jsonlines",        "opengroundingdino", ("trainers",)),
     # Webdataset — Phase 3 alternative TileStore backend.
     Probe("webdataset",       "webdataset",       "webdataset",        ("data",)),

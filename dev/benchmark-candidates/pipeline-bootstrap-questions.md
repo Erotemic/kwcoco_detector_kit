@@ -214,6 +214,137 @@ The fallback knob (`*_TORCH_MP_SHARING=file_system`) is a useful escape valve fo
 
 ---
 
+## Q5 — Make Slurm feel foreground without breaking scheduler/container semantics
+
+Status: draft
+Level: A
+Tags: slurm, docker, multi-gpu, terminal-ux, bash-argv, cluster-orchestration
+Source commits: `6e1e927`, `87de698`, `af6cf4b`
+
+### Source context
+
+The kit adds a smoke ladder for OpenGroundingDINO where each stage is submitted
+with `sbatch`, runs inside Docker, and may request either 0, 1, or 4 GPUs. The
+user wants the command to feel like a foreground run: after submission, stdout
+should stream until the Slurm job exits. But it is still a real Slurm job, so
+the follower must not hide scheduler state or accidentally orphan/cancel GPU
+work.
+
+Several project-specific constraints are in play:
+
+* `submit_stage.sh` is used both directly by a human and indirectly by
+  `submit_ladder.sh` via command substitution to capture the job id.
+* Slurm stdout/stderr must be followed as one stream so Python tracebacks and
+  Docker failures are visible.
+* Ctrl-C while following is ambiguous: stop watching vs cancel the Slurm job.
+* Slurm may set `CUDA_VISIBLE_DEVICES=0,1,2,3`; Docker's `--gpus` parser needs
+  nested quotes for comma-separated device lists.
+* The target 4x RTX A6000 node has only 12 CPU cores and 126 GB host RAM, so a
+  default `--cpus-per-task=24 --mem=160G` request can remain pending forever.
+
+The real failure that exposed the Docker invariant was:
+
+```text
+docker: Error response from daemon: cannot set both Count and DeviceIDs on device request
+```
+
+from a printed command shaped like:
+
+```bash
+docker run ... --gpus device=0,1,2,3 ...
+```
+
+### The hard question
+
+> Design the Slurm/Docker submit path for this smoke ladder so that a direct
+> human invocation behaves like a foreground command, a ladder invocation can
+> still collect job ids and submit dependencies, Ctrl-C is explicit about
+> detach-vs-cancel, and a 4-GPU Slurm allocation is forwarded to Docker without
+> tripping Docker's `--gpus` CSV parser. What are the minimal shell/Python
+> interfaces and invariants you would enforce?
+
+### Invariant to preserve
+
+The submit/follow wrapper must satisfy all of these simultaneously:
+
+1. `submit_stage.sh <stage>` prints only the job id on stdout before optional
+   following; progress and log paths go to stderr.
+2. Direct interactive use follows by default; command-substitution use does not
+   follow unless explicitly requested.
+3. `submit_ladder.sh` submits stages with `FOLLOW=0`, captures each job id,
+   then follows the dependent jobs in order.
+4. Slurm stdout and stderr are merged into one followed log file.
+5. Ctrl-C in the follower asks whether to `scancel` or detach; default is
+   detach.
+6. When `CUDA_VISIBLE_DEVICES` contains a comma-separated list, Docker receives
+   a single `--gpus` value with literal inner quotes:
+
+```bash
+docker_args+=(--gpus "\"device=$CUDA_VISIBLE_DEVICES\"")
+```
+
+7. The default 4-GPU smoke request fits the known node envelope:
+   `--cpus-per-task=12 --mem=120G`, while still allowing `CPUS_PER_TASK` and
+   `MEM` overrides.
+
+### Expected answer
+
+Correct patches have this shape:
+
+* A dependency-free `follow_job.py` that:
+  * resolves Slurm `StdOut` via `scontrol show job` or accepts an explicit path,
+  * tails the file as it appears,
+  * polls `squeue`/`sacct` to stop when the job reaches a terminal state,
+  * catches `KeyboardInterrupt` and prompts `[y/N]` before calling `scancel`.
+* `submit_stage.sh`:
+  * uses `sbatch --parsable`,
+  * writes job id to stdout,
+  * writes metadata to stderr,
+  * follows only when `FOLLOW=1` or `FOLLOW=auto` with stdout attached to a TTY,
+  * merges `--error` into the same path as `--output`.
+* `submit_ladder.sh`:
+  * invokes `FOLLOW=0 submit_stage.sh` when capturing job ids,
+  * chains dependencies with `afterok:<previous_jobid>`,
+  * follows queued stages in order after submission.
+* `run_stage_in_docker.sh`:
+  * passes Slurm's GPU allocation to Docker with nested-quoted `device=...` when
+    `CUDA_VISIBLE_DEVICES` is set,
+  * otherwise falls back to `--gpus all` for GPU stages.
+
+### Acceptance criteria
+
+Static/unit coverage should catch the tempting regressions without needing a
+Slurm cluster:
+
+```bash
+bash -n smoketests/dino_v2_4x/slurm/submit_stage.sh \
+        smoketests/dino_v2_4x/slurm/submit_ladder.sh \
+        smoketests/dino_v2_4x/slurm/run_stage_in_docker.sh
+python -m py_compile smoketests/dino_v2_4x/slurm/follow_job.py
+pytest -q tests/unit/test_slurm_follow.py
+```
+
+The unit tests should cover:
+
+* `%x`/`%j` expansion in Slurm `StdOut` paths,
+* tailing a log that appears after the follower starts,
+* Ctrl-C detach default,
+* Ctrl-C cancel path without actually calling Slurm (`cancel_job` mocked).
+
+The shell review should specifically assert that the multi-GPU branch contains
+the nested quoted Docker argument, not just ordinary shell quotes.
+
+### Why this is a benchmark question
+
+A generic answer can tail a file after `sbatch`, but it will often miss one of
+the project-specific interfaces: stdout purity for command substitution,
+Ctrl-C scheduler semantics, Slurm stdout/stderr merging, Docker's nested
+`--gpus` quoting, or right-sized host resource requests. The benchmark tests
+whether the agent can preserve human UX and scheduler/container correctness at
+the same time.
+
+---
+
 ## Composition note
 
 Q1, Q2, Q3, Q4 chain. An agent who skips the pre-flight (Q2) won't discover the YAML structural bug (Q1) until the trainer dies inside the framework — at which point they may *also* trip the architectural constraint (Q3) because they're rapidly iterating on the wrong hypothesis. Q4 then hits at the first multi-worker batch. The cheapest defense is to run all four checks before the first GPU minute.

@@ -84,6 +84,14 @@ install / env-check layer, not the PyTorch download or CUDA extension build.
 The `.dockerignore` excludes local `.venv`, `__pycache__`, compiled `.so`
 files, tile assets, and kwcoco bundles so the build context stays small.
 
+The helper scripts also ensure the OpenGroundingDINO submodule is initialized
+before invoking Docker. If the build context is only a few KB and the build
+fails at `tpl/Open-GroundingDino/models/GroundingDINO/ops`, run:
+
+```bash
+git submodule update --init tpl/Open-GroundingDino
+```
+
 ## Run Interactively
 
 Run with the data repo mounted:

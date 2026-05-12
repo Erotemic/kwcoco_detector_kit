@@ -103,6 +103,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # kit edits, so this expensive layer now survives normal package changes.
 COPY tpl/Open-GroundingDino /opt/kwcoco_detector_kit/tpl/Open-GroundingDino
 RUN --mount=type=cache,target=/root/.cache/torch_extensions \
+    test -f tpl/Open-GroundingDino/models/GroundingDINO/ops/setup.py || \
+        (echo "Open-GroundingDino submodule contents are missing from Docker build context. Run: git submodule update --init tpl/Open-GroundingDino" >&2; exit 1) && \
     cd tpl/Open-GroundingDino/models/GroundingDINO/ops && \
     ${PYTHON_BIN} setup.py build_ext --inplace -v && \
     cp MultiScaleDeformableAttention*.so /opt/kwcoco_detector_kit/tpl/Open-GroundingDino/

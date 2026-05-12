@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from kwcoco_detector_kit.orchestration.setup_audit import (
     PROBES, probe_env, Probe,
-    _strict_import, _parse_groups, _hint_for_error,
+    _strict_import, _parse_groups, _hint_for_error, _satisfies_version_spec,
 )
 
 
@@ -34,6 +34,13 @@ def test_group_filter_restricts_probes():
         assert p.group == "onnx"
 
 
+def test_opengroundingdino_pins_transformers_before_v5():
+    probes = [p for p in PROBES if p.group == "opengroundingdino" and p.module == "transformers"]
+    assert probes
+    assert probes[0].version_spec == "<5"
+    assert probes[0].pip_name == "transformers<5"
+
+
 # ---------------------------------------------------------------------------
 # _strict_import — catches version conflicts that find_spec misses
 # ---------------------------------------------------------------------------
@@ -50,6 +57,18 @@ def test_strict_import_returns_false_for_missing_module():
     assert ok is False
     assert err is not None
     assert "ModuleNotFoundError" in err or "ImportError" in err
+
+
+def test_version_spec_check_for_installed_core_module():
+    ok, err = _satisfies_version_spec("yaml", ">0")
+    assert ok is True
+    assert err is None
+
+
+def test_version_spec_check_reports_impossible_constraint():
+    ok, err = _satisfies_version_spec("yaml", "<0")
+    assert ok is False
+    assert "does not satisfy" in err
 
 
 # ---------------------------------------------------------------------------

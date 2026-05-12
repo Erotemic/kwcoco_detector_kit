@@ -42,7 +42,7 @@ KCD_SMOKE_ROOT_HOST=${SCRATCH}/kcd_smoketests/dino_v2_4x
 KCD_CACHE_ROOT_HOST=${SCRATCH}/kcd_smoketests/cache/opengroundingdino
 SLURM_PARTITION=<partition-name>
 ACCOUNT=<account-name>
-KCD_RUNTIME_PIP_DEPS=colorlog  # temporary pure-Python patches for old images
+KCD_RUNTIME_PIP_DEPS="colorlog transformers<5"  # temporary patches for old images
 ```
 
 Logs are written to:

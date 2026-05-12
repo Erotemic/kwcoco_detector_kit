@@ -16,6 +16,7 @@ report exits non-zero when anything required is missing.
 from __future__ import annotations
 
 import importlib.util
+import importlib.metadata
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -30,6 +31,7 @@ class Probe:
     pip_name: Optional[str]      # None means "no auto-install"
     group: str                   # "core", "onnx", "deimv2", "opengroundingdino"
     required_in: Tuple[str, ...] = ()
+    version_spec: Optional[str] = None
 
 
 PROBES: List[Probe] = [
@@ -61,6 +63,7 @@ PROBES: List[Probe] = [
     Probe("pycocotools",      "pycocotools",      "opengroundingdino", ("trainers",)),
     Probe("matplotlib",       "matplotlib",       "opengroundingdino", ("trainers",)),
     Probe("timm",             "timm",             "opengroundingdino", ("trainers",)),
+    Probe("transformers",     "transformers<5",   "opengroundingdino", ("trainers",), "<5"),
     Probe("colorlog",         "colorlog",         "opengroundingdino", ("trainers",)),
     Probe("jsonlines",        "jsonlines",        "opengroundingdino", ("trainers",)),
     # Webdataset — Phase 3 alternative TileStore backend.
@@ -96,6 +99,24 @@ def _strict_import(module: str) -> tuple[bool, Optional[str]]:
         return False, f"{type(ex).__name__}: {ex}"
 
 
+def _satisfies_version_spec(module: str, spec: Optional[str]) -> tuple[bool, Optional[str]]:
+    if not spec:
+        return True, None
+    try:
+        from packaging.specifiers import SpecifierSet
+    except Exception as ex:
+        return False, f"cannot check version spec {spec!r}: {type(ex).__name__}: {ex}"
+    dist_name = "pyyaml" if module == "yaml" else module
+    try:
+        version = importlib.metadata.version(dist_name)
+    except importlib.metadata.PackageNotFoundError:
+        return False, f"{dist_name} distribution not found"
+    ok = SpecifierSet(spec).contains(version, prereleases=True)
+    if not ok:
+        return False, f"{dist_name}=={version} does not satisfy {spec}"
+    return True, None
+
+
 # Groups for which find_spec isn't sufficient — actually try to import
 # the canonical entry points so we catch transitive version conflicts.
 _STRICT_IMPORT_GROUPS = {"deimv2", "opengroundingdino"}
@@ -125,15 +146,25 @@ def probe_env(*, groups: Optional[Iterable[str]] = None,
                 # requires <vY"). We use a copy so PROBES stays clean.
                 annotated = Probe(
                     module=p.module, pip_name=p.pip_name, group=p.group,
-                    required_in=p.required_in,
+                    required_in=p.required_in, version_spec=p.version_spec,
                 )
                 # Stash error on the dataclass via __dict__ since the
                 # frozen-ish Probe doesn't have an error field.
                 annotated.__dict__["_error"] = err
                 missing.append(annotated)
+                continue
         else:
             if not _present(p.module):
                 missing.append(p)
+                continue
+        ok, err = _satisfies_version_spec(p.module, p.version_spec)
+        if not ok:
+            annotated = Probe(
+                module=p.module, pip_name=p.pip_name, group=p.group,
+                required_in=p.required_in, version_spec=p.version_spec,
+            )
+            annotated.__dict__["_error"] = err
+            missing.append(annotated)
     return missing
 
 

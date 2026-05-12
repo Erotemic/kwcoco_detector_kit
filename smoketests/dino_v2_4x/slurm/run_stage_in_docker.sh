@@ -17,7 +17,7 @@ CONTAINER_KCD_CACHE_ROOT="${CONTAINER_KCD_CACHE_ROOT:-$KCD_CACHE_ROOT_HOST}"
 
 NUM_GPUS_REQUESTED="${NUM_GPUS_REQUESTED:-0}"
 DOCKER_SHM_SIZE="${DOCKER_SHM_SIZE:-32g}"
-KCD_RUNTIME_PIP_DEPS="${KCD_RUNTIME_PIP_DEPS:-colorlog}"
+KCD_RUNTIME_PIP_DEPS="${KCD_RUNTIME_PIP_DEPS:-colorlog transformers<5}"
 
 mkdir -p "$KCD_SMOKE_ROOT_HOST" "$KCD_CACHE_ROOT_HOST"
 
@@ -79,11 +79,27 @@ docker_args+=(
         if [ -n "${KCD_RUNTIME_PIP_DEPS:-}" ]; then
             python - <<PY
 import importlib.util
+import importlib.metadata
 import subprocess
 import sys
 
+from packaging.requirements import Requirement
+
 deps = [d for d in "${KCD_RUNTIME_PIP_DEPS}".split() if d]
-missing = [d for d in deps if importlib.util.find_spec(d.split("==", 1)[0].split(">=", 1)[0]) is None]
+missing = []
+for dep in deps:
+    req = Requirement(dep)
+    module = req.name.replace("-", "_")
+    if importlib.util.find_spec(module) is None:
+        missing.append(dep)
+        continue
+    try:
+        version = importlib.metadata.version(req.name)
+    except importlib.metadata.PackageNotFoundError:
+        missing.append(dep)
+        continue
+    if req.specifier and not req.specifier.contains(version, prereleases=True):
+        missing.append(dep)
 if missing:
     print("[kcd-runtime-patch] installing missing deps: " + " ".join(missing))
     subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])

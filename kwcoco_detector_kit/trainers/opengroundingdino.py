@@ -186,6 +186,15 @@ def _write_label_map(coco_json_fpath: Path, out_fpath: Path) -> Path:
     return out_fpath
 
 
+def _tail_text(fpath: Path, *, max_lines: int = 80) -> str:
+    """Return the tail of a text log, tolerating partial UTF-8."""
+    if not fpath.exists():
+        return ""
+    text = fpath.read_text(errors="replace")
+    lines = text.splitlines()
+    return "\n".join(lines[-max_lines:])
+
+
 # ---------------------------------------------------------------------------
 # Predictor adapter
 # ---------------------------------------------------------------------------
@@ -492,7 +501,35 @@ class OpenGroundingDINOTrainer:
             str(workdir / "detector_prepared" / "datasets.json"),
             str(workdir),
         ]
-        subprocess.run(cmd, check=True, env=env, cwd=str(repo))
+        log_fpath = workdir / "train.log"
+        (workdir / "train_command.json").write_text(json.dumps({
+            "cmd": cmd,
+            "cwd": str(repo),
+            "log": str(log_fpath),
+        }, indent=2))
+        with log_fpath.open("w") as log_file:
+            proc = subprocess.Popen(
+                cmd,
+                env=env,
+                cwd=str(repo),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                bufsize=1,
+            )
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                print(line, end="")
+                log_file.write(line)
+                log_file.flush()
+            ret = proc.wait()
+        if ret != 0:
+            tail = _tail_text(log_fpath)
+            raise RuntimeError(
+                "OpenGroundingDINO training failed "
+                f"(exit {ret}). Full log: {log_fpath}\n\n"
+                f"--- train.log tail ---\n{tail}"
+            )
         return workdir
 
     def find_checkpoint(self, workdir) -> Path:

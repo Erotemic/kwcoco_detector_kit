@@ -157,6 +157,39 @@ def test_stub_config_has_override_keys_when_repo_missing(
     assert "use_coco_eval = False" in text
 
 
+def test_launch_failure_writes_train_log_tail(tmp_path, monkeypatch):
+    trainer = _get_trainer()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    train_sh = repo / "train_dist.sh"
+    train_sh.write_text(
+        "#!/usr/bin/env bash\n"
+        "echo first line\n"
+        "echo upstream failure detail\n"
+        "exit 7\n"
+    )
+    train_sh.chmod(0o755)
+    monkeypatch.setenv("KCD_OPENGROUNDINGDINO_REPO_DPATH", str(repo))
+
+    workdir = tmp_path / "work"
+    cfg_dpath = workdir / "generated_configs"
+    cfg_dpath.mkdir(parents=True)
+    prep_dpath = workdir / "detector_prepared"
+    prep_dpath.mkdir()
+    cfg_fpath = cfg_dpath / "ogdino_cfg.py"
+    cfg_fpath.write_text("# fake config\n")
+    (prep_dpath / "datasets.json").write_text("{}\n")
+
+    with pytest.raises(RuntimeError) as exc:
+        trainer.launch(cfg_fpath, num_gpus=1)
+
+    assert (workdir / "train.log").exists()
+    assert (workdir / "train_command.json").exists()
+    assert "upstream failure detail" in (workdir / "train.log").read_text()
+    assert "exit 7" in str(exc.value)
+    assert "upstream failure detail" in str(exc.value)
+
+
 # ---------------------------------------------------------------------------
 # memory_tier_default_batch
 # ---------------------------------------------------------------------------

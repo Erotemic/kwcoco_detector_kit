@@ -45,6 +45,10 @@ ACCOUNT=<account-name>
 KCD_RUNTIME_PIP_DEPS="colorlog transformers<5"  # temporary patches for old images
 ```
 
+The 4-GPU smoke stages default to `--cpus-per-task=12` and `--mem=120G`,
+which fits the arisia 4x RTX A6000 node. Override with `CPUS_PER_TASK=...`
+and `MEM=...` for larger nodes.
+
 Logs are written to:
 
 ```bash

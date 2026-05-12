@@ -36,24 +36,24 @@ case "$STAGE" in
         stage_id="02"
         stage_script="02_ogdino_demo_4gpu.sh"
         gpus=4
-        cpus="${CPUS_PER_TASK:-24}"
-        mem="${MEM:-160G}"
+        cpus="${CPUS_PER_TASK:-12}"
+        mem="${MEM:-120G}"
         time_limit="${TIME_LIMIT:-01:30:00}"
         ;;
     03|03_viame_subset|subset)
         stage_id="03"
         stage_script="03_ogdino_viame_subset_4gpu.sh"
         gpus=4
-        cpus="${CPUS_PER_TASK:-24}"
-        mem="${MEM:-192G}"
+        cpus="${CPUS_PER_TASK:-12}"
+        mem="${MEM:-120G}"
         time_limit="${TIME_LIMIT:-02:00:00}"
         ;;
     04|04_viame_full|full)
         stage_id="04"
         stage_script="04_ogdino_viame_full_4gpu.sh"
         gpus=4
-        cpus="${CPUS_PER_TASK:-32}"
-        mem="${MEM:-192G}"
+        cpus="${CPUS_PER_TASK:-12}"
+        mem="${MEM:-120G}"
         time_limit="${TIME_LIMIT:-72:00:00}"
         ;;
     *)

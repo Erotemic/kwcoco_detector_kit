@@ -29,7 +29,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH=/root/.local/bin:${PATH}
 
-RUN uv venv --python ${PYTHON_VERSION} ${VIRTUAL_ENV}
+RUN uv venv --seed --python ${PYTHON_VERSION} ${VIRTUAL_ENV} && \
+    ${PYTHON_BIN} -m pip --version
 
 RUN ${PYTHON_BIN} -m pip install -U pip wheel setuptools && \
     if [ "${TORCH_PRE}" = "1" ]; then \

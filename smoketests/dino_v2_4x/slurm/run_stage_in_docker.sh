@@ -41,6 +41,7 @@ docker_args=(
     -v "$KCD_CACHE_ROOT_HOST:$CONTAINER_KCD_CACHE_ROOT"
     -w "$CONTAINER_KIT_DPATH"
     -e KIT_DPATH="$CONTAINER_KIT_DPATH"
+    -e STAGE_SCRIPT="$STAGE_SCRIPT"
     -e KCD_SMOKE_ROOT="$CONTAINER_KCD_SMOKE_ROOT"
     -e KCD_CACHE_ROOT="$CONTAINER_KCD_CACHE_ROOT"
     -e PYTHON_BIN=python
@@ -90,6 +91,7 @@ else:
     print("[kcd-runtime-patch] runtime pip deps already present")
 PY
         fi
+        : "${STAGE_SCRIPT:?container missing STAGE_SCRIPT}"
         bash "$KIT_DPATH/smoketests/dino_v2_4x/$STAGE_SCRIPT"
     '
 )

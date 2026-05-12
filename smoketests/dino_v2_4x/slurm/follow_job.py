@@ -105,6 +105,37 @@ def sacct_state_exit(jobid: str) -> Tuple[Optional[str], Optional[int]]:
     return best_state, best_exit
 
 
+def cancel_job(jobid: str) -> int:
+    proc = subprocess.run(["scancel", str(jobid)])
+    return int(proc.returncode)
+
+
+def handle_keyboard_interrupt(jobid: str, *, input_func=input) -> int:
+    print("", file=sys.stderr)
+    if not sys.stdin.isatty():
+        print(
+            f"[slurm-follow] stopped following job {jobid}; job is still running",
+            file=sys.stderr,
+        )
+        return 130
+    try:
+        ans = input_func(
+            f"[slurm-follow] Ctrl-C: cancel Slurm job {jobid}? "
+            "[y/N] "
+        ).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        ans = ""
+    if ans in {"y", "yes", "kill", "cancel"}:
+        rc = cancel_job(jobid)
+        if rc == 0:
+            print(f"[slurm-follow] cancelled job {jobid}", file=sys.stderr)
+        else:
+            print(f"[slurm-follow] scancel returned {rc} for job {jobid}", file=sys.stderr)
+        return 130 if rc == 0 else rc
+    print(f"[slurm-follow] detached; job {jobid} continues in the background", file=sys.stderr)
+    return 0
+
+
 class Tailer:
     def __init__(self, fpath: Path):
         self.fpath = fpath
@@ -162,30 +193,33 @@ def follow(jobid: str, *, stdout_path: Optional[str] = None,
     last_state = None
     tailer = Tailer(log_fpath)
     try:
-        while True:
-            emitted = tailer.read_available()
-            state = squeue_state(jobid)
-            if state:
-                absent_polls = 0
-                if state != last_state:
-                    print(f"[slurm-follow] state {state}", file=sys.stderr)
-                    last_state = state
-            else:
-                absent_polls += 1
-                sacct_state, sacct_exit = sacct_state_exit(jobid)
-                if sacct_state:
-                    tailer.read_available()
-                    print(f"[slurm-follow] final state {sacct_state}", file=sys.stderr)
-                    if sacct_exit is not None:
-                        return int(sacct_exit)
-                    return 1 if sacct_state in FAILURE_STATES else 0
-                if absent_polls >= grace_polls:
-                    tailer.read_available()
-                    print("[slurm-follow] job left squeue; sacct did not report a final state",
-                          file=sys.stderr)
-                    return 0
-            if not emitted:
-                time.sleep(poll_interval)
+        try:
+            while True:
+                emitted = tailer.read_available()
+                state = squeue_state(jobid)
+                if state:
+                    absent_polls = 0
+                    if state != last_state:
+                        print(f"[slurm-follow] state {state}", file=sys.stderr)
+                        last_state = state
+                else:
+                    absent_polls += 1
+                    sacct_state, sacct_exit = sacct_state_exit(jobid)
+                    if sacct_state:
+                        tailer.read_available()
+                        print(f"[slurm-follow] final state {sacct_state}", file=sys.stderr)
+                        if sacct_exit is not None:
+                            return int(sacct_exit)
+                        return 1 if sacct_state in FAILURE_STATES else 0
+                    if absent_polls >= grace_polls:
+                        tailer.read_available()
+                        print("[slurm-follow] job left squeue; sacct did not report a final state",
+                              file=sys.stderr)
+                        return 0
+                if not emitted:
+                    time.sleep(poll_interval)
+        except KeyboardInterrupt:
+            return handle_keyboard_interrupt(jobid)
     finally:
         tailer.close()
 

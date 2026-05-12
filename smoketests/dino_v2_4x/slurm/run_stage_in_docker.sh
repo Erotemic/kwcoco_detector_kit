@@ -66,7 +66,10 @@ if [ "${NUM_GPUS_REQUESTED}" != "0" ]; then
     if [ -n "${DOCKER_GPUS:-}" ]; then
         docker_args+=(--gpus "$DOCKER_GPUS")
     elif [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
-        docker_args+=(--gpus "device=$CUDA_VISIBLE_DEVICES")
+        # Docker's --gpus parser needs nested quotes for comma-separated
+        # device lists. Without them, `device=0,1,2,3` can be interpreted as
+        # both a Count and DeviceIDs request.
+        docker_args+=(--gpus "\"device=$CUDA_VISIBLE_DEVICES\"")
     else
         docker_args+=(--gpus all)
     fi

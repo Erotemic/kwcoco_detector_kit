@@ -8,6 +8,52 @@ The bar is "took >1 hour" or "would have been ≥10× faster with this entry on 
 
 ---
 
+### Lesson #29 — Docker `--gpus device=0,1,2,3` needs nested quotes
+
+**Symptom:** A 4-GPU Slurm smoke job reaches the Docker launch line and fails immediately:
+
+```
+docker: Error response from daemon: cannot set both Count and DeviceIDs on device request
+```
+
+The printed command appears reasonable at first glance:
+
+```
+docker run ... --gpus device=0,1,2,3 ...
+```
+
+**Root cause:** Docker's `--gpus` option has its own CSV-style parser. A comma-separated device list must be nested-quoted as `"device=0,1,2,3"` so Docker treats the commas as part of the `device=` value rather than additional device-request fields. This is easy to miss in bash arrays because ordinary shell quoting is stripped before Docker receives argv.
+
+**Fix:** When Slurm sets `CUDA_VISIBLE_DEVICES=0,1,2,3`, pass the argument with literal inner quotes:
+
+```bash
+docker_args+=(--gpus "\"device=$CUDA_VISIBLE_DEVICES\"")
+```
+
+Do not pass `--gpus "device=$CUDA_VISIBLE_DEVICES"` for comma-separated lists.
+
+**Takeaway:** Container wrapper logs should print the exact `docker run` argv, and multi-GPU smoke tests should exercise the same `--gpus` path as production. Single-GPU success does not validate Docker's comma-list parsing.
+
+---
+
+### Lesson #28 — A foreground Slurm follower needs a Ctrl-C policy
+
+**Symptom:** `submit_stage.sh` follows Slurm stdout like a foreground command, but Ctrl-C has ambiguous meaning: did the user want to stop watching, or cancel the Slurm allocation?
+
+**Root cause:** `sbatch` and a foreground tail are two separate processes. Killing the follower does not necessarily kill the Slurm job. Treating Ctrl-C as a plain Python `KeyboardInterrupt` leaves users unsure whether GPUs are still allocated.
+
+**Fix:** The follower catches Ctrl-C and asks:
+
+```
+[slurm-follow] Ctrl-C: cancel Slurm job <jobid>? [y/N]
+```
+
+Enter detaches and leaves the job running; `y` runs `scancel <jobid>`.
+
+**Takeaway:** Any tool that makes Slurm feel foreground must make detach-vs-cancel explicit. The default should preserve running work; cancellation should be a deliberate confirmation.
+
+---
+
 ### Lesson #27 — DEIMv2's `export_onnx.py` has no `-o`/`--output` flag — output path is derived from `--resume`
 
 **Symptom:** Real-host training reached evaluation (post-lesson #26 fix), saved `best_stg1.pth`, then ONNX export failed with:

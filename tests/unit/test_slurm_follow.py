@@ -39,3 +39,22 @@ def test_tailer_waits_then_reads(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "hello" in captured.out
     assert "waiting for log" in captured.err
+
+
+def test_keyboard_interrupt_detach(monkeypatch, capsys):
+    mod = _load_follow_module()
+    monkeypatch.setattr(mod.sys.stdin, "isatty", lambda: True)
+    rc = mod.handle_keyboard_interrupt("123", input_func=lambda _msg: "")
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "continues in the background" in captured.err
+
+
+def test_keyboard_interrupt_cancel(monkeypatch, capsys):
+    mod = _load_follow_module()
+    monkeypatch.setattr(mod.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(mod, "cancel_job", lambda jobid: 0)
+    rc = mod.handle_keyboard_interrupt("123", input_func=lambda _msg: "y")
+    assert rc == 130
+    captured = capsys.readouterr()
+    assert "cancelled job 123" in captured.err

@@ -12,6 +12,7 @@ BASE_IMAGE="${BASE_IMAGE:-nvidia/cuda:13.2.0-devel-ubuntu24.04}"
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/nightly/cu132}"
 TORCH_PRE="${TORCH_PRE:-1}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
+export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-1}"
 
 cd "$(dirname "$0")/../.."
 

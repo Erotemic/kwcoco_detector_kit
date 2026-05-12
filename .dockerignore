@@ -1,11 +1,19 @@
 .git
+.venv
+.mypy_cache
+.ruff_cache
 .pytest_cache
 __pycache__
+**/__pycache__
 *.pyc
 *.pyo
+*.so
+**/*.so
 *.deb
 *.egg-info
+**/*.egg-info
 build
+**/build
 dist
 
 # Local data / run outputs can be bind-mounted at runtime.

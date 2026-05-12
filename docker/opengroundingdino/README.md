@@ -4,6 +4,9 @@ The normal workflow can run directly from the editable checkout. Docker is an
 optional reproducibility layer for pinning the CUDA/PyTorch/compiler stack and
 prebuilding OpenGroundingDINO's `MultiScaleDeformableAttention` extension.
 
+The Dockerfile uses BuildKit cache mounts for `apt`, `uv`, `pip`, and torch
+extension builds. The helper scripts set `DOCKER_BUILDKIT=1` automatically.
+
 ## Recommended Profiles
 
 ### Stable CUDA 13.0 / PyTorch cu130
@@ -62,6 +65,24 @@ torch.version.cuda == nvcc --version release
 ```
 
 and fails immediately if they disagree.
+
+## Build-Time Caching
+
+The Dockerfile is ordered so expensive layers survive normal source edits:
+
+1. Base CUDA image + apt packages.
+2. Seeded Python venv.
+3. PyTorch / torchvision / torchaudio from the selected CUDA wheel index.
+4. Third-party Python dependencies from `pyproject.toml`.
+5. OpenGroundingDINO source + compiled CUDA extension.
+6. The fast-changing `kwcoco_detector_kit`, docs, examples, and Docker helper
+   files.
+
+That means editing toolkit Python files should only rerun the final editable
+install / env-check layer, not the PyTorch download or CUDA extension build.
+
+The `.dockerignore` excludes local `.venv`, `__pycache__`, compiled `.so`
+files, tile assets, and kwcoco bundles so the build context stays small.
 
 ## Run Interactively
 

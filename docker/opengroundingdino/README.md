@@ -92,6 +92,11 @@ fails at `tpl/Open-GroundingDino/models/GroundingDINO/ops`, run:
 git submodule update --init tpl/Open-GroundingDino
 ```
 
+The OpenGroundingDINO CUDA op is built during `docker build`, where no GPU is
+usually visible. The image sets `FORCE_CUDA=1` and defaults
+`TORCH_CUDA_ARCH_LIST=8.6` for RTX A6000. Override
+`TORCH_CUDA_ARCH_LIST` if you build the image for a different GPU family.
+
 ## Run Interactively
 
 Run with the data repo mounted:

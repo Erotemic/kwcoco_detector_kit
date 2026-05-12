@@ -8,6 +8,7 @@ ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130
 ARG TORCH_PRE=0
 ARG PIP_CACHE_DIR=/root/.cache/pip
 ARG UV_CACHE_DIR=/root/.cache/uv
+ARG TORCH_CUDA_ARCH_LIST="8.6"
 
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH=/opt/venv/bin:/usr/local/cuda/bin:${PATH}
@@ -18,6 +19,8 @@ ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 ENV TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 ENV PIP_CACHE_DIR=${PIP_CACHE_DIR}
 ENV UV_CACHE_DIR=${UV_CACHE_DIR}
+ENV FORCE_CUDA=1
+ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \

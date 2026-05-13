@@ -14,7 +14,7 @@ DEPENDENCY="${DEPENDENCY:-}"
 
 GPUS="${GPUS:-4}"
 CPUS_PER_TASK="${CPUS_PER_TASK:-16}"
-MEM="${MEM:-180G}"
+MEM="${MEM:-96G}"
 TIME_LIMIT="${TIME_LIMIT:-72:00:00}"
 JOB_NAME="${JOB_NAME:-kcd-viame-ogdino-full}"
 

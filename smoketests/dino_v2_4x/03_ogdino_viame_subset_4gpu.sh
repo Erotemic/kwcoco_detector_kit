@@ -2,6 +2,8 @@
 # Real-data subset smoke: OpenGroundingDINO on a tiny absolute-path subset of
 # the prepared VIAME sea-lion kwcoco splits, 4 GPUs.
 set -euo pipefail
+
+export CATEGORY_NAME="${CATEGORY_NAME:-sealion}"
 source "$(dirname "$0")/common.sh"
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
@@ -11,7 +13,6 @@ export MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
 export PORT="${PORT:-29500}"
 export NUM_EPOCHS="${NUM_EPOCHS:-1}"
 
-CATEGORY_NAME="${CATEGORY_NAME:-sealion}"
 INPUT_SIZE="${INPUT_SIZE:-800}"
 BATCH_SIZE="${BATCH_SIZE:-1}"
 DATA_DPATH="${DATA_DPATH:-/media/joncrall/raid/home/joncrall/data/dvc-repos/viame_sealions_2026}"

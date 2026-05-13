@@ -125,18 +125,71 @@ make_subset_abs() {
     local dst="$2"
     local n="$3"
     if [ -f "$dst" ]; then
-        echo "Reusing subset: $dst"
-        return
+        # Reuse only when the paths stored verbatim in the kwcoco file are
+        # resolvable here. The rewrite map is for build time only; downstream
+        # consumers (coco_export -> coco2odvg) read file_name as-is, so a
+        # subset whose paths only work *after* rewriting is stale.
+        if "$PYTHON_BIN" - "$dst" <<'PY'
+import sys
+from pathlib import Path
+import kwcoco
+
+dset = kwcoco.CocoDataset.coerce(sys.argv[1])
+gids = list(dset.index.imgs)[: min(8, dset.n_images)]
+for gid in gids:
+    if not Path(dset.get_image_fpath(gid)).exists():
+        raise SystemExit(1)
+PY
+        then
+            echo "Reusing subset: $dst"
+            return
+        else
+            echo "Existing subset has stale image paths; rebuilding: $dst"
+            rm -f "$dst"
+        fi
     fi
     mkdir -p "$(dirname "$dst")"
     run_cmd "$PYTHON_BIN" - "$src" "$dst" "$n" <<'PY'
+import os
 import sys
+from pathlib import Path
 import kwcoco
+
+def rewrite_path(path):
+    path = Path(path)
+    if path.exists():
+        return path
+    data_root = os.environ.get("DATA_DPATH")
+    pairs = os.environ.get("KCD_PATH_REWRITE_PREFIXES", "")
+    for pair in [p for p in pairs.split(";") if p]:
+        if "=" not in pair:
+            continue
+        old, new = pair.split("=", 1)
+        oldp = Path(old)
+        try:
+            rel = path.relative_to(oldp)
+        except ValueError:
+            continue
+        cand = Path(new) / rel
+        if cand.exists():
+            return cand
+    if data_root:
+        marker = Path(data_root).name
+        parts = path.parts
+        if marker in parts:
+            idx = parts.index(marker)
+            cand = Path(data_root).joinpath(*parts[idx + 1:])
+            if cand.exists():
+                return cand
+    return path
 
 src, dst, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
 dset = kwcoco.CocoDataset.coerce(src)
 gids = sorted(dset.index.imgs)[:n]
-abs_fpaths = {gid: dset.get_image_fpath(gid) for gid in gids}
+abs_fpaths = {gid: rewrite_path(dset.get_image_fpath(gid)) for gid in gids}
+missing = [str(p) for p in abs_fpaths.values() if not Path(p).exists()]
+if missing:
+    raise FileNotFoundError("missing rewritten image paths:\n" + "\n".join(missing[:8]))
 sub = dset.subset(gids, copy=True)
 for img in sub.dataset.get("images", []):
     img["file_name"] = str(abs_fpaths[img["id"]])

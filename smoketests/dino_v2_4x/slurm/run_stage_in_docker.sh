@@ -28,6 +28,8 @@ if [ -z "${KCD_EXPT_DPATH:-}" ]; then
     fi
 fi
 
+KCD_PATH_REWRITE_PREFIXES="${KCD_PATH_REWRITE_PREFIXES:-/media/joncrall/raid/home/joncrall/data/dvc-repos/viame_sealions_2026=$DATA_DPATH}"
+
 KCD_SMOKE_ROOT_HOST="${KCD_SMOKE_ROOT_HOST:-$KCD_EXPT_DPATH/smoketests/dino_v2_4x}"
 KCD_CACHE_ROOT_HOST="${KCD_CACHE_ROOT_HOST:-$KCD_EXPT_DPATH/cache/opengroundingdino}"
 
@@ -50,6 +52,7 @@ echo "DATA_DPATH=$DATA_DPATH"
 echo "KCD_EXPT_DPATH=$KCD_EXPT_DPATH"
 echo "KCD_SMOKE_ROOT_HOST=$KCD_SMOKE_ROOT_HOST"
 echo "KCD_CACHE_ROOT_HOST=$KCD_CACHE_ROOT_HOST"
+echo "KCD_PATH_REWRITE_PREFIXES=$KCD_PATH_REWRITE_PREFIXES"
 
 if command -v nvidia-smi >/dev/null 2>&1; then
     nvidia-smi || true
@@ -76,6 +79,7 @@ docker_args=(
     -e VIAME_SUBSET_VALI_IMAGES="${VIAME_SUBSET_VALI_IMAGES:-}"
     -e VIAME_SUBSET_TEST_IMAGES="${VIAME_SUBSET_TEST_IMAGES:-}"
     -e KCD_RUNTIME_PIP_DEPS="$KCD_RUNTIME_PIP_DEPS"
+    -e KCD_PATH_REWRITE_PREFIXES="$KCD_PATH_REWRITE_PREFIXES"
 )
 
 if [ -d "$DATA_DPATH" ]; then

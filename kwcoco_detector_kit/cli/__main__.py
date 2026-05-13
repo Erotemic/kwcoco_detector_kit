@@ -14,6 +14,8 @@ Subcommands::
   parity          Check torch <-> ONNX parity on the exported model.
   eval            Run kwcoco eval against a trained checkpoint.
   bench           Run desktop ONNX bench.
+  package-build   Build a portable package from a trained workdir.
+  predict         Run packaged detector inference over kwcoco data.
   manifest        Aggregate sweep outputs into an eligibility manifest.
   check-env       Probe transitive runtime deps; --install to fix.
   config-init     Write editable environment + dataset YAML configs.
@@ -115,6 +117,8 @@ def _register_subcommands():
     import kwcoco_detector_kit.orchestration.eligibility as _elig
     import kwcoco_detector_kit.orchestration.setup_audit as _audit
     import kwcoco_detector_kit.configs as _configs
+    import kwcoco_detector_kit.export.package as _package
+    import kwcoco_detector_kit.predict as _predict
 
     _register_module("tile", _tile)
     _register_module("merge", _merge)
@@ -125,6 +129,8 @@ def _register_subcommands():
     _register_module("round-loop", _round)
     _register_module("manifest", _elig)
     _register_module("check-env", _audit)
+    _register_module("package-build", _package)
+    _register_module("predict", _predict)
     _register_module("config-init", type("ConfigInitModule", (), {"__cli__": _configs.ConfigInitConfig}))
     _register_module("config-inspect", type("ConfigInspectModule", (), {"__cli__": _configs.ConfigInspectConfig}))
     _register_module("config-edit", type("ConfigEditModule", (), {"__cli__": _configs.ConfigEditConfig}))

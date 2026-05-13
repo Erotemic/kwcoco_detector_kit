@@ -7,8 +7,8 @@ source "$(dirname "$0")/common.sh"
 DATA_DPATH="${DATA_DPATH:-/media/joncrall/raid/home/joncrall/data/dvc-repos/viame_sealions_2026}"
 export KIT_DPATH
 export DATA_DPATH
-export KCD_ROOT="${KCD_ROOT:-$DATA_DPATH/training_runs/docker_ogdino_a6000x4_full}"
-export KCD_CACHE_ROOT="${KCD_CACHE_ROOT:-$DATA_DPATH/training_runs/cache/ogdino_swint}"
+export KCD_ROOT="${KCD_ROOT:-$KCD_SMOKE_ROOT/04_ogdino_viame_full_4gpu/run}"
+export KCD_CACHE_ROOT
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 export NNODES="${NNODES:-1}"
 export NODE_RANK="${NODE_RANK:-0}"

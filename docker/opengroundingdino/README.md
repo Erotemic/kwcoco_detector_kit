@@ -102,10 +102,12 @@ usually visible. The image sets `FORCE_CUDA=1` and defaults
 Run with the data repo mounted:
 
 ```bash
-DATA_DPATH=/media/joncrall/raid/home/joncrall/data/dvc-repos/viame_sealions_2026
+DATA_DPATH=/data/users/jon.crall/dvc-repos/viame_sealions_2026
+KCD_EXPT_DPATH=/data/users/jon.crall/dvc-repos/viame_sealions_2026_expt
 
 docker run --rm -it --gpus all --ipc=host \
-    -v "$DATA_DPATH:$DATA_DPATH" \
+    -v "$DATA_DPATH:$DATA_DPATH:ro" \
+    -v "$KCD_EXPT_DPATH:$KCD_EXPT_DPATH" \
     -v /home/joncrall/code/kwcoco_detector_kit:/workspace/kwcoco_detector_kit \
     -w /workspace/kwcoco_detector_kit \
     kwcoco-detector-kit:ogdino-cu132-arisia
@@ -139,17 +141,19 @@ PY
 After mounting the VIAME data repo:
 
 ```bash
-DATA_DPATH=/media/joncrall/raid/home/joncrall/data/dvc-repos/viame_sealions_2026
+DATA_DPATH=/data/users/jon.crall/dvc-repos/viame_sealions_2026
+KCD_EXPT_DPATH=/data/users/jon.crall/dvc-repos/viame_sealions_2026_expt
 
 docker run --rm -it --gpus all --ipc=host \
     --shm-size=32g \
-    -v "$DATA_DPATH:$DATA_DPATH" \
+    -v "$DATA_DPATH:$DATA_DPATH:ro" \
+    -v "$KCD_EXPT_DPATH:$KCD_EXPT_DPATH" \
     -v /home/joncrall/code/kwcoco_detector_kit:/workspace/kwcoco_detector_kit \
     -w /workspace/kwcoco_detector_kit \
     -e KIT_DPATH=/workspace/kwcoco_detector_kit \
     -e DATA_DPATH="$DATA_DPATH" \
-    -e KCD_ROOT="$DATA_DPATH/training_runs/docker_ogdino_a6000x4" \
-    -e KCD_CACHE_ROOT="$DATA_DPATH/training_runs/cache/ogdino_swint" \
+    -e KCD_ROOT="$KCD_EXPT_DPATH/training_runs/docker_ogdino_a6000x4" \
+    -e KCD_CACHE_ROOT="$KCD_EXPT_DPATH/cache/ogdino_swint" \
     -e CUDA_VISIBLE_DEVICES=0,1,2,3 \
     -e NUM_GPUS=4 \
     -e KCD_DISTRIBUTED=1 \

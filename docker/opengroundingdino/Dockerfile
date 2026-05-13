@@ -93,7 +93,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         "onnxsim>=0.4" \
         "opencv-python-headless>=4.8" \
         "Pillow>=10.0" \
-        "transformers<5" \
+        "transformers>=4.35,<4.47" \
         addict \
         yapf \
         pycocotools \

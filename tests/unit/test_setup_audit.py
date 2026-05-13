@@ -37,8 +37,8 @@ def test_group_filter_restricts_probes():
 def test_opengroundingdino_pins_transformers_before_v5():
     probes = [p for p in PROBES if p.group == "opengroundingdino" and p.module == "transformers"]
     assert probes
-    assert probes[0].version_spec == "<5"
-    assert probes[0].pip_name == "transformers<5"
+    assert probes[0].version_spec == ">=4.35,<4.47"
+    assert probes[0].pip_name == "transformers>=4.35,<4.47"
 
 
 # ---------------------------------------------------------------------------

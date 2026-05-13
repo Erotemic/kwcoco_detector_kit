@@ -37,13 +37,17 @@ Useful outer knobs:
 
 ```bash
 IMAGE_TAG=kwcoco-detector-kit:ogdino-cu132-arisia
-DATA_DPATH=/media/joncrall/raid/home/joncrall/data/dvc-repos/viame_sealions_2026
-KCD_SMOKE_ROOT_HOST=${SCRATCH}/kcd_smoketests/dino_v2_4x
-KCD_CACHE_ROOT_HOST=${SCRATCH}/kcd_smoketests/cache/opengroundingdino
+DATA_DPATH=/data/users/jon.crall/dvc-repos/viame_sealions_2026
+KCD_EXPT_DPATH=/data/users/jon.crall/dvc-repos/viame_sealions_2026_expt
+KCD_SMOKE_ROOT_HOST=$KCD_EXPT_DPATH/smoketests/dino_v2_4x
+KCD_CACHE_ROOT_HOST=$KCD_EXPT_DPATH/cache/opengroundingdino
 SLURM_PARTITION=<partition-name>
 ACCOUNT=<account-name>
-KCD_RUNTIME_PIP_DEPS="colorlog transformers<5"  # temporary patches for old images
+KCD_RUNTIME_PIP_DEPS="colorlog transformers>=4.35,<4.47"  # temporary patches for old images
 ```
+
+`DATA_DPATH` is mounted read-only into Docker. `KCD_EXPT_DPATH` is the writable
+root for smoke outputs, cache, and intermediate training artifacts.
 
 The 4-GPU smoke stages default to `--cpus-per-task=12` and `--mem=120G`,
 which fits the arisia 4x RTX A6000 node. Override with `CPUS_PER_TASK=...`
@@ -66,15 +70,18 @@ python smoketests/dino_v2_4x/slurm/follow_job.py <jobid>
 For interactive debugging, launch the container manually:
 
 ```bash
-DATA_DPATH=/media/joncrall/raid/home/joncrall/data/dvc-repos/viame_sealions_2026
+DATA_DPATH=/data/users/jon.crall/dvc-repos/viame_sealions_2026
+KCD_EXPT_DPATH=/data/users/jon.crall/dvc-repos/viame_sealions_2026_expt
 
 docker run --rm -it --gpus all --ipc=host --shm-size=32g \
-    -v "$DATA_DPATH:$DATA_DPATH" \
+    -v "$DATA_DPATH:$DATA_DPATH:ro" \
+    -v "$KCD_EXPT_DPATH:$KCD_EXPT_DPATH" \
     -v /home/joncrall/code/kwcoco_detector_kit:/workspace/kwcoco_detector_kit \
     -w /workspace/kwcoco_detector_kit \
     -e KIT_DPATH=/workspace/kwcoco_detector_kit \
     -e DATA_DPATH="$DATA_DPATH" \
-    -e KCD_CACHE_ROOT="$DATA_DPATH/training_runs/cache/ogdino_swint" \
+    -e KCD_SMOKE_ROOT="$KCD_EXPT_DPATH/smoketests/dino_v2_4x" \
+    -e KCD_CACHE_ROOT="$KCD_EXPT_DPATH/cache/opengroundingdino" \
     -e CUDA_VISIBLE_DEVICES=0,1,2,3 \
     kwcoco-detector-kit:ogdino-cu132-arisia \
     bash

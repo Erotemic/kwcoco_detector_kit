@@ -63,7 +63,7 @@ deimv2 = [
 ]
 # OpenGroundingDINO + SAM2 — Phase 2 deps. Soft-imported.
 opengroundingdino = [
-    "transformers<5",
+    "transformers>=4.35,<4.47",
     "addict",
     "yapf",
     "pycocotools",

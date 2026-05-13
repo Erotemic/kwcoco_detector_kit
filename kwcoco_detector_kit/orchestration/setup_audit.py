@@ -63,7 +63,7 @@ PROBES: List[Probe] = [
     Probe("pycocotools",      "pycocotools",      "opengroundingdino", ("trainers",)),
     Probe("matplotlib",       "matplotlib",       "opengroundingdino", ("trainers",)),
     Probe("timm",             "timm",             "opengroundingdino", ("trainers",)),
-    Probe("transformers",     "transformers<5",   "opengroundingdino", ("trainers",), "<5"),
+    Probe("transformers",     "transformers>=4.35,<4.47", "opengroundingdino", ("trainers",), ">=4.35,<4.47"),
     Probe("colorlog",         "colorlog",         "opengroundingdino", ("trainers",)),
     Probe("jsonlines",        "jsonlines",        "opengroundingdino", ("trainers",)),
     # Webdataset — Phase 3 alternative TileStore backend.

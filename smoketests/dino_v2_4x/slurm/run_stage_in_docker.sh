@@ -7,19 +7,38 @@ IMAGE_TAG="${IMAGE_TAG:-kwcoco-detector-kit:ogdino-cu132-arisia}"
 
 HOST_KIT_DPATH="${HOST_KIT_DPATH:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 CONTAINER_KIT_DPATH="${CONTAINER_KIT_DPATH:-/workspace/kwcoco_detector_kit}"
-DATA_DPATH="${DATA_DPATH:-/media/joncrall/raid/home/joncrall/data/dvc-repos/viame_sealions_2026}"
+if [ -z "${DATA_DPATH:-}" ]; then
+    for cand in \
+        /data/users/jon.crall/dvc-repos/viame_sealions_2026 \
+        /media/joncrall/raid/home/joncrall/data/dvc-repos/viame_sealions_2026
+    do
+        if [ -d "$cand" ]; then
+            DATA_DPATH="$cand"
+            break
+        fi
+    done
+    DATA_DPATH="${DATA_DPATH:-/data/users/jon.crall/dvc-repos/viame_sealions_2026}"
+fi
 
-KCD_SMOKE_ROOT_HOST="${KCD_SMOKE_ROOT_HOST:-${SCRATCH:-/tmp}/kcd_smoketests/dino_v2_4x}"
-KCD_CACHE_ROOT_HOST="${KCD_CACHE_ROOT_HOST:-${SCRATCH:-/tmp}/kcd_smoketests/cache/opengroundingdino}"
+if [ -z "${KCD_EXPT_DPATH:-}" ]; then
+    if [ -d /data/users/jon.crall/dvc-repos ] || [ -d /data/users/jon.crall/dvc-repos/viame_sealions_2026_expt ]; then
+        KCD_EXPT_DPATH=/data/users/jon.crall/dvc-repos/viame_sealions_2026_expt
+    else
+        KCD_EXPT_DPATH="${SCRATCH:-/tmp}/kcd_smoketests"
+    fi
+fi
+
+KCD_SMOKE_ROOT_HOST="${KCD_SMOKE_ROOT_HOST:-$KCD_EXPT_DPATH/smoketests/dino_v2_4x}"
+KCD_CACHE_ROOT_HOST="${KCD_CACHE_ROOT_HOST:-$KCD_EXPT_DPATH/cache/opengroundingdino}"
 
 CONTAINER_KCD_SMOKE_ROOT="${CONTAINER_KCD_SMOKE_ROOT:-$KCD_SMOKE_ROOT_HOST}"
 CONTAINER_KCD_CACHE_ROOT="${CONTAINER_KCD_CACHE_ROOT:-$KCD_CACHE_ROOT_HOST}"
 
 NUM_GPUS_REQUESTED="${NUM_GPUS_REQUESTED:-0}"
 DOCKER_SHM_SIZE="${DOCKER_SHM_SIZE:-32g}"
-KCD_RUNTIME_PIP_DEPS="${KCD_RUNTIME_PIP_DEPS:-colorlog transformers<5}"
+KCD_RUNTIME_PIP_DEPS="${KCD_RUNTIME_PIP_DEPS:-colorlog transformers>=4.35,<4.47}"
 
-mkdir -p "$KCD_SMOKE_ROOT_HOST" "$KCD_CACHE_ROOT_HOST"
+mkdir -p "$KCD_EXPT_DPATH" "$KCD_SMOKE_ROOT_HOST" "$KCD_CACHE_ROOT_HOST"
 
 echo "=== Slurm context ==="
 echo "SLURM_JOB_ID=${SLURM_JOB_ID:-}"
@@ -27,6 +46,10 @@ echo "SLURM_JOB_NAME=${SLURM_JOB_NAME:-}"
 echo "HOSTNAME=$(hostname)"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
 echo "NUM_GPUS_REQUESTED=$NUM_GPUS_REQUESTED"
+echo "DATA_DPATH=$DATA_DPATH"
+echo "KCD_EXPT_DPATH=$KCD_EXPT_DPATH"
+echo "KCD_SMOKE_ROOT_HOST=$KCD_SMOKE_ROOT_HOST"
+echo "KCD_CACHE_ROOT_HOST=$KCD_CACHE_ROOT_HOST"
 
 if command -v nvidia-smi >/dev/null 2>&1; then
     nvidia-smi || true
@@ -57,9 +80,11 @@ docker_args=(
 
 if [ -d "$DATA_DPATH" ]; then
     docker_args+=(
-        -v "$DATA_DPATH:$DATA_DPATH"
+        -v "$DATA_DPATH:$DATA_DPATH:ro"
         -e DATA_DPATH="$DATA_DPATH"
     )
+else
+    echo "WARNING: DATA_DPATH does not exist on host: $DATA_DPATH" >&2
 fi
 
 if [ "${NUM_GPUS_REQUESTED}" != "0" ]; then

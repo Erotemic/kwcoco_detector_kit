@@ -8,6 +8,28 @@ The bar is "took >1 hour" or "would have been ≥10× faster with this entry on 
 
 ---
 
+### Lesson #30 — OpenGroundingDINO needs a narrow Transformers 4.x band, not just `<5`
+
+**Symptom:** The runtime patch downgraded `transformers` from `5.8.0` to `4.57.6` via `pip install 'transformers<5'`, but OpenGroundingDINO still crashed while building BERT:
+
+```
+AttributeError: 'BertModel' object has no attribute 'get_head_mask'
+```
+
+**Root cause:** This OpenGroundingDINO fork expects older Transformers BERT internals exposed on `BertModel`, including `get_head_mask`. The requirement `transformers<5` is too loose: late 4.x releases can still remove or move the helper APIs this fork uses.
+
+**Fix:** Pin the OpenGroundingDINO dependency band to a known-old 4.x range:
+
+```text
+transformers>=4.35,<4.47
+```
+
+Apply the same spec in `pyproject.toml`, the Dockerfile, `setup_audit`, and the temporary `KCD_RUNTIME_PIP_DEPS` patch path. Let pip resolve `huggingface-hub<1.0` through the selected Transformers version.
+
+**Takeaway:** For upstream research repos, broad major-version caps are often not enough. Pin to a tested minor-version band and make `check-env` validate the version spec, not just importability.
+
+---
+
 ### Lesson #29 — Docker `--gpus device=0,1,2,3` needs nested quotes
 
 **Symptom:** A 4-GPU Slurm smoke job reaches the Docker launch line and fails immediately:

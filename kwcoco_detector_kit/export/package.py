@@ -177,6 +177,8 @@ def build_model_package(
     allow_missing_weights: bool = False,
     score_thresh: float = 0.30,
     nms_iou_thresh: float = 0.50,
+    username: Optional[str] = None,
+    hostname: Optional[str] = None,
 ) -> Path:
     """Create a package directory or archive from an existing trainer workdir."""
     workdir = Path(workdir).expanduser().resolve()
@@ -193,6 +195,8 @@ def build_model_package(
     dataset_slug = dataset_slug or "unknown_dataset"
     experiment_slug = experiment_slug or str(policy.get("candidate_id") or variant)
     run_id = run_id or os.environ.get("SLURM_JOB_ID") or _now_id()
+    username = username or getpass.getuser()
+    hostname = hostname or socket.gethostname()
 
     tmp_ctx = tempfile.TemporaryDirectory() if _is_archive(out) else None
     if tmp_ctx is None:
@@ -246,8 +250,8 @@ def build_model_package(
         "run_id": str(run_id),
         "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "provenance": {
-            "username": getpass.getuser(),
-            "hostname": socket.gethostname(),
+            "username": username,
+            "hostname": hostname,
             "cwd": str(Path.cwd()),
             "source_workdir": str(workdir),
             "git_commit": _git_commit(Path.cwd()),
@@ -378,6 +382,8 @@ class PackageBuildConfig(scfg.DataConfig):
     allow_missing_weights = scfg.Value(False, isflag=True)
     score_thresh = scfg.Value(0.30, type=float, help="default package inference score threshold")
     nms_iou_thresh = scfg.Value(0.50, type=float, help="recorded NMS IoU threshold")
+    username = scfg.Value(None, help="provenance username; defaults to current user")
+    hostname = scfg.Value(None, help="provenance hostname; defaults to current host")
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -388,6 +394,8 @@ class PackageBuildConfig(scfg.DataConfig):
         dataset_slug = config.dataset_slug or "unknown_dataset"
         experiment_slug = config.experiment_slug or str(policy.get("candidate_id") or variant)
         run_id = config.run_id or os.environ.get("SLURM_JOB_ID") or _now_id()
+        username = config.username or getpass.getuser()
+        hostname = config.hostname or socket.gethostname()
         if config.out:
             out = Path(config.out)
         else:
@@ -398,6 +406,8 @@ class PackageBuildConfig(scfg.DataConfig):
                 experiment_slug=str(experiment_slug),
                 variant=str(variant),
                 run_id=str(run_id),
+                username=str(username),
+                hostname=str(hostname),
             )
         out = build_model_package(
             workdir=workdir,
@@ -415,6 +425,8 @@ class PackageBuildConfig(scfg.DataConfig):
             allow_missing_weights=bool(config.allow_missing_weights),
             score_thresh=float(config.score_thresh),
             nms_iou_thresh=float(config.nms_iou_thresh),
+            username=str(username),
+            hostname=str(hostname),
         )
         print(f"wrote package: {out}")
         return 0

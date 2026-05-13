@@ -115,3 +115,28 @@ Expected default package path:
 ```text
 /data/users/jon.crall/dvc-repos/viame_sealions_2026_expt/packages/viame_sealions_2026/ogdino_swint_full/users/<username>/hosts/<hostname>/20260513T010928/opengroundingdino_swint_800x800_fixed.zip
 ```
+
+Follow-up:
+
+- User clarified the rsynced results are mounted at
+  `/media/joncrall/raid/users/jon.crall/dvc-repos/viame_sealions_2026_expt`
+  because the `/data/users/...` symlink path did not mount cleanly here.
+- Next step is to build the real sealion package using the mounted path.
+- First real package build succeeded but used this execution session's identity:
+  `users/agent/hosts/aivm-2404/...`. Because the run provenance should reflect
+  the source training machine/user, add explicit `--username` and `--hostname`
+  overrides, rebuild as `users/jon.crall/hosts/arisia/...`, then remove the
+  misleading package.
+- Added `package-build --username` and `--hostname` override support.
+- Rebuilt the corrected package:
+  `/media/joncrall/raid/users/jon.crall/dvc-repos/viame_sealions_2026_expt/packages/viame_sealions_2026/ogdino_swint_full/users/jon.crall/hosts/arisia/20260513T010928/opengroundingdino_swint_800x800_fixed.zip`
+- Verified the zip manifest:
+  - size: 1,085,768,872 bytes
+  - schema: `kwcoco_detector_kit.package.v1`
+  - trainer: `opengroundingdino`
+  - variant: `opengroundingdino_swint_800x800_fixed`
+  - category: `sealion`
+  - provenance username/hostname: `jon.crall` / `arisia`
+  - checkpoint: `weights/checkpoint.pth`
+  - train config: `training_config/ogdino_cfg.py`
+- Removed the earlier misleading `users/agent/hosts/aivm-2404/...` package tree.

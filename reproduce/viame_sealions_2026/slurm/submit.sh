@@ -13,9 +13,13 @@ FOLLOW="${FOLLOW:-auto}"
 DEPENDENCY="${DEPENDENCY:-}"
 
 GPUS="${GPUS:-4}"
-CPUS_PER_TASK="${CPUS_PER_TASK:-16}"
+CPUS_PER_TASK="${CPUS_PER_TASK:-12}"
 MEM="${MEM:-96G}"
-TIME_LIMIT="${TIME_LIMIT:-72:00:00}"
+# Stay within the same partition config the smoke ladder accepts. Slurm
+# rejects job that exceed the partition's MaxTime as PartitionConfig
+# without a clearer signal, so start with smoke-matching limits and
+# extend explicitly (TIME_LIMIT=...) once you know the partition cap.
+TIME_LIMIT="${TIME_LIMIT:-24:00:00}"
 JOB_NAME="${JOB_NAME:-kcd-viame-ogdino-full}"
 
 KCD_REPRODUCE_TAG="${KCD_REPRODUCE_TAG:-ogdino_swint_full}"

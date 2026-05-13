@@ -140,3 +140,29 @@ Follow-up:
   - checkpoint: `weights/checkpoint.pth`
   - train config: `training_config/ogdino_cfg.py`
 - Removed the earlier misleading `users/agent/hosts/aivm-2404/...` package tree.
+
+Inference follow-up:
+
+- User hit the expected checkpoint-package runtime issue:
+  `OpenGroundingDINOPredictor needs the OpenGroundingDINO submodule on PYTHONPATH`.
+- Current package is checkpoint/config based, not ONNX. The OGDino trainer marks
+  `supports_onnx_export = False`; there is no canonical upstream ONNX exporter in
+  the vendored Open-GroundingDino tree.
+- Practical short-term path: run `predict` inside the OGDino Docker image and
+  set `KCD_OPENGROUNDINGDINO_REPO_DPATH=/opt/kwcoco_detector_kit/tpl/Open-GroundingDino`
+  (or the mounted repo's submodule path).
+- ONNX path is possible but not quick: OGDino includes BERT/text prompting,
+  transformer decoder logic, and custom multi-scale deformable attention ops.
+  A robust export probably needs an explicit deployment wrapper that freezes the
+  prompt/labels and validates ONNXRuntime/TensorRT behavior against torch.
+
+Docker profile follow-up:
+
+- User is running inference on namek, which reports NVIDIA driver `580.142` and
+  CUDA `13.0`.
+- Added `docker/opengroundingdino/build_auto.sh` to inspect `nvidia-smi` and
+  choose the highest supported container CUDA profile that does not exceed the
+  host CUDA. For namek this selects `cu130`; for arisia's CUDA 13.2 this selects
+  `cu132`.
+- The auto build always tags `kwcoco-detector-kit:ogdino-auto`, so run commands
+  do not need a machine-specific image tag.

@@ -7,6 +7,41 @@ prebuilding OpenGroundingDINO's `MultiScaleDeformableAttention` extension.
 The Dockerfile uses BuildKit cache mounts for `apt`, `uv`, `pip`, and torch
 extension builds. The helper scripts set `DOCKER_BUILDKIT=1` automatically.
 
+## Auto-Detect The Build Profile
+
+Use `build_auto.sh` when you want the host to pick the CUDA profile and tag the
+image with a stable name:
+
+```bash
+cd /home/joncrall/code/kwcoco_detector_kit
+bash docker/opengroundingdino/build_auto.sh
+```
+
+The script reads `nvidia-smi`'s reported `CUDA Version` and chooses the highest
+supported container CUDA profile that does not exceed it:
+
+- CUDA >= 13.2 -> `cu132`, also tagged `kwcoco-detector-kit:ogdino-cu132-arisia`
+- CUDA >= 13.0 -> `cu130`, also tagged `kwcoco-detector-kit:ogdino-cu130`
+
+Both cases are tagged as `kwcoco-detector-kit:ogdino-auto`, so run commands can
+use the same image name on different machines:
+
+```bash
+docker run --rm --gpus all kwcoco-detector-kit:ogdino-auto python - <<'PY'
+import torch
+print(torch.__version__)
+print(torch.version.cuda)
+PY
+```
+
+Override detection for testing or cluster policy:
+
+```bash
+HOST_CUDA_VERSION=13.0 KCD_DOCKER_DRYRUN=1 bash docker/opengroundingdino/build_auto.sh
+KCD_DOCKER_CUDA_PROFILE=cu130 bash docker/opengroundingdino/build_auto.sh
+KCD_DOCKER_CUDA_PROFILE=cu132 bash docker/opengroundingdino/build_auto.sh
+```
+
 ## Recommended Profiles
 
 ### Stable CUDA 13.0 / PyTorch cu130

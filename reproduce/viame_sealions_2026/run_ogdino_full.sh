@@ -40,9 +40,16 @@ MIN_GT_AREA_FRAC="${MIN_GT_AREA_FRAC:-0.0001}"
 MIN_KEEP_FRACTION="${MIN_KEEP_FRACTION:-0.20}"
 
 NUM_GPUS="${NUM_GPUS:-4}"
-BATCH_SIZE="${BATCH_SIZE:-16}"
-VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-16}"
-NUM_EPOCHS="${NUM_EPOCHS:-12}"
+# A6000 (47 GB) at input=800: epoch-0 telemetry from b=16 showed max
+# mem ~25 GB/GPU and loss dropping cleanly. b=24 should sit near 38 GB,
+# still leaving headroom for the val pass. Push higher (28-32) only
+# after confirming val memory stays under ~44 GB.
+BATCH_SIZE="${BATCH_SIZE:-24}"
+VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-24}"
+# Loss curve at b=16 e=12 was still descending end-of-epoch-0 — 16
+# epochs gives more time to converge. Per-epoch wall clock ~27 min
+# at b=16 / 539 steps; at b=24 fewer steps, still well under 24h cap.
+NUM_EPOCHS="${NUM_EPOCHS:-16}"
 LR="${LR:-1e-4}"
 BACKBONE_LR="${BACKBONE_LR:-1e-5}"
 SCALE_TIER="${SCALE_TIER:-2-4xL}"
@@ -58,6 +65,9 @@ export KCD_OPENGROUNDINGDINO_REPO_DPATH="${KCD_OPENGROUNDINGDINO_REPO_DPATH:-$KI
 export TEXT_ENCODER_TYPE="${TEXT_ENCODER_TYPE:-bert-base-uncased}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export TORCH_NCCL_ASYNC_ERROR_HANDLING="${TORCH_NCCL_ASYNC_ERROR_HANDLING:-1}"
+# Silence "huggingface/tokenizers: got forked after parallelism was
+# used" warning — BERT tokenizer fires before dataloader forks workers.
+export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 
 mkdir -p "$KCD_REPRODUCE_ROOT" "$KCD_CACHE_ROOT/pretrained"
 

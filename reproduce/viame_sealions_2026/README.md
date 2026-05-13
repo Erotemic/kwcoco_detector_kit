@@ -97,10 +97,34 @@ Slurm-side knobs in `slurm/submit.sh`: `GPUS`, `CPUS_PER_TASK`, `MEM`,
 
 ## Memory headroom
 
-Smoke 03 reported A6000 utilization of ~8.7 GB / 47 GB per GPU at
-input=320, b=1 — but that's the tiny subset and a small input. The
-single-3090 reference at input=800, b=8 hit ~13.6 GB (see the
+Observed on the first 4x A6000 run at `INPUT_SIZE=800`:
+
+| batch (per GPU) | max mem | epoch wall clock | step time |
+|---|---|---|---|
+| 16 | ~25 GB / 47 GB | ~27 min (539 steps) | ~3.0 s |
+| 24 (default) | est. ~38 GB | est. ~22 min (359 steps) | TBD |
+
+Push higher (28-32) only after confirming the val pass also stays
+within budget — eval steps can carry more boxes than train. Single-3090
+reference at input=800, b=8 hit ~13.6 GB (see the
 [bring-up journal](../../dev/journals/2026-05-12-viame-sealions-ogdino.md)).
-Linearly extrapolating, b=16 at input=800 should sit around 25-28 GB
-per GPU on A6000, leaving comfortable margin. The first job should
-report actuals — adjust upward once observed.
+
+## Tuning notes
+
+- **Data-loader contention.** OGDino's `train_dist.sh` calls `main.py`
+  with the upstream default `--num_workers=8`, so 4 GPUs × 8 = 32
+  worker processes contend for the 12 CPUs the Slurm job requests.
+  If GPU utilization looks "mixed", try `CPUS_PER_TASK=16` on submit
+  (Slurm partition permitting) to give the dataloaders breathing room.
+  Lowering per-GPU `num_workers` would require patching
+  `tpl/Open-GroundingDino/train_dist.sh` to forward a `NUM_WORKERS` env
+  var — not done here yet.
+- **LR vs effective batch.** The journal's b=8 (single 3090) reference
+  reached AP50=0.78 at `LR=1e-4`. With `BATCH_SIZE=24` and 4 GPUs the
+  effective batch is 96 (12x the journal reference). Loss is still
+  decreasing at the current `LR=1e-4`, so we are not bumping it by
+  default. Try `LR=1.5e-4` (sqrt scaling) if convergence plateaus
+  early.
+- **Tokenizer warning.** `TOKENIZERS_PARALLELISM=false` is exported by
+  default to silence the fork warning the BERT text encoder emits when
+  dataloader workers fork.

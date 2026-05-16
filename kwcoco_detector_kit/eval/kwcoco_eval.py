@@ -70,6 +70,11 @@ def filter_bbox_only_kwcoco(src_fpath, dst_fpath) -> Tuple[Path, int, int]:
             img["file_name"] = abs_image_fpaths[img["id"]]
 
     dst_fpath.parent.mkdir(parents=True, exist_ok=True)
+    # remove_annotation() invalidates the imgs/anns indexes (sets them to
+    # None in modern kwcoco), and _update_fpath() -> reroot() needs
+    # len(self.imgs). Rebuild the index before the save so the reroot path
+    # doesn't trip TypeError: object of type 'NoneType' has no len().
+    dset._build_index()
     dset._update_fpath(str(dst_fpath))
     dset.dump()
     return dst_fpath, kept, len(drop_ids)

@@ -15,10 +15,13 @@ Public surface:
   tile_store.open_store    Auto-detect backend by path.
   tile_loader.TileLoader   Iterable dataset w/ load-time crop aug.
   stats.compute_per_channel_stats  Welford mean/std probe (multispectral).
+  kwcoco_sampler.KwcocoDetectionDataset  Rich sampler via kwcoco_dataloader
+                                         (optional dep; balanced sampling,
+                                         heterogeneous channels, JQ filters).
 """
 from kwcoco_detector_kit.data import (
     tile, merge, mine, coco_export, tile_store, tile_loader, stats,
 )
 
 __all__ = ["tile", "merge", "mine", "coco_export",
-           "tile_store", "tile_loader", "stats"]
+           "tile_store", "tile_loader", "stats", "kwcoco_sampler"]

@@ -16,6 +16,9 @@ Subcommands::
   bench           Run desktop ONNX bench.
   package-build   Build a portable package from a trained workdir.
   predict         Run packaged detector inference over kwcoco data.
+  export-labelme  Export prediction kwcoco to LabelMe JSON sidecars.
+  segmenter-train Fine-tune a SAM2 segmenter from kwcoco splits.
+  pseudo-label    Generate pseudo-label kwcoco from a teacher model.
   manifest        Aggregate sweep outputs into an eligibility manifest.
   check-env       Probe transitive runtime deps; --install to fix.
   config-init     Write editable environment + dataset YAML configs.
@@ -118,6 +121,9 @@ def _register_subcommands():
     import kwcoco_detector_kit.orchestration.setup_audit as _audit
     import kwcoco_detector_kit.configs as _configs
     import kwcoco_detector_kit.export.package as _package
+    import kwcoco_detector_kit.export.labelme as _labelme
+    import kwcoco_detector_kit.trainers.sam2 as _sam2
+    import kwcoco_detector_kit.data.distill as _distill
     import kwcoco_detector_kit.predict as _predict
 
     _register_module("tile", _tile)
@@ -131,6 +137,9 @@ def _register_subcommands():
     _register_module("check-env", _audit)
     _register_module("package-build", _package)
     _register_module("predict", _predict)
+    _register_module("export-labelme", _labelme)
+    _register_module("segmenter-train", _sam2)
+    _register_module("pseudo-label", _distill)
     _register_module("config-init", type("ConfigInitModule", (), {"__cli__": _configs.ConfigInitConfig}))
     _register_module("config-inspect", type("ConfigInspectModule", (), {"__cli__": _configs.ConfigInspectConfig}))
     _register_module("config-edit", type("ConfigEditModule", (), {"__cli__": _configs.ConfigEditConfig}))

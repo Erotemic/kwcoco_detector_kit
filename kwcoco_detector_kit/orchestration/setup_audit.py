@@ -203,6 +203,18 @@ class CheckEnvConfig(scfg.DataConfig):
         False, isflag=True,
         help="real __import__ for every probe (catches version conflicts)",
     )
+    runtime = scfg.Value(
+        False, isflag=True,
+        help=(
+            "in addition to module probes, verify GPU availability, the "
+            "DEIMv2 trainer repo, and the OGDino MSDeformAttention .so. "
+            "Use this inside the docker image as the first health check."
+        ),
+    )
+    require_gpu = scfg.Value(
+        True, isflag=True,
+        help="when --runtime is set, exit non-zero if no CUDA device is visible",
+    )
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -215,38 +227,120 @@ def run(config) -> int:
     missing = probe_env(groups=groups, strict_import=bool(config.strict_import))
     if not missing:
         print(f"[check-env] all probes ok for groups={groups}")
-        return 0
+        rc = 0
+    else:
+        print(f"[check-env] {len(missing)} probe(s) failed across groups={groups}:")
+        for p in missing:
+            err = p.__dict__.get("_error")
+            if err:
+                # Real-import probe caught a version conflict or broken install.
+                print(f"  - {p.module:25s} group={p.group:18s} import error: {err}")
+                hint = _hint_for_error(p.module, err)
+                if hint:
+                    print(f"      fix: {hint}")
+            else:
+                hint = f"pip install {p.pip_name}" if p.pip_name else "(install manually)"
+                print(f"  - {p.module:25s} group={p.group:18s} -> {hint}")
 
-    print(f"[check-env] {len(missing)} probe(s) failed across groups={groups}:")
-    for p in missing:
-        err = p.__dict__.get("_error")
-        if err:
-            # Real-import probe caught a version conflict or broken install.
-            print(f"  - {p.module:25s} group={p.group:18s} import error: {err}")
-            hint = _hint_for_error(p.module, err)
-            if hint:
-                print(f"      fix: {hint}")
+        if not bool(config.install):
+            print("\npass --install to attempt automatic pip install.")
+            rc = 1
         else:
-            hint = f"pip install {p.pip_name}" if p.pip_name else "(install manually)"
-            print(f"  - {p.module:25s} group={p.group:18s} -> {hint}")
+            rc_install = install_missing(missing)
+            if rc_install != 0:
+                print(f"[check-env] pip install returned {rc_install}")
+                return rc_install
+            # Re-probe
+            still_missing = probe_env(
+                groups=groups, strict_import=bool(config.strict_import),
+            )
+            if still_missing:
+                names = ", ".join(p.module for p in still_missing)
+                print(f"[check-env] still missing after install: {names}")
+                return 2
+            print("[check-env] all probes ok after install.")
+            rc = 0
 
-    if not bool(config.install):
-        print("\npass --install to attempt automatic pip install.")
-        return 1
+    if bool(config.runtime):
+        runtime_rc = _runtime_probe(require_gpu=bool(config.require_gpu))
+        # Aggregate: surface the worst exit code so callers see failures.
+        rc = max(rc, runtime_rc)
 
-    rc = install_missing(missing)
-    if rc != 0:
-        print(f"[check-env] pip install returned {rc}")
-        return rc
+    return rc
 
-    # Re-probe
-    still_missing = probe_env(groups=groups, strict_import=bool(config.strict_import))
-    if still_missing:
-        names = ", ".join(p.module for p in still_missing)
-        print(f"[check-env] still missing after install: {names}")
-        return 2
-    print("[check-env] all probes ok after install.")
-    return 0
+
+def _runtime_probe(*, require_gpu: bool) -> int:
+    """Probe GPU, DEIMv2 repo discovery, and OGDino MSDeformAttn .so.
+
+    Each probe prints a single line so the output reads like a checklist.
+    Returns 0 when all critical probes pass. With ``require_gpu=False``,
+    missing CUDA is downgraded to a warning.
+    """
+    rc = 0
+
+    # --- GPU ---
+    try:
+        import torch  # type: ignore
+    except Exception as ex:
+        print(f"[check-env runtime] torch import failed: {type(ex).__name__}: {ex}")
+        return 3
+
+    if torch.cuda.is_available():
+        n = torch.cuda.device_count()
+        print(f"[check-env runtime] torch.cuda OK -- {n} device(s)")
+        for i in range(n):
+            props = torch.cuda.get_device_properties(i)
+            mib = int(props.total_memory / (1024 ** 2))
+            print(
+                f"  cuda:{i}  {props.name}  "
+                f"sm_{props.major}{props.minor}  {mib} MiB"
+            )
+    else:
+        line = "[check-env runtime] torch.cuda NOT available"
+        if require_gpu:
+            print(line + " (require_gpu=True -> FAIL)")
+            rc = max(rc, 4)
+        else:
+            print(line + " (require_gpu=False -> WARN)")
+
+    # --- DEIMv2 repo discovery ---
+    deimv2_repo = os.environ.get("KCD_DEIMV2_REPO_DPATH")
+    if deimv2_repo and Path(deimv2_repo).exists():
+        train_py = Path(deimv2_repo) / "train.py"
+        engine_dir = Path(deimv2_repo) / "engine"
+        if train_py.exists() and engine_dir.is_dir():
+            print(f"[check-env runtime] DEIMv2 repo OK -- {deimv2_repo}")
+        else:
+            print(
+                f"[check-env runtime] KCD_DEIMV2_REPO_DPATH={deimv2_repo} "
+                f"exists but is missing train.py / engine/  -> FAIL"
+            )
+            rc = max(rc, 5)
+    else:
+        # Fall back to the kit-local default.
+        try:
+            from kwcoco_detector_kit.trainers.deimv2 import _resolve_deimv2_repo  # type: ignore
+            repo = _resolve_deimv2_repo()
+            print(f"[check-env runtime] DEIMv2 repo OK (default) -- {repo}")
+        except Exception as ex:
+            print(
+                f"[check-env runtime] DEIMv2 repo NOT found  -> FAIL  "
+                f"({type(ex).__name__}: {ex})"
+            )
+            rc = max(rc, 5)
+
+    # --- OGDino MSDeformAttention .so (only needed for v9 distillation) ---
+    try:
+        import MultiScaleDeformableAttention  # type: ignore  # noqa: F401
+        print("[check-env runtime] OGDino MSDeformAttention OK")
+    except ImportError as ex:
+        # Downgrade to WARN: the v6/v7/v8 path doesn't need this.
+        print(
+            f"[check-env runtime] OGDino MSDeformAttention NOT importable "
+            f"(WARN -- only needed for v9 distillation): {ex}"
+        )
+
+    return rc
 
 
 def _hint_for_error(module: str, err: str) -> Optional[str]:

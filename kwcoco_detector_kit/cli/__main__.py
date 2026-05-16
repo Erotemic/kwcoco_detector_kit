@@ -9,6 +9,7 @@ Subcommands::
   mine            offline hard-negative mining.
   train           Run one trainer-plugin cell.
   sweep           Run a Pareto sweep over a matrix of cells.
+  recipe-run      Drive a single recipe.yaml end-to-end (sweep + manifest).
   round-loop      Round-based hard-negative-mining loop.
   export-onnx     Export a trained checkpoint to ONNX.
   parity          Check torch <-> ONNX parity on the exported model.
@@ -20,7 +21,7 @@ Subcommands::
   segmenter-train Fine-tune a SAM2 segmenter from kwcoco splits.
   pseudo-label    Generate pseudo-label kwcoco from a teacher model.
   manifest        Aggregate sweep outputs into an eligibility manifest.
-  check-env       Probe transitive runtime deps; --install to fix.
+  check-env       Probe transitive runtime deps; --install to fix; --runtime for GPU/DEIMv2/OGDino health.
   config-init     Write editable environment + dataset YAML configs.
   config-inspect  Show config values with introspected suggestions.
   config-edit     Modify config YAML via a text UI or --set overrides.
@@ -116,6 +117,7 @@ def _register_subcommands():
     import kwcoco_detector_kit.data.tile_store as _tile_store
     import kwcoco_detector_kit.data.stats as _stats
     import kwcoco_detector_kit.orchestration.pareto_sweep as _sweep
+    import kwcoco_detector_kit.orchestration.recipe as _recipe
     import kwcoco_detector_kit.orchestration.round_loop as _round
     import kwcoco_detector_kit.orchestration.eligibility as _elig
     import kwcoco_detector_kit.orchestration.setup_audit as _audit
@@ -132,6 +134,7 @@ def _register_subcommands():
     _register_module("convert-store", _tile_store)   # Phase 3
     _register_module("stats", _stats)                # Phase 3
     _register_module("sweep", _sweep)
+    _register_module("recipe-run", _recipe)
     _register_module("round-loop", _round)
     _register_module("manifest", _elig)
     _register_module("check-env", _audit)

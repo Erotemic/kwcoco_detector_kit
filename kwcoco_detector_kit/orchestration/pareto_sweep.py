@@ -61,6 +61,16 @@ class SweepConfig(scfg.DataConfig):
     num_gpus = scfg.Value(1)
     distributed = scfg.Value(False, isflag=True, help="enable torch.distributed.run for num_gpus > 1")
 
+    init_checkpoint = scfg.Value(
+        None,
+        help=(
+            "Optional path to a pretrained detector checkpoint to fine-tune "
+            "from (passed to the trainer's launch() as init_checkpoint). For "
+            "DEIMv2 cells, this should be the variant-matched "
+            "deimv2_<variant>_coco.pth file -- training from scratch on small "
+            "data typically loses 5-10 AP vs. fine-tuning from a COCO init."
+        ),
+    )
     keep_going = scfg.Value(True, isflag=True, help="continue past failed cells")
     do_export = scfg.Value(True, isflag=True, help="run ONNX export per cell")
     do_eval = scfg.Value(True, isflag=True, help="run kwcoco eval per cell")
@@ -183,8 +193,22 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
         extra={"category_name": str(config.category_name),
                "candidate_id": candidate_id},
     )
+    # Per-cell init_checkpoint overrides the sweep-level setting. Use it
+    # when the matrix has cells from different variant families that need
+    # different pretrained .pth files (e.g., pico vs n in the same sweep).
+    init_ckpt = cell.get("init_checkpoint") or config.init_checkpoint
+    if init_ckpt:
+        init_ckpt = str(init_ckpt)
+        if not Path(init_ckpt).exists():
+            raise FileNotFoundError(
+                f"init_checkpoint {init_ckpt!r} does not exist. "
+                f"Either remove the recipe's init_checkpoint to train from "
+                f"scratch (expect 5-10 AP loss vs. a COCO init), or bind-mount "
+                f"the path into the container."
+            )
     trainer.launch(
         cfg_fpath,
+        init_checkpoint=init_ckpt,
         num_gpus=int(config.num_gpus),
         distributed=bool(config.distributed),
     )

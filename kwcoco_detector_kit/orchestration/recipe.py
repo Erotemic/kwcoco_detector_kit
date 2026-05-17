@@ -187,6 +187,7 @@ def _build_sweep_data(recipe: Dict[str, Any], cli_overrides: Dict[str, Any]) -> 
         "category_name", "lr", "backbone_lr", "use_amp", "scale_tier",
         "num_gpus", "distributed", "keep_going",
         "do_export", "do_eval", "do_bench",
+        "init_checkpoint",
     }
     for k in passthrough_keys:
         if k in sweep:

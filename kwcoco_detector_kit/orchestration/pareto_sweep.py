@@ -172,6 +172,19 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
     # policy.json so the eligibility manifest joins the sweep index +
     # policy + eval metrics on the same key.
     os.environ["KCD_CANDIDATE_ID"] = candidate_id
+    # Per-cell init_checkpoint overrides the sweep-level setting. We
+    # resolve here so generate_config records it in policy.json AND
+    # launch() picks it up via the same value.
+    init_ckpt = cell.get("init_checkpoint") or config.init_checkpoint
+    if init_ckpt:
+        init_ckpt = str(init_ckpt)
+        if not Path(init_ckpt).exists():
+            raise FileNotFoundError(
+                f"init_checkpoint {init_ckpt!r} does not exist. "
+                f"Either remove the recipe's init_checkpoint to train from "
+                f"scratch (expect 5-10 AP loss vs. a COCO init), or bind-mount "
+                f"the path into the container."
+            )
     cfg_fpath = trainer.generate_config(
         train_kwcoco_fpath=str(config.train_kwcoco),
         vali_kwcoco_fpath=str(config.vali_kwcoco),
@@ -186,26 +199,16 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
         lr=float(config.lr),
         backbone_lr=float(config.backbone_lr),
         use_amp=bool(config.use_amp),
+        init_checkpoint=init_ckpt,
         channels="r|g|b",
         scale_tier=str(config.scale_tier),
         num_gpus=int(config.num_gpus),
         data_format="kwcoco",
         extra={"category_name": str(config.category_name),
-               "candidate_id": candidate_id},
+               "candidate_id": candidate_id,
+               "init_checkpoint": init_ckpt or ""},
     )
-    # Per-cell init_checkpoint overrides the sweep-level setting. Use it
-    # when the matrix has cells from different variant families that need
-    # different pretrained .pth files (e.g., pico vs n in the same sweep).
-    init_ckpt = cell.get("init_checkpoint") or config.init_checkpoint
-    if init_ckpt:
-        init_ckpt = str(init_ckpt)
-        if not Path(init_ckpt).exists():
-            raise FileNotFoundError(
-                f"init_checkpoint {init_ckpt!r} does not exist. "
-                f"Either remove the recipe's init_checkpoint to train from "
-                f"scratch (expect 5-10 AP loss vs. a COCO init), or bind-mount "
-                f"the path into the container."
-            )
+    # init_ckpt was already resolved + validated above.
     trainer.launch(
         cfg_fpath,
         init_checkpoint=init_ckpt,

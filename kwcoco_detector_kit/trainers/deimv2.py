@@ -691,6 +691,7 @@ class DEIMv2Trainer:
         lr: float = 5e-4,
         backbone_lr: float = 2.5e-5,
         use_amp: bool = True,
+        init_checkpoint: Optional[str] = None,
         channels: str = "r|g|b",
         scale_tier: str = "M",
         num_gpus: int = 1,
@@ -758,6 +759,13 @@ class DEIMv2Trainer:
             "candidate_id",
             f"{canonical}_{int(input_hw[0])}x{int(input_hw[1])}",
         )
+        # Prefer the explicit init_checkpoint kwarg; fall back to extra
+        # for backwards-compat with callers that still pass it that way.
+        _effective_init_ckpt = (
+            init_checkpoint
+            if init_checkpoint is not None
+            else (extra or {}).get("init_checkpoint", "")
+        )
         _dump_policy_json(
             workdir,
             candidate_id=str(candidate_id),
@@ -771,7 +779,7 @@ class DEIMv2Trainer:
             lr=float(lr),
             backbone_lr=float(backbone_lr),
             use_amp=bool(use_amp),
-            init_ckpt=str((extra or {}).get("init_checkpoint", "")),
+            init_ckpt=str(_effective_init_ckpt or ""),
             generated_cfg_fpath=cfg_fpath,
         )
 
@@ -832,6 +840,18 @@ class DEIMv2Trainer:
         ]
         if init_checkpoint:
             args += ["-t", str(init_checkpoint)]
+            print(
+                f"[deimv2.launch] fine-tuning from init_checkpoint="
+                f"{init_checkpoint}",
+                flush=True,
+            )
+        else:
+            print(
+                "[deimv2.launch] no init_checkpoint -- training from scratch "
+                "(HGNetv2 stem only). For shitspotter-scale data this loses "
+                "~5-10 AP vs. fine-tuning from deimv2_<variant>_coco.pth.",
+                flush=True,
+            )
         if resume:
             args += ["-r", str(resume)]
 

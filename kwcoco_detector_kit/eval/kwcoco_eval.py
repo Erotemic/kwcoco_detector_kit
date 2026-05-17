@@ -88,10 +88,16 @@ def run_kwcoco_eval(
     kcd_root: Path,
     candidate_id: str,
     category_name: str = "widget",
-    score_thresh: float = 0.30,
+    score_thresh: float = 0.001,
     force: bool = False,
 ) -> Path:
-    """Score every image in `test_kwcoco` with the trained model; eval."""
+    """Score every image in `test_kwcoco` with the trained model; eval.
+
+    ``score_thresh`` defaults to 0.001 so the COCO AP integral sees the
+    full precision-recall curve. Setting this above ~0.01 caps recall
+    and artificially deflates AP (the prior 0.30 default cost ~0.07-0.10
+    AP on shitspotter pico@416 vs. matching v4's evaluation).
+    """
     import kwcoco
 
     workdir = Path(workdir)

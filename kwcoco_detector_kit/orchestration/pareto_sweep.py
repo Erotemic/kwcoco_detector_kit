@@ -229,7 +229,7 @@ def _run_export(trainer, *, workdir: Path, cell, force: bool = False) -> Path:
 
 
 def _run_eval(trainer, *, workdir: Path, test_kwcoco: str, kcd_root: Path,
-              candidate_id: str, category_name: str, score_thresh: float = 0.30,
+              candidate_id: str, category_name: str, score_thresh: float = 0.001,
               force: bool = False) -> Path:
     from kwcoco_detector_kit.eval.kwcoco_eval import run_kwcoco_eval
     return run_kwcoco_eval(

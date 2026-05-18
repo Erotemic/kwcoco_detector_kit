@@ -47,6 +47,26 @@ _HGNETV2_SIZES = ["atto", "femto", "pico", "n", "s", "m", "l", "x"]
 _DINOV3_SIZES = ["s", "m", "l", "x"]
 
 
+# Upstream `configs/deimv2/deimv2_hgnetv2_*_coco.yml`:
+#   atto/femto/pico   -> explicit `use_gateway: False`
+#   n/s/m/l/x         -> no override (Python default `True`)
+# The kit's generated YAML setting this EXPLICITLY for every variant
+# guarantees the eval-time model architecture matches the training-time
+# one (which in turn matches what the COCO-pretrained .pth was saved
+# with). Without it, a single missed merge or YAMLConfig quirk can
+# silently flip the value -- which is what bit us on v7 n@640.
+_USE_GATEWAY_BY_SIZE: Dict[str, bool] = {
+    "atto":  False,
+    "femto": False,
+    "pico":  False,
+    "n":     True,
+    "s":     True,
+    "m":     True,
+    "l":     True,
+    "x":     True,
+}
+
+
 # Per-variant DEIMTransformer.num_queries. Mirrors upstream configs at
 # tpl/DEIMv2/configs/deimv2/*. The smaller HGNetv2 variants override the
 # 300 default with a smaller value (matches their decoder capacity); the
@@ -69,6 +89,7 @@ def _build_variants() -> Dict[str, Dict[str, Any]]:
             "upstream_config_relpath": f"configs/deimv2/deimv2_hgnetv2_{size}_coco.yml",
             "supports_dynamic_input": False,
             "num_queries": _NUM_QUERIES_BY_VARIANT.get(name, _DEFAULT_NUM_QUERIES),
+            "use_gateway": _USE_GATEWAY_BY_SIZE.get(size, True),
         }
     for size in _DINOV3_SIZES:
         name = f"deimv2_dinov3_{size}"
@@ -78,6 +99,7 @@ def _build_variants() -> Dict[str, Dict[str, Any]]:
             "upstream_config_relpath": f"configs/deimv2/deimv2_dinov3_{size}_coco.yml",
             "supports_dynamic_input": True,
             "num_queries": _NUM_QUERIES_BY_VARIANT.get(name, _DEFAULT_NUM_QUERIES),
+            "use_gateway": True,  # DINOv3 variants follow upstream default
         }
     return out
 
@@ -397,6 +419,7 @@ def _build_train_yml(
     vali_mscoco_fpath: str,
     family: str,
     num_queries: int,
+    use_gateway: bool,
     input_hw: Tuple[int, int],
     num_classes: int,
     batch_size: int,
@@ -429,6 +452,15 @@ def _build_train_yml(
         # consistent with num_queries * num_classes (lesson #26).
         "PostProcessor": {
             "num_top_queries": _effective_num_top_queries(num_queries, num_classes),
+        },
+        # Explicit use_gateway per variant. The pico/atto/femto upstream
+        # configs disable it; the larger HGNetv2 variants and DINOv3
+        # variants leave it at the Python default (True). Without this
+        # explicit setting, eval-time YAMLConfig has been observed to
+        # pick a different value than train-time, breaking the eval-time
+        # state_dict load (v7 n@640 episode).
+        "DEIMTransformer": {
+            "use_gateway": bool(use_gateway),
         },
         "train_dataloader": {
             "total_batch_size": int(batch_size),
@@ -603,6 +635,26 @@ class DEIMv2Predictor:
         cfg = YAMLConfig(config_fpath, resume=ckpt_fpath)
         if "HGNetv2" in cfg.yaml_cfg:
             cfg.yaml_cfg["HGNetv2"]["pretrained"] = False
+
+        # Detect architecture knobs from the saved state_dict and force-set
+        # the YAML before building the model. Without this, eval-time can
+        # pick a different DEIMTransformer default than train-time and the
+        # subsequent load_state_dict fails on missing/unexpected keys.
+        # Currently covers: use_gateway. The n/s/m/l/x variants train with
+        # gateway=True (Python default + COCO pretrained .pth has gateway
+        # keys); the pico/atto/femto variants explicitly set False in their
+        # upstream configs.
+        any_gateway_key = any("gateway." in k for k in state.keys())
+        cfg.yaml_cfg.setdefault("DEIMTransformer", {})
+        existing_gw = cfg.yaml_cfg["DEIMTransformer"].get("use_gateway")
+        if existing_gw is None or bool(existing_gw) != bool(any_gateway_key):
+            cfg.yaml_cfg["DEIMTransformer"]["use_gateway"] = bool(any_gateway_key)
+            print(
+                f"[DEIMv2Predictor] forcing DEIMTransformer.use_gateway="
+                f"{bool(any_gateway_key)} (inferred from checkpoint state_dict)",
+                flush=True,
+            )
+
         cfg.model.load_state_dict(state)
 
         class _Wrapper(nn.Module):
@@ -734,6 +786,7 @@ class DEIMv2Trainer:
             vali_mscoco_fpath=str(vali_ann_fpath),
             family=family,
             num_queries=int(info["num_queries"]),
+            use_gateway=bool(info["use_gateway"]),
             input_hw=tuple(input_hw),
             num_classes=int(num_classes),
             batch_size=int(batch_size),

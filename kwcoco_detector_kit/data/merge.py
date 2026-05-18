@@ -93,13 +93,22 @@ def run(config):
     out_dset.fpath = str(dst_fpath)
     cat_id = out_dset.add_category(name=target_cat)
 
-    # positives — copy images + their annotations
+    # positives — copy images + their annotations.
+    # Rewrite file_name to the SOURCE bundle's absolute path before adding
+    # to the merged bundle. The merged bundle gets dumped in a different
+    # directory (e.g. rounds/round0/) and a copied-as-is relative
+    # file_name would resolve to a nonexistent path under that dir.
+    # Same treatment for the negatives block below.
     pos_set = set(pos_gids)
     src_gid_to_new_gid: dict = {}
     for img in pos_dset.images().objs:
         if img["id"] not in pos_set:
             continue
         new_img = {k: v for k, v in img.items() if k != "id"}
+        try:
+            new_img["file_name"] = str(pos_dset.get_image_fpath(img["id"]))
+        except Exception:
+            pass
         new_gid = out_dset.add_image(**new_img)
         src_gid_to_new_gid[("pos", img["id"])] = new_gid
 
@@ -127,6 +136,10 @@ def run(config):
         if img["id"] not in neg_set:
             continue
         new_img = {k: v for k, v in img.items() if k != "id"}
+        try:
+            new_img["file_name"] = str(neg_dset.get_image_fpath(img["id"]))
+        except Exception:
+            pass
         out_dset.add_image(**new_img)
 
     out_dset.dump()

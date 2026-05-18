@@ -55,6 +55,15 @@ class RoundLoopConfig(scfg.DataConfig):
     use_amp = scfg.Value(False)
     scale_tier = scfg.Value("S")
     num_gpus = scfg.Value(1)
+    init_checkpoint = scfg.Value(
+        None,
+        help=(
+            "Optional path to a pretrained detector checkpoint (e.g. "
+            "deimv2_<variant>_coco.pth) used as the round-0 init. Rounds "
+            "1+ automatically resume from the prior round's best_stg2.pth "
+            "(or best_stg1.pth fallback) and ignore this value."
+        ),
+    )
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -124,7 +133,8 @@ def _train_round(trainer, *, train_kwcoco: Path, vali_kwcoco: Path, workdir: Pat
                  variant: str, input_hw, train_policy: str, num_classes: int,
                  batch_size: int, val_batch_size: int, num_epochs: int,
                  lr: float, backbone_lr: float, use_amp: bool, scale_tier: str,
-                 num_gpus: int, category_name: str):
+                 num_gpus: int, category_name: str,
+                 init_checkpoint=None):
     cfg_fpath = trainer.generate_config(
         train_kwcoco_fpath=str(train_kwcoco),
         vali_kwcoco_fpath=str(vali_kwcoco),
@@ -139,13 +149,19 @@ def _train_round(trainer, *, train_kwcoco: Path, vali_kwcoco: Path, workdir: Pat
         lr=float(lr),
         backbone_lr=float(backbone_lr),
         use_amp=bool(use_amp),
+        init_checkpoint=str(init_checkpoint) if init_checkpoint else None,
         channels="r|g|b",
         scale_tier=str(scale_tier),
         num_gpus=int(num_gpus),
         data_format="kwcoco",
-        extra={"category_name": category_name},
+        extra={"category_name": category_name,
+               "init_checkpoint": str(init_checkpoint) if init_checkpoint else ""},
     )
-    trainer.launch(cfg_fpath, num_gpus=int(num_gpus))
+    trainer.launch(
+        cfg_fpath,
+        init_checkpoint=str(init_checkpoint) if init_checkpoint else None,
+        num_gpus=int(num_gpus),
+    )
 
 
 def run(config):
@@ -168,6 +184,7 @@ def run(config):
 
     final_workdir = None
     neg_for_round = neg_fpath_initial
+    prior_round_workdir = None
     for round_index in range(int(config.num_rounds)):
         round_dpath = rounds_root / f"round{round_index}"
         round_dpath.mkdir(parents=True, exist_ok=True)
@@ -186,6 +203,29 @@ def run(config):
             category_name=str(config.category_name),
         )
 
+        # Pick the init checkpoint for THIS round.
+        #   round 0           -> --init_checkpoint (COCO-pretrained .pth)
+        #   round 1, 2, ...   -> prior round's best_stg2.pth (fall back to
+        #                        best_stg1.pth, then last.pth)
+        if round_index == 0:
+            this_init_ckpt = (
+                str(config.init_checkpoint) if config.init_checkpoint else None
+            )
+        else:
+            this_init_ckpt = None
+            for cand in ("best_stg2.pth", "best_stg1.pth", "last.pth"):
+                p = prior_round_workdir / cand
+                if p.exists():
+                    this_init_ckpt = str(p)
+                    break
+            if this_init_ckpt is None:
+                raise FileNotFoundError(
+                    f"round_loop: round {round_index} expected a checkpoint "
+                    f"under {prior_round_workdir} but none of best_stg2.pth/"
+                    f"best_stg1.pth/last.pth exist. Did the prior round "
+                    f"train successfully?"
+                )
+
         # Train this round
         os.environ["KCD_ROUND"] = str(round_index)
         _train_round(
@@ -197,7 +237,9 @@ def run(config):
             backbone_lr=float(config.backbone_lr), use_amp=bool(config.use_amp),
             scale_tier=str(config.scale_tier), num_gpus=int(config.num_gpus),
             category_name=str(config.category_name),
+            init_checkpoint=this_init_ckpt,
         )
+        prior_round_workdir = workdir
 
         # Mine hard negatives unless this is the last round
         if round_index + 1 < int(config.num_rounds):

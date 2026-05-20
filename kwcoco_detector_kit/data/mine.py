@@ -49,6 +49,31 @@ class MineConfig(scfg.DataConfig):
     )
     score_thresh = scfg.Value(0.30, help='tile is "hard" iff max pred score >= this')
     max_hard_per_round = scfg.Value(5000, help="cap total hard negatives; keep highest-scoring")
+    # Mining budget — how many negative tiles to actually SCORE this
+    # round. Without this, a full sweep over a million-tile negative pool
+    # on CPU can take 12+ hours per round and dominate the experiment
+    # wall-clock. Default (0) means "score them all" (legacy behavior).
+    max_candidates = scfg.Value(
+        0,
+        help=(
+            "cap on the number of negative tiles to score this round. "
+            "0 = no cap (score every tile). Recommended: 30000-100000 for "
+            "the shitspotter multi-scale tile pool. Cuts mining wall-clock "
+            "by ~30x with only modest hard-neg-recall loss."
+        ),
+    )
+    candidate_strategy = scfg.Value(
+        "stratified_by_image",
+        choices=["first", "random", "stratified_by_image"],
+        help=(
+            "How to sub-sample negatives when max_candidates > 0: "
+            "'first' = first N gids (deterministic, biased toward earlier "
+            "images); 'random' = uniform sample; 'stratified_by_image' = "
+            "pick a balanced count per source image so the round 0 pool "
+            "doesn't oversample one scene (recommended)."
+        ),
+    )
+    candidate_seed = scfg.Value(0, help="rng seed for random/stratified strategies")
     device = scfg.Value("cpu", help="torch device (cpu / cuda:N)")
     progress = scfg.Value(True, help="show ProgIter")
 
@@ -88,7 +113,65 @@ def run(config):
         img["id"] for img in neg_dset.images().objs
         if img.get("tile_role") in (None, "negative")
     ]
-    print(f"      candidates: {len(candidate_gids)} negative tiles")
+    n_pool = len(candidate_gids)
+    print(f"      pool: {n_pool} negative tiles")
+
+    # Apply mining budget. Without this, scoring an N-tile pool runs in
+    # O(N) and dominates the round-loop wall-clock for the shitspotter
+    # multi-scale tile bundles (~1.8M tiles ≈ 16 h per round on a 3090).
+    max_candidates = int(config.max_candidates or 0)
+    if 0 < max_candidates < n_pool:
+        strategy = str(config.candidate_strategy)
+        rng = np.random.RandomState(int(config.candidate_seed))
+        if strategy == "first":
+            candidate_gids = candidate_gids[:max_candidates]
+        elif strategy == "random":
+            candidate_gids = list(
+                rng.choice(candidate_gids, size=max_candidates, replace=False)
+            )
+        elif strategy == "stratified_by_image":
+            # The "source image" for a tile is encoded in the
+            # multiscale-tile filename; fall back to the kwcoco image's
+            # `source_gid` field, else its own gid.
+            def _src_key(img):
+                if "source_gid" in img:
+                    return img["source_gid"]
+                fn = img.get("file_name", "")
+                # filenames look like gid00005049_s10_x00320_y00960_negative.jpg
+                # use the gid prefix as the source key
+                base = Path(fn).name
+                prefix = base.split("_")[0] if "_" in base else base
+                return prefix
+            groups: dict = {}
+            for img in neg_dset.images().objs:
+                if img["id"] not in set(candidate_gids):
+                    continue
+                groups.setdefault(_src_key(img), []).append(img["id"])
+            # round-robin pick per-source until budget hit
+            picked: list = []
+            keys = list(groups.keys())
+            rng.shuffle(keys)
+            cycles = max(1, max_candidates // max(1, len(keys)) + 1)
+            for _ in range(cycles):
+                for k in keys:
+                    bucket = groups[k]
+                    if bucket:
+                        picked.append(bucket.pop(
+                            int(rng.randint(0, len(bucket)))
+                        ))
+                        if len(picked) >= max_candidates:
+                            break
+                if len(picked) >= max_candidates:
+                    break
+            candidate_gids = picked
+        else:
+            raise ValueError(f"unknown candidate_strategy: {strategy!r}")
+        print(
+            f"      budget: {max_candidates} of {n_pool} via "
+            f"strategy={strategy} -> scoring {len(candidate_gids)} tiles"
+        )
+    else:
+        print(f"      budget: unlimited (scoring all {n_pool} candidates)")
 
     scored: List[Tuple[float, int]] = []
     iterator = ub.ProgIter(candidate_gids, desc="mine score neg tiles", enabled=bool(config.progress))

@@ -46,6 +46,12 @@ class RoundLoopConfig(scfg.DataConfig):
     round0_neg_over_pos = scfg.Value(3.0)
     mine_score_thresh = scfg.Value(0.30)
     max_hard_per_round = scfg.Value(5000)
+    # Mining budget passed to data.mine (see MineConfig for semantics).
+    # 0 = score every negative tile (legacy behavior); ~30000-100000 is
+    # the recommended range for million-tile pools.
+    mine_max_candidates = scfg.Value(0)
+    mine_candidate_strategy = scfg.Value("stratified_by_image")
+    mine_candidate_seed = scfg.Value(0)
 
     num_epochs = scfg.Value(2)
     batch_size = scfg.Value(2)
@@ -111,7 +117,10 @@ def _merge_round(*, pos_kwcoco: Path, neg_kwcoco: Path, dst: Path,
 
 
 def _mine_round(*, neg_kwcoco: Path, workdir: Path, dst: Path,
-                trainer_name: str, score_thresh: float, max_hard: int):
+                trainer_name: str, score_thresh: float, max_hard: int,
+                max_candidates: int = 0,
+                candidate_strategy: str = "stratified_by_image",
+                candidate_seed: int = 0):
     """In-process call into data.mine.run."""
     from kwcoco_detector_kit.data.mine import MineConfig, run as mine_run
 
@@ -124,6 +133,9 @@ def _mine_round(*, neg_kwcoco: Path, workdir: Path, dst: Path,
             "trainer": trainer_name,
             "score_thresh": float(score_thresh),
             "max_hard_per_round": int(max_hard),
+            "max_candidates": int(max_candidates),
+            "candidate_strategy": str(candidate_strategy),
+            "candidate_seed": int(candidate_seed),
         },
     )
     mine_run(cfg)
@@ -249,6 +261,9 @@ def run(config):
                 trainer_name=trainer_name,
                 score_thresh=float(config.mine_score_thresh),
                 max_hard=int(config.max_hard_per_round),
+                max_candidates=int(config.mine_max_candidates),
+                candidate_strategy=str(config.mine_candidate_strategy),
+                candidate_seed=int(config.mine_candidate_seed),
             )
             neg_for_round = hard_kwcoco
 

@@ -204,6 +204,27 @@ def run(config):
         workdir = round_dpath / "runs" / f"{variant}_{int(config.input_hw[0])}x{int(config.input_hw[1])}"
         workdir.mkdir(parents=True, exist_ok=True)
 
+        # Resume protocol: skip train/mine for this round if a prior
+        # invocation already produced their durable outputs. The merge
+        # step is cheap (<60s) so we re-run it unconditionally to pick
+        # up bugfixes -- the new train_round.kwcoco.zip is overwritten
+        # each call.
+        already_trained = (workdir / "best_stg2.pth").exists() or (
+            workdir / "best_stg1.pth").exists()
+        next_round_hard_negs = round_dpath / "hard_negs.kwcoco.zip"
+        # Mining is "done" iff hard_negs is on disk and looks plausible
+        # (non-trivial size); kwcoco zips with no images are ~1 KiB.
+        try:
+            already_mined = (next_round_hard_negs.exists()
+                             and next_round_hard_negs.stat().st_size > 4096)
+        except OSError:
+            already_mined = False
+        if already_trained:
+            print(
+                f"[round_loop] round {round_index}: skip train -- "
+                f"checkpoint exists at {workdir}"
+            )
+
         # Merge pos + (random or hard) negatives for this round
         n_over_p = (
             float(config.round0_neg_over_pos) if round_index == 0
@@ -238,33 +259,41 @@ def run(config):
                     f"train successfully?"
                 )
 
-        # Train this round
+        # Train this round (skip if already done)
         os.environ["KCD_ROUND"] = str(round_index)
-        _train_round(
-            trainer, train_kwcoco=train_kwcoco, vali_kwcoco=str(config.vali_kwcoco),
-            workdir=workdir, variant=variant, input_hw=config.input_hw,
-            train_policy=effective_policy, num_classes=int(config.num_classes),
-            batch_size=int(config.batch_size), val_batch_size=int(config.val_batch_size),
-            num_epochs=int(config.num_epochs), lr=float(config.lr),
-            backbone_lr=float(config.backbone_lr), use_amp=bool(config.use_amp),
-            scale_tier=str(config.scale_tier), num_gpus=int(config.num_gpus),
-            category_name=str(config.category_name),
-            init_checkpoint=this_init_ckpt,
-        )
+        if not already_trained:
+            _train_round(
+                trainer, train_kwcoco=train_kwcoco, vali_kwcoco=str(config.vali_kwcoco),
+                workdir=workdir, variant=variant, input_hw=config.input_hw,
+                train_policy=effective_policy, num_classes=int(config.num_classes),
+                batch_size=int(config.batch_size), val_batch_size=int(config.val_batch_size),
+                num_epochs=int(config.num_epochs), lr=float(config.lr),
+                backbone_lr=float(config.backbone_lr), use_amp=bool(config.use_amp),
+                scale_tier=str(config.scale_tier), num_gpus=int(config.num_gpus),
+                category_name=str(config.category_name),
+                init_checkpoint=this_init_ckpt,
+            )
         prior_round_workdir = workdir
 
-        # Mine hard negatives unless this is the last round
+        # Mine hard negatives unless this is the last round (skip if done)
         if round_index + 1 < int(config.num_rounds):
             hard_kwcoco = round_dpath / "hard_negs.kwcoco.zip"
-            _mine_round(
-                neg_kwcoco=neg_fpath_initial, workdir=workdir, dst=hard_kwcoco,
-                trainer_name=trainer_name,
-                score_thresh=float(config.mine_score_thresh),
-                max_hard=int(config.max_hard_per_round),
-                max_candidates=int(config.mine_max_candidates),
-                candidate_strategy=str(config.mine_candidate_strategy),
-                candidate_seed=int(config.mine_candidate_seed),
-            )
+            if already_mined:
+                print(
+                    f"[round_loop] round {round_index}: skip mine -- "
+                    f"hard_negs.kwcoco.zip already on disk "
+                    f"({next_round_hard_negs.stat().st_size // 1024} KiB)"
+                )
+            else:
+                _mine_round(
+                    neg_kwcoco=neg_fpath_initial, workdir=workdir, dst=hard_kwcoco,
+                    trainer_name=trainer_name,
+                    score_thresh=float(config.mine_score_thresh),
+                    max_hard=int(config.max_hard_per_round),
+                    max_candidates=int(config.mine_max_candidates),
+                    candidate_strategy=str(config.mine_candidate_strategy),
+                    candidate_seed=int(config.mine_candidate_seed),
+                )
             neg_for_round = hard_kwcoco
 
         final_workdir = workdir

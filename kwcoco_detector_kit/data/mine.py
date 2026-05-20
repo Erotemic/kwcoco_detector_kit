@@ -213,6 +213,16 @@ def run(config):
         if gid not in hard_gids:
             continue
         new = {k: v for k, v in img.items() if k != "id"}
+        # Rewrite file_name to absolute via the SOURCE bundle's resolver.
+        # The output bundle is dumped to a different directory than the
+        # input pool (rounds/roundN/hard_negs.kwcoco.zip vs the original
+        # data/train_tiles_neg.kwcoco.zip), so a copied-as-is relative
+        # file_name resolves to a nonexistent path downstream. Same fix
+        # pattern as data/merge.py (commit b0db63c).
+        try:
+            new["file_name"] = str(neg_dset.get_image_fpath(gid))
+        except Exception:
+            pass
         new["max_pred_score"] = float(score_by_gid[gid])
         new["mined_for_round"] = int(os.environ.get("KCD_ROUND", "0"))
         out_dset.add_image(id=gid, **new)

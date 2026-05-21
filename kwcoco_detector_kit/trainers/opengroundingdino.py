@@ -322,8 +322,8 @@ class OpenGroundingDINOTrainer:
         gen_dpath = workdir / "generated_configs"
         gen_dpath.mkdir(parents=True, exist_ok=True)
 
-        category_name = (extra or {}).get("category_name", "widget")
-        label_list = (extra or {}).get("label_list", [category_name])
+        category_names = list((extra or {}).get("category_names") or ["widget"])
+        label_list = (extra or {}).get("label_list", list(category_names))
 
         # 1. kwcoco -> MSCOCO json for both splits
         from kwcoco_detector_kit.data.coco_export import export_mscoco
@@ -332,15 +332,15 @@ class OpenGroundingDINOTrainer:
         vali_mscoco = prep_dpath / "vali.mscoco.json"
         export_mscoco(
             train_kwcoco_fpath, train_mscoco,
-            category_name=category_name,
+            category_names=category_names,
             include_segmentations=False,
-            category_id=0,
+            category_id_start=0,
         )
         export_mscoco(
             vali_kwcoco_fpath, vali_mscoco,
-            category_name=category_name,
+            category_names=category_names,
             include_segmentations=False,
-            category_id=0,
+            category_id_start=0,
         )
 
         # 2. Convert train MSCOCO -> ODVG (needs the OGDino submodule).

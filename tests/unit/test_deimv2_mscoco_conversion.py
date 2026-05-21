@@ -25,7 +25,7 @@ def test_kwcoco_input_is_converted_to_mscoco(synthetic_kwcoco, tmp_path):
         lr=5e-4, backbone_lr=2.5e-5, use_amp=False,
         channels="r|g|b", scale_tier="S", num_gpus=1,
         data_format="kwcoco",
-        extra={"category_name": "widget"},
+        extra={"category_names": ["widget"]},
     )
     cfg = yaml.safe_load(Path(cfg_fpath).read_text())
     train_ann = cfg["train_dataloader"]["dataset"]["ann_file"]
@@ -50,8 +50,8 @@ def test_mscoco_input_is_passed_through(synthetic_kwcoco, tmp_path):
 
     # Pre-build an MSCOCO file.
     pre_mscoco = tmp_path / "pre.mscoco.json"
-    export_mscoco(synthetic_kwcoco, pre_mscoco, category_name="widget",
-                  include_segmentations=False, category_id=0)
+    export_mscoco(synthetic_kwcoco, pre_mscoco, category_names=["widget"],
+                  include_segmentations=False, category_id_start=0)
 
     trainer = get_trainer("deimv2")
     workdir = tmp_path / "wd"
@@ -66,7 +66,7 @@ def test_mscoco_input_is_passed_through(synthetic_kwcoco, tmp_path):
         lr=5e-4, backbone_lr=2.5e-5, use_amp=False,
         channels="r|g|b", scale_tier="S", num_gpus=1,
         data_format="kwcoco",
-        extra={"category_name": "widget"},
+        extra={"category_names": ["widget"]},
     )
     cfg = yaml.safe_load(Path(cfg_fpath).read_text())
     train_ann = cfg["train_dataloader"]["dataset"]["ann_file"]

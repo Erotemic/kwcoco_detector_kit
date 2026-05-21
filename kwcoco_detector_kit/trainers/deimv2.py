@@ -493,12 +493,14 @@ def _build_train_yml(
     }
 
 
-def _ensure_mscoco(input_fpath, dst_fpath: Path, *, category_name: str) -> Path:
+def _ensure_mscoco(input_fpath, dst_fpath: Path, *, category_names) -> Path:
     """If `input_fpath` is already a .mscoco.json, return it unchanged.
     Otherwise (kwcoco bundle), export to MSCOCO at `dst_fpath` and return that.
 
     DEIMv2's train.py consumes MSCOCO; the kit's pipeline gives us kwcoco.
     This helper isolates the conversion at the trainer-plugin boundary.
+    The MSCOCO ``category_id`` assigned to each name is ``i`` for the i-th
+    name in ``category_names``, matching DEIMv2's 0-indexed class labels.
     """
     from kwcoco_detector_kit.data.coco_export import export_mscoco
 
@@ -508,8 +510,8 @@ def _ensure_mscoco(input_fpath, dst_fpath: Path, *, category_name: str) -> Path:
         return Path(src)
     dst_fpath.parent.mkdir(parents=True, exist_ok=True)
     export_mscoco(
-        src, dst_fpath, category_name=category_name,
-        include_segmentations=False, category_id=0,
+        src, dst_fpath, category_names=list(category_names),
+        include_segmentations=False, category_id_start=0,
     )
     return dst_fpath
 
@@ -763,14 +765,20 @@ class DEIMv2Trainer:
         # DEIMv2's train.py reads MSCOCO json (not kwcoco). When the caller
         # hands us a .kwcoco path, convert it to MSCOCO inside the workdir.
         # Already-MSCOCO inputs (.mscoco.json) pass through unchanged.
-        category_name = (extra or {}).get("category_name", "widget")
+        category_names = list((extra or {}).get("category_names") or ["widget"])
+        if len(category_names) != int(num_classes):
+            raise ValueError(
+                f"num_classes={num_classes} disagrees with "
+                f"len(category_names)={len(category_names)} (names={category_names!r}); "
+                "DEIMv2 maps the i-th category name to class index i."
+            )
         train_ann_fpath = _ensure_mscoco(
             train_kwcoco_fpath, workdir / "detector_prepared" / "train.mscoco.json",
-            category_name=category_name,
+            category_names=category_names,
         )
         vali_ann_fpath = _ensure_mscoco(
             vali_kwcoco_fpath, workdir / "detector_prepared" / "vali.mscoco.json",
-            category_name=category_name,
+            category_names=category_names,
         )
 
         policy = _resolve_policy(

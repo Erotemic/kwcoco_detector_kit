@@ -110,8 +110,10 @@ The Dockerfile is ordered so expensive layers survive normal source edits:
 3. PyTorch / torchvision / torchaudio from the selected CUDA wheel index.
 4. Third-party Python dependencies from `pyproject.toml`.
 5. OpenGroundingDINO source + compiled CUDA extension.
-6. The fast-changing `kwcoco_detector_kit`, docs, examples, and Docker helper
-   files.
+6. The fast-changing `kwcoco_detector_kit`, docs, examples, tests, and Docker
+   helper files.
+7. `pytest tests/unit -m "not requires_gpu"` verification (set
+   `--build-arg RUN_TESTS=0` to skip).
 
 That means editing toolkit Python files should only rerun the final editable
 install / env-check layer, not the PyTorch download or CUDA extension build.
@@ -169,6 +171,38 @@ print(torch.__version__)
 print(torch.version.cuda)
 print(subprocess.check_output([shutil.which('nvcc'), '--version'], text=True))
 PY
+```
+
+## Run Tests Against The Baked Image
+
+The `tests/` tree is copied into the image and the unit suite is executed at
+build time as a verification step (skip with `--build-arg RUN_TESTS=0`).
+
+To re-run the same suite against an already-built image — useful for catching
+regressions in the deploy environment without rebuilding from scratch:
+
+```bash
+# Full unit suite, no GPU needed.
+docker run --rm kwcoco-detector-kit:ogdino-auto \
+    kcd-pytest tests/unit -m "not requires_gpu"
+
+# Subset.
+docker run --rm kwcoco-detector-kit:ogdino-auto \
+    kcd-pytest tests/unit/test_multiclass_pipeline.py -v
+
+# GPU-aware integration tests (forward --gpus all so requires_gpu tests run).
+docker run --rm --gpus all kwcoco-detector-kit:ogdino-auto \
+    kcd-pytest tests/unit
+```
+
+If you bind-mount an editable checkout at `/workspace/kwcoco_detector_kit` to
+iterate on tests interactively, point the helper at it:
+
+```bash
+docker run --rm --gpus all \
+    -v /home/joncrall/code/kwcoco_detector_kit:/workspace/kwcoco_detector_kit \
+    -e KCD_TEST_REPO=/workspace/kwcoco_detector_kit \
+    kwcoco-detector-kit:ogdino-auto kcd-pytest tests/unit
 ```
 
 ## Run VIAME Training

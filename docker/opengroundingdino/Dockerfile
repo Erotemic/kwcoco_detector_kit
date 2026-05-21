@@ -100,7 +100,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         matplotlib \
         timm \
         colorlog \
-        jsonlines
+        jsonlines \
+        "pytest>=8" \
+        "pytest-cov>=4"
 
 # Copy and build the upstream trainer before copying the rest of the kit. The
 # CUDA extension depends on torch/nvcc + OpenGroundingDINO source, not on most
@@ -118,6 +120,7 @@ COPY docs /opt/kwcoco_detector_kit/docs
 COPY examples /opt/kwcoco_detector_kit/examples
 COPY docker /opt/kwcoco_detector_kit/docker
 COPY dev /opt/kwcoco_detector_kit/dev
+COPY tests /opt/kwcoco_detector_kit/tests
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     ${PYTHON_BIN} -m pip install --no-deps -e "." && \
@@ -125,8 +128,20 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         --groups core,opengroundingdino \
         --strict_import
 
+# Run the fast unit tests inside the image to verify the build. Tests
+# marked `requires_gpu` skip automatically (no GPU during docker build).
+# Set --build-arg RUN_TESTS=0 to skip this step in CI / for quick rebuilds.
+ARG RUN_TESTS=1
+RUN if [ "${RUN_TESTS}" = "1" ]; then \
+        cd /opt/kwcoco_detector_kit && \
+        ${PYTHON_BIN} -m pytest tests/unit -m "not requires_gpu" -q --no-header; \
+    else \
+        echo "skipping in-image pytest run (RUN_TESTS=${RUN_TESTS})"; \
+    fi
+
 COPY docker/opengroundingdino/entrypoint.sh /usr/local/bin/kcd-ogdino-entrypoint
-RUN chmod +x /usr/local/bin/kcd-ogdino-entrypoint
+COPY docker/opengroundingdino/kcd-pytest /usr/local/bin/kcd-pytest
+RUN chmod +x /usr/local/bin/kcd-ogdino-entrypoint /usr/local/bin/kcd-pytest
 
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/kcd-ogdino-entrypoint"]

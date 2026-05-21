@@ -83,6 +83,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     ${PYTHON_BIN} -m pip install \
         "kwcoco>=0.8" \
         "kwimage>=0.11" \
+        "kwutil>=0.3" \
         "ubelt>=1.4" \
         "scriptconfig>=0.9" \
         "numpy>=1.24" \
@@ -120,6 +121,7 @@ COPY docs /opt/kwcoco_detector_kit/docs
 COPY examples /opt/kwcoco_detector_kit/examples
 COPY docker /opt/kwcoco_detector_kit/docker
 COPY dev /opt/kwcoco_detector_kit/dev
+COPY smoketests /opt/kwcoco_detector_kit/smoketests
 COPY tests /opt/kwcoco_detector_kit/tests
 
 RUN --mount=type=cache,target=/root/.cache/pip \

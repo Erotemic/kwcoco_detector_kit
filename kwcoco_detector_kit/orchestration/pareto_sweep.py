@@ -52,8 +52,15 @@ class SweepConfig(scfg.DataConfig):
     num_epochs = scfg.Value(2)
     batch_size = scfg.Value(2)
     val_batch_size = scfg.Value(2)
-    num_classes = scfg.Value(1)
-    category_name = scfg.Value("widget")
+    category_names = scfg.Value(
+        "widget",
+        help=(
+            "comma-separated category names to train on. Order determines "
+            "the class index assigned in the trained detector, which the "
+            "predictor returns at eval time. num_classes is derived from "
+            "the length of this list."
+        ),
+    )
     lr = scfg.Value(1e-2)
     backbone_lr = scfg.Value(1e-2)
     use_amp = scfg.Value(False)
@@ -167,6 +174,17 @@ def _find_bench_json(workdir: Path) -> Optional[Path]:
 # ---------------------------------------------------------------------------
 
 
+def _parse_category_names(raw) -> List[str]:
+    if isinstance(raw, (list, tuple)):
+        names = [str(n).strip() for n in raw]
+    else:
+        names = [s.strip() for s in str(raw).split(",")]
+    names = [n for n in names if n]
+    if not names:
+        raise ValueError("category_names must contain at least one name")
+    return names
+
+
 def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Path:
     # Propagate the sweep's candidate identity into the trainer's
     # policy.json so the eligibility manifest joins the sweep index +
@@ -185,6 +203,7 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
                 f"scratch (expect 5-10 AP loss vs. a COCO init), or bind-mount "
                 f"the path into the container."
             )
+    category_names = _parse_category_names(config.category_names)
     cfg_fpath = trainer.generate_config(
         train_kwcoco_fpath=str(config.train_kwcoco),
         vali_kwcoco_fpath=str(config.vali_kwcoco),
@@ -192,7 +211,7 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
         variant=str(cell["variant"]),
         input_hw=tuple(cell["input_hw"]),
         train_policy=str(cell.get("train_policy", "fixed")),
-        num_classes=int(config.num_classes),
+        num_classes=len(category_names),
         batch_size=int(config.batch_size),
         val_batch_size=int(config.val_batch_size),
         num_epochs=int(config.num_epochs),
@@ -204,7 +223,7 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
         scale_tier=str(config.scale_tier),
         num_gpus=int(config.num_gpus),
         data_format="kwcoco",
-        extra={"category_name": str(config.category_name),
+        extra={"category_names": category_names,
                "candidate_id": candidate_id,
                "init_checkpoint": init_ckpt or ""},
     )
@@ -229,7 +248,7 @@ def _run_export(trainer, *, workdir: Path, cell, force: bool = False) -> Path:
 
 
 def _run_eval(trainer, *, workdir: Path, test_kwcoco: str, kcd_root: Path,
-              candidate_id: str, category_name: str, score_thresh: float = 0.001,
+              candidate_id: str, category_names, score_thresh: float = 0.001,
               force: bool = False) -> Path:
     from kwcoco_detector_kit.eval.kwcoco_eval import run_kwcoco_eval
     return run_kwcoco_eval(
@@ -238,7 +257,7 @@ def _run_eval(trainer, *, workdir: Path, test_kwcoco: str, kcd_root: Path,
         test_kwcoco=test_kwcoco,
         kcd_root=kcd_root,
         candidate_id=candidate_id,
-        category_name=category_name,
+        category_names=category_names,
         score_thresh=score_thresh,
         force=force,
     )
@@ -348,7 +367,7 @@ def run(config):
                     _run_eval(
                         trainer, workdir=workdir, test_kwcoco=str(config.test_kwcoco),
                         kcd_root=kcd_root, candidate_id=candidate_id,
-                        category_name=str(config.category_name),
+                        category_names=_parse_category_names(config.category_names),
                         force=bool(config.force_eval),
                     )
                 except Exception as ex:

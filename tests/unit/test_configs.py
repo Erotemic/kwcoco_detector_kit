@@ -10,7 +10,7 @@ def test_dataset_config_introspects_kwcoco(synthetic_kwcoco):
 
     assert cfg["kind"] == "kwcoco_detector_kit.dataset"
     assert cfg["dataset"]["train_kwcoco"] == str(Path(synthetic_kwcoco))
-    assert cfg["dataset"]["category_name"] == "widget"
+    assert cfg["dataset"]["category_names"] == ["widget"]
     assert cfg["suggestions"]["introspection"]["train"]["n_images"] == 4
     assert cfg["suggestions"]["introspection"]["train"]["n_annotations"] == 4
     assert cfg["suggestions"]["introspection"]["categories"] == ["widget"]
@@ -46,7 +46,7 @@ def test_config_init_inspect_edit_roundtrip(tmp_path, synthetic_kwcoco):
     data_cfg = read_yaml(data_fpath)
     assert env_cfg["environment"]["execution"] == "slurm-docker"
     assert env_cfg["environment"]["docker"]["image"] == "kwcoco-detector-kit:test"
-    assert data_cfg["dataset"]["category_name"] == "widget"
+    assert data_cfg["dataset"]["category_names"] == ["widget"]
 
     inspect_cfg = ConfigInspectConfig.cli(
         argv=False,

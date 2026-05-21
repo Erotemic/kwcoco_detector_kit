@@ -21,7 +21,7 @@ def _make_tile_bundle(synthetic_kwcoco_factory, tmp_path, *, name="raw"):
         argv=False,
         data={
             "src": str(src), "dst": str(dst),
-            "mode": "multiscale", "category_name": "widget",
+            "mode": "multiscale", "category_names": "widget",
             "tile_size": 64, "source_scales": "1.0",
             "stride_frac": 1.0, "min_gt_area_frac": 0.001,
             "min_source_scale_long_side": 32,

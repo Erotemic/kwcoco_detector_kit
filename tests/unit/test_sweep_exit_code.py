@@ -27,7 +27,7 @@ def test_sweep_exits_nonzero_when_a_cell_fails(synthetic_kwcoco, tmp_path):
         "--trainer", "mock_tiny", "--variant", "mock_tiny",
         "--input_hw", "64,64", "--train_policy", "fixed",
         "--num_epochs", "1", "--batch_size", "2", "--val_batch_size", "2",
-        "--num_classes", "1", "--category_name", "widget",
+        "--category_names", "widget",
         "--scale_tier", "S",
         "--keep_going",  # value of True (default) — confirm exit-nonzero even with keep_going
     ]

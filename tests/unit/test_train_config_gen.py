@@ -59,10 +59,11 @@ def _find_transform(transforms_block, transform_type):
 
 def _generate(trainer, tmp_path, *, variant, input_hw, train_policy="fixed",
               batch_size=4, val_batch_size=4, num_epochs=2, lr=5e-4,
-              backbone_lr=2.5e-5, num_classes=1):
+              backbone_lr=2.5e-5, category_names=("widget",)):
     """Drive ``generate_config`` and return the parsed YAML dict."""
     workdir = tmp_path / "wd"
     workdir.mkdir(parents=True, exist_ok=True)
+    category_names = list(category_names)
     cfg_fpath = trainer.generate_config(
         train_kwcoco_fpath="/tmp/train.mscoco.json",
         vali_kwcoco_fpath="/tmp/vali.mscoco.json",
@@ -70,7 +71,7 @@ def _generate(trainer, tmp_path, *, variant, input_hw, train_policy="fixed",
         variant=variant,
         input_hw=tuple(input_hw),
         train_policy=train_policy,
-        num_classes=num_classes,
+        num_classes=len(category_names),
         batch_size=batch_size,
         val_batch_size=val_batch_size,
         num_epochs=num_epochs,
@@ -81,7 +82,7 @@ def _generate(trainer, tmp_path, *, variant, input_hw, train_policy="fixed",
         scale_tier="M",
         num_gpus=1,
         data_format="kwcoco",
-        extra=None,
+        extra={"category_names": category_names},
     )
     assert Path(cfg_fpath).exists(), f"generate_config returned non-existent {cfg_fpath}"
     return yaml.safe_load(Path(cfg_fpath).read_text())
@@ -285,8 +286,9 @@ def test_dinov3_optimizer_block(variant, tmp_path):
 
 def test_num_classes_is_not_hardcoded_to_one(tmp_path):
     trainer = _get_trainer()
+    five_cats = [f"cat{i}" for i in range(5)]
     cfg = _generate(trainer, tmp_path, variant="deimv2_hgnetv2_n",
-                    input_hw=(320, 320), num_classes=5)
+                    input_hw=(320, 320), category_names=five_cats)
     assert int(cfg["num_classes"]) == 5, (
         f"num_classes={cfg['num_classes']} but caller passed 5"
     )

@@ -38,8 +38,7 @@ Schema (``schema: recipe.v1``)
         num_epochs: 80
         batch_size: 16
         val_batch_size: 8
-        num_classes: 1
-        category_name: poop
+        category_names: poop
         lr: 0.0004
         backbone_lr: 0.0004
         use_amp: true
@@ -183,8 +182,8 @@ def _build_sweep_data(recipe: Dict[str, Any], cli_overrides: Dict[str, Any]) -> 
     # All remaining sweep fields are forwarded if present. Skipping the
     # known wrapper keys avoids leaking 'matrix' / 'trainer' twice.
     passthrough_keys = {
-        "num_epochs", "batch_size", "val_batch_size", "num_classes",
-        "category_name", "lr", "backbone_lr", "use_amp", "scale_tier",
+        "num_epochs", "batch_size", "val_batch_size",
+        "category_names", "lr", "backbone_lr", "use_amp", "scale_tier",
         "num_gpus", "distributed", "keep_going",
         "do_export", "do_eval", "do_bench",
         "init_checkpoint",

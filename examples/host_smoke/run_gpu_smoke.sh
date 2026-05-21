@@ -133,14 +133,14 @@ if [ "$SKIP_CPU_BASELINE" != "1" ]; then
     "$PYTHON_BIN" -m kwcoco_detector_kit demo-data \
         "$KCD_ROOT/raw.kwcoco.zip" \
         --num_images 8 --num_categories 1 \
-        --image_size 256,256 --category_name widget
+        --image_size 256,256 --category_names widget
     rc1=$?
     "$PYTHON_BIN" -m kwcoco_detector_kit tile \
         "$KCD_ROOT/raw.kwcoco.zip" "$KCD_ROOT/tiles.kwcoco.zip" \
         --mode multiscale --tile_size 128 --source_scales "1.0,0.5" \
         --stride_frac 1.0 --min_gt_area_frac 0.001 \
         --min_source_scale_long_side 32 --keep_negative true \
-        --category_name widget
+        --category_names widget
     rc2=$?
     "$PYTHON_BIN" -m kwcoco_detector_kit sweep \
         --train_kwcoco "$KCD_ROOT/tiles.kwcoco.zip" \
@@ -150,7 +150,7 @@ if [ "$SKIP_CPU_BASELINE" != "1" ]; then
         --trainer mock_tiny --variant mock_tiny \
         --input_hw 128,128 --train_policy fixed \
         --num_epochs 1 --batch_size 2 --val_batch_size 2 \
-        --num_classes 1 --category_name widget \
+        --category_names widget \
         --scale_tier S --num_gpus 1
     rc3=$?
     set -e
@@ -178,7 +178,7 @@ if [ "$SKIP_DEIMV2" != "1" ]; then
             --trainer deimv2 --variant deimv2_hgnetv2_atto \
             --input_hw 256,256 --train_policy fixed \
             --num_epochs 1 --batch_size 4 --val_batch_size 4 \
-            --num_classes 1 --category_name widget \
+            --category_names widget \
             --lr 5e-4 --backbone_lr 2.5e-5 --use_amp false \
             --scale_tier S --num_gpus 1
         rc=$?
@@ -239,7 +239,7 @@ split('negative', '$KCD_ROOT/neg.kwcoco.zip')
         --num_rounds 2 --round0_neg_over_pos 1.0 \
         --mine_score_thresh 0.05 --max_hard_per_round 10 \
         --num_epochs 1 --batch_size 2 --val_batch_size 2 \
-        --num_classes 1 --category_name widget \
+        --category_names widget \
         --scale_tier S --num_gpus 1
     rc=$?
     set -e

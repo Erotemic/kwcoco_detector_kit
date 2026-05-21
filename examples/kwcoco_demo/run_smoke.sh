@@ -28,7 +28,7 @@ echo "=== 1. Synth kwcoco bundle ==="
     --num_images 16 \
     --num_categories 1 \
     --image_size 256,256 \
-    --category_name "$KCD_CATEGORY"
+    --category_names "$KCD_CATEGORY"
 
 echo
 echo "=== 2. Tile (multiscale) ==="
@@ -43,7 +43,7 @@ echo "=== 2. Tile (multiscale) ==="
     --min_source_scale_long_side 64 \
     --min_keep_fraction 0.20 \
     --oversize_factor 1.0 \
-    --category_name "$KCD_CATEGORY"
+    --category_names "$KCD_CATEGORY"
 
 echo
 echo "=== 3. Train + export + eval + bench + manifest ==="
@@ -52,7 +52,7 @@ echo "=== 3. Train + export + eval + bench + manifest ==="
     --vali_kwcoco  "$KCD_ROOT/tiles.kwcoco.zip" \
     --test_kwcoco  "$KCD_ROOT/raw.kwcoco.zip" \
     --workdir      "$KCD_ROOT" \
-    --category_name "$KCD_CATEGORY" \
+    --category_names "$KCD_CATEGORY" \
     --trainer mock_tiny \
     --variant mock_tiny \
     --tier S \

@@ -327,7 +327,7 @@ def default_dataset_config(*, name: Optional[str] = None,
                            train_kwcoco: Optional[str] = None,
                            vali_kwcoco: Optional[str] = None,
                            test_kwcoco: Optional[str] = None,
-                           category_name: Optional[str] = None) -> YamlDict:
+                           category_names=None) -> YamlDict:
     info = introspect_dataset(
         train_kwcoco=train_kwcoco,
         vali_kwcoco=vali_kwcoco,
@@ -337,15 +337,16 @@ def default_dataset_config(*, name: Optional[str] = None,
         train_path = Path(str(train_kwcoco)).expanduser() if train_kwcoco else None
         name = train_path.parent.name if train_path else "my_kwcoco_dataset"
     categories = info.get("categories", [])
-    if category_name is None and len(categories) == 1:
-        category_name = categories[0]
+    if not category_names:
+        # Default to whatever the source kwcoco contains (any count).
+        category_names = list(categories) or ["object"]
     return {
         "version": 1,
         "kind": "kwcoco_detector_kit.dataset",
         "dataset": {
             "name": name,
             "task": "detection",
-            "category_name": category_name,
+            "category_names": list(category_names),
             "channels": "r|g|b",
             "train_kwcoco": _as_path_text(train_kwcoco),
             "vali_kwcoco": _as_path_text(vali_kwcoco),
@@ -383,7 +384,7 @@ def make_suggestion_table(env_cfg: Optional[Mapping[str, Any]] = None,
     if dataset_cfg:
         rows.extend([
             ("dataset.name", get_dotted(dataset_cfg, "dataset.name"), "dataset label"),
-            ("dataset.category_name", get_dotted(dataset_cfg, "dataset.category_name"), "single-class convenience"),
+            ("dataset.category_names", get_dotted(dataset_cfg, "dataset.category_names"), "ordered class names"),
             ("dataset.train_kwcoco", get_dotted(dataset_cfg, "dataset.train_kwcoco"), "training kwcoco"),
             ("suggestions.introspection.train.n_images", get_dotted(dataset_cfg, "suggestions.introspection.train.n_images"), "train images"),
             ("suggestions.introspection.train.n_annotations", get_dotted(dataset_cfg, "suggestions.introspection.train.n_annotations"), "train annotations"),
@@ -450,7 +451,7 @@ class ConfigInitConfig(scfg.DataConfig):
     vali_kwcoco = scfg.Value(None, help="validation kwcoco path")
     test_kwcoco = scfg.Value(None, help="test kwcoco path")
     name = scfg.Value(None, help="dataset name")
-    category_name = scfg.Value(None, help="primary category name for single-class workflows")
+    category_names = scfg.Value(None, help="comma-separated category names (train order)")
     execution = scfg.Value(None, help="host, docker, or slurm-docker")
     docker_image = scfg.Value(None, help="docker image tag to put in the environment config")
     overwrite = scfg.Value(False, isflag=True, help="replace existing YAML files")
@@ -498,12 +499,18 @@ def init_configs(config) -> int:
         execution=config.execution,
         docker_image=config.docker_image,
     )
+    if config.category_names is None:
+        cli_cats = None
+    elif isinstance(config.category_names, (list, tuple)):
+        cli_cats = [str(n).strip() for n in config.category_names if str(n).strip()]
+    else:
+        cli_cats = [s.strip() for s in str(config.category_names).split(",") if s.strip()]
     dataset_cfg = default_dataset_config(
         name=config.name,
         train_kwcoco=config.train_kwcoco,
         vali_kwcoco=config.vali_kwcoco,
         test_kwcoco=config.test_kwcoco,
-        category_name=config.category_name,
+        category_names=cli_cats,
     )
     write_yaml(env_fpath, env_cfg)
     write_yaml(dataset_fpath, dataset_cfg)

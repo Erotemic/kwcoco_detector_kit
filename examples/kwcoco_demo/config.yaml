@@ -1,6 +1,6 @@
 # kwcoco_demo — CPU smoke configuration.
 # Every key here is a CLI argument to `python -m kwcoco_detector_kit run-all`.
-category_name: widget
+category_names: widget
 trainer: mock_tiny
 variant: mock_tiny
 tier: S

@@ -53,10 +53,12 @@ class DemoDataCLI(scfg.DataConfig):
 
     dst = scfg.Value(None, position=1, required=True, help="output kwcoco path")
     num_images = scfg.Value(16, help="number of images to synthesize")
-    num_categories = scfg.Value(1, help="number of categories")
     image_size = scfg.Value([256, 256], help="image size [H, W]")
     seed = scfg.Value(0)
-    category_name = scfg.Value("widget", help="single-category convenience name")
+    category_names = scfg.Value(
+        "widget",
+        help="comma-separated category names; boxes are round-robin assigned",
+    )
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -71,11 +73,19 @@ class DemoDataCLI(scfg.DataConfig):
         asset_dpath = bundle_dpath / (dst.stem.replace(".kwcoco", "") + "_assets")
         asset_dpath.mkdir(parents=True, exist_ok=True)
 
+        raw = config.category_names
+        if isinstance(raw, (list, tuple)):
+            category_names = [str(n).strip() for n in raw if str(n).strip()]
+        else:
+            category_names = [s.strip() for s in str(raw).split(",") if s.strip()]
+        if not category_names:
+            category_names = ["widget"]
+
         rng = np.random.RandomState(int(config.seed))
         H, W = int(config.image_size[0]), int(config.image_size[1])
         dset = kwcoco.CocoDataset()
         dset.fpath = str(dst)
-        cid = dset.add_category(name=str(config.category_name))
+        cids = [dset.add_category(name=name) for name in category_names]
 
         for k in range(int(config.num_images)):
             img = (rng.rand(H, W, 3) * 255).astype(np.uint8)
@@ -91,12 +101,13 @@ class DemoDataCLI(scfg.DataConfig):
                 width=W, height=H, name=f"demo_{k:04d}",
             )
             dset.add_annotation(
-                image_id=gid, category_id=cid,
+                image_id=gid, category_id=cids[k % len(cids)],
                 bbox=[float(bx), float(by), float(bw), float(bh)],
                 area=float(bw * bh), iscrowd=0,
             )
         dset.dump()
-        print(f"wrote {dset.fpath} ({int(config.num_images)} images)")
+        print(f"wrote {dset.fpath} ({int(config.num_images)} images, "
+              f"{len(category_names)} classes: {category_names})")
 
 
 def _register_module(name, module):
@@ -164,7 +175,7 @@ class RunAllCLI(scfg.DataConfig):
     vali_kwcoco = scfg.Value(None, help="validation kwcoco (defaults to train_kwcoco)")
     test_kwcoco = scfg.Value(None, help="test kwcoco (defaults to train_kwcoco)")
     workdir = scfg.Value(None, required=True, help="workspace root (sets KCD_ROOT)")
-    category_name = scfg.Value("widget")
+    category_names = scfg.Value("widget", help="comma-separated category names")
     trainer = scfg.Value("mock_tiny")
     variant = scfg.Value("mock_tiny")
     tier = scfg.Value("S")
@@ -201,7 +212,7 @@ class RunAllCLI(scfg.DataConfig):
                 "batch_size": int(config.batch_size),
                 "val_batch_size": int(config.batch_size),
                 "scale_tier": str(config.tier),
-                "category_name": str(config.category_name),
+                "category_names": str(config.category_names),
                 "lr": 1e-2,
                 "backbone_lr": 1e-2,
                 "use_amp": False,

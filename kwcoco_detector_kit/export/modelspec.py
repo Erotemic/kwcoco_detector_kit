@@ -9,14 +9,14 @@ Modelspec sidecar — a small JSON file written next to every exported
 - preprocess: {scale: 1/255, normalize_mean: [...], normalize_std: [...]}
 - postprocess: {score_thresh, nms_iou_thresh, topk}
 - modelId: canonical cross-device ID
-- meta: variant, category_name, candidate_kind, generated_at, kit_version
+- meta: variant, category_names, candidate_kind, generated_at, kit_version
 """
 from __future__ import annotations
 
 import json
 import time
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Sequence
 
 
 DEFAULT_NORMALIZE_MEAN = (0.0, 0.0, 0.0)
@@ -38,7 +38,7 @@ def write_modelspec(
     postprocess_topk: int = 100,
     model_id: Optional[str] = None,
     variant: str = "",
-    category_name: str = "",
+    category_names: Sequence[str] = (),
     candidate_kind: str = "",
     extra_meta: Optional[dict] = None,
 ) -> Path:
@@ -70,7 +70,7 @@ def write_modelspec(
         },
         "meta": {
             "variant": variant,
-            "category_name": category_name,
+            "category_names": list(category_names),
             "candidate_kind": candidate_kind,
             "kit_version": _kit_version,
             "generated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

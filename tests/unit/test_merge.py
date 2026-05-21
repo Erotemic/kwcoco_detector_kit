@@ -36,14 +36,14 @@ def _build_role_bundle(bundle_dpath: Path, role: str, n: int,
 
 
 def _merge(pos, neg, dst, *, neg_over_pos, round_index=0, seed=0,
-           category_name="widget"):
+           category_names="widget"):
     from kwcoco_detector_kit.data.merge import MergeConfig, run
     cfg = MergeConfig.cli(
         argv=False,
         data={
             "pos_kwcoco": str(pos), "neg_kwcoco": str(neg), "dst": str(dst),
             "neg_over_pos": neg_over_pos, "round_index": round_index,
-            "seed": seed, "category_name": category_name,
+            "seed": seed, "category_names": category_names,
         },
     )
     run(cfg)
@@ -95,3 +95,63 @@ def test_merge_preserves_positive_annotations(tmp_path):
     dset = _merge(pos, neg, dst, neg_over_pos=1.0)
     # 3 positives x 1 ann each = 3 anns total; negatives have no anns
     assert dset.n_annots == 3
+
+
+def _build_multiclass_positive(bundle_dpath: Path, n_per_class: int,
+                               category_names=("widget", "gizmo"),
+                               seed: int = 0) -> Path:
+    import kwimage
+
+    rng = np.random.RandomState(seed)
+    asset_dpath = bundle_dpath / "positive_mc_assets"
+    asset_dpath.mkdir(parents=True, exist_ok=True)
+    dset = kwcoco.CocoDataset()
+    dset.fpath = str(bundle_dpath / "positive_mc.kwcoco.zip")
+    cids = [dset.add_category(name=n) for n in category_names]
+    counter = 0
+    for k in range(n_per_class * len(category_names)):
+        img = (rng.rand(64, 64, 3) * 255).astype(np.uint8)
+        fpath = asset_dpath / f"pos_{k:04d}.jpg"
+        kwimage.imwrite(str(fpath), img)
+        gid = dset.add_image(
+            file_name=str(fpath.relative_to(bundle_dpath)),
+            width=64, height=64, tile_role="positive",
+        )
+        cid = cids[counter % len(cids)]
+        counter += 1
+        dset.add_annotation(
+            image_id=gid, category_id=cid,
+            bbox=[10.0, 10.0, 20.0, 20.0], area=400.0, iscrowd=0,
+        )
+    dset.dump()
+    return Path(dset.fpath)
+
+
+def test_merge_multi_class_preserves_per_class_counts(tmp_path):
+    pos = _build_multiclass_positive(
+        tmp_path, n_per_class=3, category_names=("widget", "gizmo")
+    )
+    neg = _build_role_bundle(tmp_path / "neg_dir", "negative", 5)
+    dst = tmp_path / "out_mc.kwcoco.zip"
+    dset = _merge(pos, neg, dst, neg_over_pos=1.0,
+                  category_names="widget,gizmo")
+    # 6 positive images x 1 ann each = 6 anns; should split 3/3 by class.
+    cat_id_to_name = {c["id"]: c["name"] for c in dset.dataset["categories"]}
+    counts = {"widget": 0, "gizmo": 0}
+    for ann in dset.annots().objs:
+        counts[cat_id_to_name[ann["category_id"]]] += 1
+    assert counts == {"widget": 3, "gizmo": 3}, counts
+
+
+def test_merge_multi_class_drops_unrequested(tmp_path):
+    pos = _build_multiclass_positive(
+        tmp_path, n_per_class=3, category_names=("widget", "gizmo", "doodad")
+    )
+    neg = _build_role_bundle(tmp_path / "neg_dir", "negative", 5)
+    dst = tmp_path / "out_drop.kwcoco.zip"
+    dset = _merge(pos, neg, dst, neg_over_pos=1.0,
+                  category_names="widget,gizmo")
+    cat_names = {c["name"] for c in dset.dataset["categories"]}
+    assert cat_names == {"widget", "gizmo"}
+    # 9 positive images total; only widget+gizmo annotations kept = 6
+    assert dset.n_annots == 6

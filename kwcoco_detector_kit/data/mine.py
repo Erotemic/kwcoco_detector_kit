@@ -142,9 +142,13 @@ def run(config):
                 base = Path(fn).name
                 prefix = base.split("_")[0] if "_" in base else base
                 return prefix
+            # Build the membership set ONCE -- with a 1.8M-tile pool,
+            # rebuilding the set per-iteration is O(N^2) and hangs for
+            # hours before the first ProgIter line prints.
+            candidate_id_set = set(candidate_gids)
             groups: dict = {}
             for img in neg_dset.images().objs:
-                if img["id"] not in set(candidate_gids):
+                if img["id"] not in candidate_id_set:
                     continue
                 groups.setdefault(_src_key(img), []).append(img["id"])
             # round-robin pick per-source until budget hit

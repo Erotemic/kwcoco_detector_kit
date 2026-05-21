@@ -30,7 +30,7 @@ def test_mock_tiny_generate_config_writes_yaml(synthetic_kwcoco, tmp_workdir):
         use_amp=False,
         channels="r|g|b", scale_tier="S", num_gpus=1,
         data_format="kwcoco",
-        extra={"category_name": "widget"},
+        extra={"category_names": ["widget"]},
     )
     assert Path(cfg).exists()
 
@@ -58,7 +58,7 @@ def test_mock_tiny_train_export_predict_cycle(synthetic_kwcoco, tmp_workdir):
         use_amp=False,
         channels="r|g|b", scale_tier="S", num_gpus=1,
         data_format="kwcoco",
-        extra={"category_name": "widget"},
+        extra={"category_names": ["widget"]},
     )
     trainer.launch(cfg, num_gpus=1)
 

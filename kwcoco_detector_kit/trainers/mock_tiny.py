@@ -130,20 +130,25 @@ def _build_model(num_queries: int = NUM_QUERIES_DEFAULT, prior_boxes_norm=None):
     return MockTinyDetector()
 
 
-def _collect_prior_boxes(kwcoco_fpath, category_name: str = "widget",
+def _collect_prior_boxes(kwcoco_fpath, category_names=("widget",),
                          num_queries: int = NUM_QUERIES_DEFAULT):
-    """Derive K oracle prior boxes in normalised xyxy from a kwcoco bundle."""
+    """Derive K oracle prior boxes in normalised xyxy from a kwcoco bundle.
+
+    mock_tiny is a smoke detector — it treats every annotation in
+    ``category_names`` as a generic "object" for the binary objectness
+    head. Multi-class is accepted at the API level but flattened here.
+    """
     import kwcoco
     import torch
 
     K = int(num_queries)
     dset = kwcoco.CocoDataset.coerce(str(kwcoco_fpath))
     cats_by_name = {c["name"]: c["id"] for c in dset.dataset.get("categories", [])}
-    target_cid = cats_by_name.get(category_name)
+    target_cids = {cats_by_name[name] for name in category_names if name in cats_by_name}
 
     priors = []
     for ann in dset.annots().objs:
-        if target_cid is not None and ann.get("category_id") != target_cid:
+        if target_cids and ann.get("category_id") not in target_cids:
             continue
         bbox = ann.get("bbox")
         if not bbox:
@@ -183,9 +188,14 @@ def _matched_loss(pred_boxes_xyxy, pred_scores, gt_boxes_xyxy, gt_present, orig_
     return obj_loss + box_loss, float(box_loss.item()), float(obj_loss.item())
 
 
-def _coco_to_batches(kwcoco_fpath, category_name, input_h, input_w,
+def _coco_to_batches(kwcoco_fpath, category_names, input_h, input_w,
                      batch_size=2, max_gt=8, shuffle=True, seed=0):
-    """Yield (images, orig_sizes, gt_boxes, gt_present) per batch."""
+    """Yield (images, orig_sizes, gt_boxes, gt_present) per batch.
+
+    All annotations whose category is in ``category_names`` are emitted
+    as generic gt boxes — mock_tiny's objectness head doesn't separate
+    classes.
+    """
     import kwcoco
     import kwimage
     import numpy as np
@@ -194,7 +204,7 @@ def _coco_to_batches(kwcoco_fpath, category_name, input_h, input_w,
     rng = np.random.RandomState(int(seed))
     dset = kwcoco.CocoDataset.coerce(str(kwcoco_fpath))
     cats_by_name = {c["name"]: c["id"] for c in dset.dataset.get("categories", [])}
-    target_cid = cats_by_name.get(category_name)
+    target_cids = {cats_by_name[name] for name in category_names if name in cats_by_name}
     img_ids = list(dset.images())
     if shuffle:
         rng.shuffle(img_ids)
@@ -223,7 +233,7 @@ def _coco_to_batches(kwcoco_fpath, category_name, input_h, input_w,
             sizes.append([orig_w, orig_h])
             anns = [
                 a for a in dset.annots(gid=gid).objs
-                if (target_cid is None or a.get("category_id") == target_cid)
+                if (not target_cids or a.get("category_id") in target_cids)
                 and a.get("bbox") is not None
             ]
             gt_xyxy = np.zeros((max_gt, 4), dtype=np.float32)
@@ -354,7 +364,7 @@ class MockTinyTrainer:
             "trainer": self.name,
             "variant": str(variant),
             "candidate_kind": "smoke",
-            "category_name": (extra or {}).get("category_name", "widget"),
+            "category_names": list((extra or {}).get("category_names") or ["widget"]),
             "num_classes": int(num_classes),
             "num_queries": (extra or {}).get("num_queries", NUM_QUERIES_DEFAULT),
             "input_hw": [int(input_hw[0]), int(input_hw[1])],
@@ -445,10 +455,10 @@ def _train_inproc(cfg: dict, workdir: Path, *, resume=None) -> Path:
     torch.manual_seed(int(cfg.get("seed", 0)))
 
     input_h, input_w = cfg["input_hw"]
-    category_name = cfg.get("category_name", "widget")
+    category_names = list(cfg.get("category_names") or ["widget"])
     num_queries = int(cfg.get("num_queries", NUM_QUERIES_DEFAULT))
 
-    prior_boxes = _collect_prior_boxes(cfg["train_kwcoco"], category_name, num_queries)
+    prior_boxes = _collect_prior_boxes(cfg["train_kwcoco"], category_names, num_queries)
     model = _build_model(num_queries=num_queries, prior_boxes_norm=prior_boxes)
     if resume is not None and Path(str(resume)).exists():
         state = torch.load(str(resume), map_location="cpu", weights_only=False)
@@ -474,7 +484,7 @@ def _train_inproc(cfg: dict, workdir: Path, *, resume=None) -> Path:
     history: List[Tuple[int, int, float, float]] = []
     for epoch in range(int(cfg["num_epochs"])):
         for step, (imgs, sizes, gt_xyxy, gt_present) in enumerate(_coco_to_batches(
-            cfg["train_kwcoco"], category_name, int(input_h), int(input_w),
+            cfg["train_kwcoco"], category_names, int(input_h), int(input_w),
             batch_size=int(cfg["batch_size"]), shuffle=True,
             seed=int(cfg.get("seed", 0)) + epoch,
         )):
@@ -491,7 +501,7 @@ def _train_inproc(cfg: dict, workdir: Path, *, resume=None) -> Path:
     vali_losses = []
     with torch.no_grad():
         for imgs, sizes, gt_xyxy, gt_present in _coco_to_batches(
-            cfg["vali_kwcoco"], category_name, int(input_h), int(input_w),
+            cfg["vali_kwcoco"], category_names, int(input_h), int(input_w),
             batch_size=int(cfg["val_batch_size"]), shuffle=False,
             seed=int(cfg.get("seed", 0)),
         ):

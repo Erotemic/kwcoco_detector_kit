@@ -34,7 +34,7 @@ def test_pseudo_label_kwcoco_roundtrip(synthetic_kwcoco, tmp_workdir, tmp_path):
         scale_tier="S",
         num_gpus=1,
         data_format="kwcoco",
-        extra={"category_name": "widget", "score_thresh": 0.01},
+        extra={"category_names": ["widget"], "score_thresh": 0.01},
     )
     trainer.launch(cfg, num_gpus=1)
 
@@ -44,7 +44,7 @@ def test_pseudo_label_kwcoco_roundtrip(synthetic_kwcoco, tmp_workdir, tmp_path):
         out=teacher_pkg,
         trainer="mock_tiny",
         variant="mock_tiny",
-        category_name="widget",
+        category_names=["widget"],
         dataset_slug="test",
         experiment_slug="distill",
         username="test",
@@ -89,12 +89,12 @@ def test_pseudo_label_min_annotations_filter(synthetic_kwcoco, tmp_workdir, tmp_
         num_classes=1, batch_size=2, val_batch_size=2, num_epochs=1,
         lr=1e-2, backbone_lr=1e-2, use_amp=False,
         channels="r|g|b", scale_tier="S", num_gpus=1, data_format="kwcoco",
-        extra={"category_name": "widget", "score_thresh": 0.01},
+        extra={"category_names": ["widget"], "score_thresh": 0.01},
     )
     trainer.launch(cfg, num_gpus=1)
     pkg = tmp_path / "pkg.zip"
     build_model_package(workdir=tmp_workdir, out=pkg, trainer="mock_tiny",
-                        variant="mock_tiny", category_name="widget",
+                        variant="mock_tiny", category_names=["widget"],
                         dataset_slug="t", experiment_slug="t",
                         username="u", hostname="h")
 

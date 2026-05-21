@@ -15,6 +15,7 @@ ENV PATH=/opt/venv/bin:/usr/local/cuda/bin:${PATH}
 ENV CUDA_HOME=/usr/local/cuda
 ENV PYTHON_BIN=/opt/venv/bin/python
 ENV KCD_OPENGROUNDINGDINO_REPO_DPATH=/opt/kwcoco_detector_kit/tpl/Open-GroundingDino
+ENV KCD_DEIMV2_REPO_DPATH=/opt/kwcoco_detector_kit/tpl/DEIMv2
 ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 ENV TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 ENV PIP_CACHE_DIR=${PIP_CACHE_DIR}
@@ -103,7 +104,12 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         colorlog \
         jsonlines \
         "pytest>=8" \
-        "pytest-cov>=4"
+        "pytest-cov>=4" \
+        "faster-coco-eval>=1.6.7" \
+        "tensorboard" \
+        "scipy" \
+        "calflops" \
+        "safetensors"
 
 # Copy and build the upstream trainer before copying the rest of the kit. The
 # CUDA extension depends on torch/nvcc + OpenGroundingDINO source, not on most
@@ -115,6 +121,12 @@ RUN --mount=type=cache,target=/root/.cache/torch_extensions \
     cd tpl/Open-GroundingDino/models/GroundingDINO/ops && \
     ${PYTHON_BIN} setup.py build_ext --inplace -v && \
     cp MultiScaleDeformableAttention*.so /opt/kwcoco_detector_kit/tpl/Open-GroundingDino/
+
+# DEIMv2 is pure Python — no CUDA extension to compile. Copy after the
+# heavier OGDino build so kit edits don't invalidate the OGDino layer.
+COPY tpl/DEIMv2 /opt/kwcoco_detector_kit/tpl/DEIMv2
+RUN test -f /opt/kwcoco_detector_kit/tpl/DEIMv2/train.py || \
+        (echo "DEIMv2 submodule contents are missing from Docker build context. Run: git submodule update --init tpl/DEIMv2" >&2; exit 1)
 
 COPY kwcoco_detector_kit /opt/kwcoco_detector_kit/kwcoco_detector_kit
 COPY docs /opt/kwcoco_detector_kit/docs

@@ -17,14 +17,21 @@ export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-1}"
 
 cd "$(dirname "$0")/../.."
 
-if [ ! -f tpl/Open-GroundingDino/models/GroundingDINO/ops/setup.py ]; then
-    echo "Open-GroundingDino submodule is missing; initializing it now."
-    git submodule update --init tpl/Open-GroundingDino
-fi
-if [ ! -f tpl/Open-GroundingDino/models/GroundingDINO/ops/setup.py ]; then
-    echo "Failed to initialize tpl/Open-GroundingDino; cannot build Docker image." >&2
-    exit 1
-fi
+ensure_submodule() {
+    local path="$1"
+    local sentinel="$2"
+    if [ ! -f "$sentinel" ]; then
+        echo "$path submodule is missing; initializing it now."
+        git submodule update --init "$path"
+    fi
+    if [ ! -f "$sentinel" ]; then
+        echo "Failed to initialize $path; cannot build Docker image." >&2
+        exit 1
+    fi
+}
+
+ensure_submodule tpl/Open-GroundingDino tpl/Open-GroundingDino/models/GroundingDINO/ops/setup.py
+ensure_submodule tpl/DEIMv2 tpl/DEIMv2/train.py
 
 docker build \
     -f docker/opengroundingdino/Dockerfile \

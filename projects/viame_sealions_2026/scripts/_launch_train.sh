@@ -232,7 +232,7 @@ DIST_FLAG=(--num_gpus "$KCD_NUM_GPUS")
 [ "$KCD_NUM_GPUS" -gt 1 ] && DIST_FLAG+=(--distributed true)
 
 "$PYTHON_BIN" -m kwcoco_detector_kit sweep \
-    --train_kwcoco "$TILES" \
+    --train_kwcoco "$TRAIN_KWCOCO" \
     --vali_kwcoco  "$VALI_KWCOCO" \
     --test_kwcoco  "$TEST_KWCOCO" \
     --kcd_root "$KCD_ROOT" \

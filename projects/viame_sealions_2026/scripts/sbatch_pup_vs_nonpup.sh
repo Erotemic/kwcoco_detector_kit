@@ -90,6 +90,7 @@ docker run --rm \
     -e SLURM_JOB_ID="${SLURM_JOB_ID:-manual}" \
     "${NCCL_DEBUG_FLAGS[@]}" \
     -v "$KCD_DATA_ROOT:$KCD_DATA_ROOT" \
+    -v "$KCD_REPO_ROOT:$KCD_REPO_ROOT" \
     -w "$KCD_REPO_ROOT" \
     "$KCD_IMAGE" \
     bash scripts/launch_pup_vs_nonpup_arisia.sh

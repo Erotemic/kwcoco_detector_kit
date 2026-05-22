@@ -283,6 +283,26 @@ def _tile_extents_quadrant(width: int, height: int, grid: int, overlap: float) -
     return [(x0, y0, x1, y1) for (x0, x1) in xs for (y0, y1) in ys]
 
 
+# Annotation fields preserved as-is from source to tile output. The
+# core fields (id, image_id, category_id, bbox, area, iscrowd) are
+# computed by tile.py; everything in this whitelist passes through so
+# downstream pipelines (e.g. scheme-aware MSCOCO export) can collapse
+# / filter using metadata that survived the tiling step.
+#
+# Extending: add the field name; do NOT enable wildcard passthrough
+# (some sources carry multi-MB caption fields that would bloat tiles).
+_PASSTHROUGH_ANN_FIELDS = (
+    "source_category",   # raw class label before any scheme collapse
+    "track_id",          # cross-frame instance tracking
+    "caption",           # short text caption per annotation
+    "score",             # confidence (e.g. weak-labeler output)
+)
+
+
+def _passthrough_fields(src_ann: dict) -> dict:
+    return {k: src_ann[k] for k in _PASSTHROUGH_ANN_FIELDS if k in src_ann}
+
+
 def _read_image_rgb(coco_img):
     """Read a kwcoco coco_image as a (H, W, 3) uint8 ndarray; gracefully fallback."""
     import numpy as np
@@ -362,6 +382,7 @@ def _run_full_only(config, src_dset, dst_fpath, asset_dpath, target_cat_names, s
             bx, by, bw, bh = ann["bbox"]
             new_bbox = [bx * scale, by * scale, bw * scale, bh * scale]
             out["annotations"].append({
+                **_passthrough_fields(ann),
                 "id": next_ann_id,
                 "image_id": next_gid,
                 "category_id": src_cid_to_new_cid[ann["category_id"]],
@@ -434,6 +455,7 @@ def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_names, sr
                 bx, by, bw, bh = ann["bbox"]
                 new_bbox = [bx * scale, by * scale, bw * scale, bh * scale]
                 out["annotations"].append({
+                    **_passthrough_fields(ann),
                     "id": next_ann_id,
                     "image_id": next_gid,
                     "category_id": src_cid_to_new_cid[ann["category_id"]],
@@ -479,6 +501,7 @@ def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_names, sr
                 new_bbox, keep = clipped
                 new_bbox = [v * scale for v in new_bbox]
                 out["annotations"].append({
+                    **_passthrough_fields(ann),
                     "id": next_ann_id,
                     "image_id": next_gid,
                     "category_id": src_cid_to_new_cid[ann["category_id"]],
@@ -553,6 +576,7 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
                     "iscrowd": int(ann.get("iscrowd", 0)),
                     "src_ann_id": ann.get("id"),
                     "new_cid": src_cid_to_new_cid[ann["category_id"]],
+                    "passthrough": _passthrough_fields(ann),
                 })
 
             for x0 in xs:
@@ -619,6 +643,7 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
                     })
                     for ann in kept_anns:
                         out["annotations"].append({
+                            **ann.get("passthrough", {}),
                             "id": next_ann_id,
                             "image_id": next_gid,
                             "category_id": ann["new_cid"],

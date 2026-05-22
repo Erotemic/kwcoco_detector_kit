@@ -24,44 +24,56 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 : "${KCD_USE_AMP:?_launch_train.sh: missing KCD_USE_AMP}"
 
 KCD_ROOT="$KCD_RUNS_DPATH/$KCD_RUN_NAME"
-# Tile cache is keyed by (scheme, tile-params-hash). Two runs of the
-# same scheme with identical tile params share the cache; different
-# tile params get a different sub-dir so we never silently reuse
-# mismatched tiles. The hash + a human-readable tile_params.txt are
-# computed once tile params are resolved below.
+# Tile cache is keyed by tile-geometry hash and is SCHEME-AGNOSTIC.
+# Since 2026-05-22 we tile from the universal (sealion-collapsed)
+# source bundle with source_category preserved on every annotation,
+# then apply the scheme's class-collapse as a fast post-step into
+# $KCD_ROOT/scheme_applied/. That way every scheme reuses one tile
+# bundle — no per-scheme tile duplication on disk.
 
-# Scheme -> kwcoco bundles + category_names.
+# Universal source: single-category bundle with source_category on
+# each ann. Tiles come from train; vali/test stay un-tiled because
+# they're already small full-image bundles and the model's eval-time
+# transforms handle the resize.
+UNIVERSAL_DIR="$KCD_TRAINING_READY_DIR"
+UNIVERSAL_TRAIN_KWCOCO="$UNIVERSAL_DIR/train.kwcoco.zip"
+UNIVERSAL_VALI_KWCOCO="$UNIVERSAL_DIR/vali.kwcoco.zip"
+UNIVERSAL_TEST_KWCOCO="$UNIVERSAL_DIR/test.kwcoco.zip"
+kcd_require_path "universal train.kwcoco.zip" "$UNIVERSAL_TRAIN_KWCOCO"
+kcd_require_path "universal vali.kwcoco.zip" "$UNIVERSAL_VALI_KWCOCO"
+kcd_require_path "universal test.kwcoco.zip" "$UNIVERSAL_TEST_KWCOCO"
+
 SCHEME_DIR="$KCD_SCHEMES_DIR/$KCD_SCHEME"
-TRAIN_KWCOCO="$SCHEME_DIR/train.kwcoco.zip"
-VALI_KWCOCO="$SCHEME_DIR/vali.kwcoco.zip"
-TEST_KWCOCO="$SCHEME_DIR/test.kwcoco.zip"
-kcd_require_path "$KCD_SCHEME train.kwcoco.zip" "$TRAIN_KWCOCO"
-kcd_require_path "$KCD_SCHEME vali.kwcoco.zip" "$VALI_KWCOCO"
-kcd_require_path "$KCD_SCHEME test.kwcoco.zip" "$TEST_KWCOCO"
 
 if [ -z "${KCD_CATEGORY_NAMES:-}" ]; then
-    # build_scheme_kwcoco.py writes `target_classes` (list) at the top
-    # of scheme_report.json. Older schemes might use `target_order`;
-    # check both.
+    # Resolve from the scheme YAML directly. The scheme's target_order
+    # is the canonical class-index order — it's what apply_scheme uses
+    # to assign category_ids in the output bundle and what the sweep
+    # must agree on at train time.
     KCD_CATEGORY_NAMES="$("$PYTHON_BIN" -c "
-import json, pathlib, sys
-fp = pathlib.Path('$SCHEME_DIR/scheme_report.json')
-if not fp.exists():
-    sys.exit(f'scheme_report.json missing at {fp}')
-data = json.loads(fp.read_text())
-names = data.get('target_classes') or data.get('target_order') or []
+import sys, pathlib, yaml
+fp = pathlib.Path('$KCD_REPO_ROOT/docs/class_schemes.yaml')
+data = yaml.safe_load(fp.read_text()) or {}
+scheme = (data.get('schemes') or {}).get('$KCD_SCHEME')
+if not scheme:
+    sys.exit(f'scheme $KCD_SCHEME not found in {fp}')
+names = scheme.get('target_order') or scheme.get('target_classes') or []
 if not names:
-    # Last-ditch fallback: read the train split's per_target_class.
-    names = list(data.get('splits', {}).get('train', {}).get('per_target_class', {}).keys())
+    # First-seen order over the scheme's mapping.values() fallback.
+    seen = set(); ordered = []
+    for tgt in (scheme.get('mapping') or {}).values():
+        if tgt not in seen:
+            seen.add(tgt); ordered.append(tgt)
+    names = ordered
 if not names:
-    sys.exit(f'no target_classes / target_order / per_target_class in {fp}')
+    sys.exit(f'no target_order in scheme $KCD_SCHEME')
 print(','.join(names))
 ")"
 fi
 [ -z "$KCD_CATEGORY_NAMES" ] && {
     echo "ERROR: could not resolve category_names for scheme=$KCD_SCHEME" >&2
     echo "       Set KCD_CATEGORY_NAMES explicitly in the submit script, or" >&2
-    echo "       rebuild the scheme bundle (scripts/build_scheme_kwcoco.py)" >&2
+    echo "       verify docs/class_schemes.yaml has target_order for this scheme" >&2
     exit 1
 }
 
@@ -105,9 +117,11 @@ fi
 TOTAL_BATCH=$(( KCD_PER_GPU_BATCH * KCD_NUM_GPUS ))
 TOTAL_VAL_BATCH=$(( 2 * KCD_PER_GPU_BATCH * KCD_NUM_GPUS ))
 
-# Tile-cache key. Hash the actual tile params (post-default-resolution)
-# so two runs with the same effective params share, and different ones
-# don't silently collide. sha1 truncated to 8 hex chars is plenty here.
+# Tile-cache key — scheme-AGNOSTIC. Hash only tile geometry params:
+# the universal tile bundle is built once with category_names=sealion
+# and reused across every scheme via the apply-scheme post-step.
+# Different geometry → different sub-dir so we never silently reuse
+# mismatched tiles. sha1 truncated to 8 hex chars is plenty here.
 TILE_PARAMS_BODY=$(printf '%s\n' \
     "tile_size=$KCD_TILE_SIZE" \
     "source_scales=$KCD_TILE_SOURCE_SCALES" \
@@ -115,13 +129,19 @@ TILE_PARAMS_BODY=$(printf '%s\n' \
     "min_gt_area_frac=$KCD_TILE_MIN_GT_AREA_FRAC" \
     "min_keep_fraction=$KCD_TILE_MIN_KEEP_FRACTION" \
     "oversize_factor=$KCD_TILE_OVERSIZE_FACTOR" \
-    "keep_negative=$KCD_TILE_KEEP_NEGATIVE" \
-    "category_names=$KCD_CATEGORY_NAMES")
+    "keep_negative=$KCD_TILE_KEEP_NEGATIVE")
 TILE_HASH=$(printf '%s' "$TILE_PARAMS_BODY" | sha1sum | cut -c1-8)
-TILE_DIR="$KCD_TILE_CACHE_DPATH/$KCD_SCHEME/$TILE_HASH"
-TILES="$TILE_DIR/tiles.kwcoco.zip"
+TILE_DIR="$KCD_TILE_CACHE_DPATH/_universal/$TILE_HASH"
+UNIVERSAL_TILES="$TILE_DIR/tiles.kwcoco.zip"
 
-mkdir -p "$KCD_ROOT" "$KCD_ROOT/nccl_traces" "$TILE_DIR"
+# Per-scheme derivatives go under the run's own dir — fast to build,
+# tied to the run for traceability.
+SCHEME_APPLIED_DIR="$KCD_ROOT/scheme_applied"
+TRAIN_KWCOCO="$SCHEME_APPLIED_DIR/train.kwcoco.zip"
+VALI_KWCOCO="$SCHEME_APPLIED_DIR/vali.kwcoco.zip"
+TEST_KWCOCO="$SCHEME_APPLIED_DIR/test.kwcoco.zip"
+
+mkdir -p "$KCD_ROOT" "$KCD_ROOT/nccl_traces" "$TILE_DIR" "$SCHEME_APPLIED_DIR"
 # Stash the human-readable params next to the bundle so the hash is
 # invertible by inspection.
 printf '%s\n' "$TILE_PARAMS_BODY" > "$TILE_DIR/tile_params.txt"
@@ -148,8 +168,9 @@ echo "  input_hw:     $KCD_INPUT_HW"
 echo "  train_policy: $KCD_TRAIN_POLICY"
 echo "  init_ckpt:    $INIT_CKPT_DISPLAY"
 echo "  kcd_root:     $KCD_ROOT"
-echo "  tiles:        $TILES"
-echo "                (cache key = $KCD_SCHEME/$TILE_HASH; see tile_params.txt)"
+echo "  universal_tiles: $UNIVERSAL_TILES"
+echo "                   (scheme-agnostic cache key = $TILE_HASH; see tile_params.txt)"
+echo "  scheme_applied:  $SCHEME_APPLIED_DIR/<split>.kwcoco.zip"
 echo "  gpus:         $KCD_NUM_GPUS  (scale_tier=$KCD_SCALE_TIER)"
 echo "  batch:        total=$TOTAL_BATCH  per_gpu=$KCD_PER_GPU_BATCH  val_total=$TOTAL_VAL_BATCH"
 echo "  epochs:       $KCD_NUM_EPOCHS"
@@ -157,17 +178,21 @@ echo "  lr:           head=$KCD_LR  backbone=$KCD_BACKBONE_LR"
 echo "  use_amp:      $KCD_USE_AMP"
 
 echo
-echo "=== 1. Multi-scale tile (shared per-scheme cache) ==="
+echo "=== 1. Multi-scale tile (universal — scheme-agnostic) ==="
 TILE_VALID=0
-if [ -f "$TILES" ] && [ "${KCD_FORCE_RETILE:-0}" != "1" ]; then
-    sz=$(stat -c%s "$TILES" 2>/dev/null || echo 0)
+if [ -f "$UNIVERSAL_TILES" ] && [ "${KCD_FORCE_RETILE:-0}" != "1" ]; then
+    sz=$(stat -c%s "$UNIVERSAL_TILES" 2>/dev/null || echo 0)
     [ "$sz" -gt 102400 ] && TILE_VALID=1
 fi
 if [ "$TILE_VALID" = "1" ]; then
-    echo "  Reusing $TILES (KCD_FORCE_RETILE=1 to redo)."
+    echo "  Reusing $UNIVERSAL_TILES (KCD_FORCE_RETILE=1 to redo)."
 else
+    # Always tile against the single 'sealion' category of the
+    # universal source. source_category survives via the kit's
+    # passthrough whitelist, so the apply-scheme step can collapse
+    # however the scheme dictates.
     "$PYTHON_BIN" -m kwcoco_detector_kit tile \
-        "$TRAIN_KWCOCO" "$TILES" \
+        "$UNIVERSAL_TRAIN_KWCOCO" "$UNIVERSAL_TILES" \
         --mode multiscale \
         --tile_size "$KCD_TILE_SIZE" \
         --source_scales "$KCD_TILE_SOURCE_SCALES" \
@@ -176,11 +201,33 @@ else
         --min_keep_fraction "$KCD_TILE_MIN_KEEP_FRACTION" \
         --oversize_factor "$KCD_TILE_OVERSIZE_FACTOR" \
         --keep_negative "$KCD_TILE_KEEP_NEGATIVE" \
-        --category_names "$KCD_CATEGORY_NAMES"
+        --category_names sealion
 fi
 
 echo
-echo "=== 2. Sweep (train + export + eval + bench) ==="
+echo "=== 2. Apply scheme to tile + vali + test ==="
+# Re-collapses the universal source_category fields into the scheme's
+# target_classes. Fast — pure JSON rewrite, no image reads.
+APPLY_SCHEME="$KCD_REPO_ROOT/scripts/apply_scheme_to_kwcoco.py"
+kcd_require_path "apply_scheme_to_kwcoco.py" "$APPLY_SCHEME"
+for split in "train:$UNIVERSAL_TILES:$TRAIN_KWCOCO" \
+             "vali:$UNIVERSAL_VALI_KWCOCO:$VALI_KWCOCO" \
+             "test:$UNIVERSAL_TEST_KWCOCO:$TEST_KWCOCO"; do
+    name="${split%%:*}"
+    rest="${split#*:}"
+    src="${rest%:*}"
+    dst="${rest##*:}"
+    if [ -f "$dst" ] && [ "${KCD_FORCE_REAPPLY:-0}" != "1" ]; then
+        echo "  Reusing $dst (KCD_FORCE_REAPPLY=1 to redo)."
+        continue
+    fi
+    echo "  apply $KCD_SCHEME to $name: $src -> $dst"
+    "$PYTHON_BIN" "$APPLY_SCHEME" \
+        --src "$src" --dst "$dst" --scheme "$KCD_SCHEME"
+done
+
+echo
+echo "=== 3. Sweep (train + export + eval + bench) ==="
 DIST_FLAG=(--num_gpus "$KCD_NUM_GPUS")
 [ "$KCD_NUM_GPUS" -gt 1 ] && DIST_FLAG+=(--distributed true)
 
@@ -205,7 +252,7 @@ DIST_FLAG=(--num_gpus "$KCD_NUM_GPUS")
     "${DIST_FLAG[@]}"
 
 echo
-echo "=== 3. Eligibility manifest ==="
+echo "=== 4. Eligibility manifest ==="
 "$PYTHON_BIN" -m kwcoco_detector_kit manifest \
     --auto \
     --kcd_root "$KCD_ROOT" \

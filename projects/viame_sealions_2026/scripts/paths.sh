@@ -4,35 +4,28 @@
 #
 # # Canonical layout (every host)
 #
-# Every host that runs this project — arisia, namek, future workstations
-# — must expose the canonical data root at:
+# Two roots, with different read/write contracts:
 #
-#     /data/users/jon.crall/
+#   /data/Public/VIAME/        — shared data store, READ-ONLY.
+#                                Holds the official viame_sealions_2026
+#                                tree (kwcoco bundles, raw imagery).
+#                                Same path on every host (per-host
+#                                symlink to the actual storage).
 #
-# On hosts where the physical storage lives elsewhere, this is a symlink
-# (e.g. namek symlinks /data/users/jon.crall -> /media/joncrall/raid/...).
-# Scripts hard-code the canonical path; the per-host symlink is the
-# compatibility shim. Run `scripts/check_paths.sh` to verify your host
-# is set up correctly.
+#   /data/users/jon.crall/     — per-user work area, READ-WRITE.
+#                                Holds training workspaces
+#                                (kcd_sealion/), downloaded pretrained
+#                                checkpoints, and slurm logs. Same
+#                                canonical path on every host.
 #
-# # Future migration (planned, not yet active)
-#
-# The shared data store (kwcoco bundles, raw imagery) is planned to
-# move out from under jon.crall to a shared location at:
-#
-#     /data/Public/VIAME/
-#
-# Personal work directories (kcd_sealion training workspaces,
-# pretrained_models, ...) will stay under /data/users/jon.crall/.
-# When the move happens, override KCD_DATA_DPATH in your shell rc to
-# point at the new shared location; KCD_TRAINING_ROOT etc. stay put.
+# Run `scripts/check_paths.sh` to verify your host is set up correctly.
 #
 # # Override conventions
 #
 # Every variable uses `${VAR:-default}` so individual values can be
-# overridden from the calling shell or shell rc:
+# overridden from the calling shell or shell rc, e.g.:
 #
-#     export KCD_DATA_DPATH=/data/Public/VIAME/viame_sealions_2026
+#     export KCD_DATA_DPATH=/some/other/copy/of/viame_sealions_2026
 #
 # # Usage
 #
@@ -47,15 +40,17 @@
 # (training_ready_v1, unpacked/, ...) lives at $KCD_DATA_DPATH below.
 KCD_REPO_ROOT="${KCD_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
-# Canonical user data root — same on every host (via symlink where
-# needed). Run scripts/check_paths.sh to verify your host satisfies
-# this contract.
+# Per-user work area — same canonical path on every host (via symlink
+# where needed). Read-write: holds kcd_sealion/, pretrained_models/,
+# slurm_logs/.
 KCD_DATA_ROOT="${KCD_DATA_ROOT:-/data/users/jon.crall}"
 
-# Sea-lion data directory (holds training_ready_v1/, unpacked/, etc.).
-# Currently under jon.crall; will move to /data/Public/VIAME/ in the
-# future without affecting the work-dir variables below.
-KCD_DATA_DPATH="${KCD_DATA_DPATH:-$KCD_DATA_ROOT/dvc-repos/viame_sealions_2026}"
+# Shared sea-lion data store — READ-ONLY for this project. Holds the
+# official training_ready_v1/, unpacked imagery, scheme bundles. Lives
+# under /data/Public/VIAME/ since 2026-05-22; the prior location at
+# $KCD_DATA_ROOT/dvc-repos/viame_sealions_2026 may still exist as a
+# legacy symlink on some hosts but should not be relied on.
+KCD_DATA_DPATH="${KCD_DATA_DPATH:-/data/Public/VIAME/viame_sealions_2026}"
 
 # Where trained-model workspaces (per-experiment kcd_root) live. The
 # kit's `--kcd_root` writes train/eval/manifest artifacts here. Stays

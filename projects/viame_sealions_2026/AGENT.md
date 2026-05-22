@@ -34,22 +34,29 @@ Schemes (P0 → P2):
 
 ## Data location
 
-Canonical on every host:
-`/data/users/jon.crall/dvc-repos/viame_sealions_2026/` (= `KCD_DATA_DPATH`).
+Two canonical paths on every host (per-host symlinks to the real
+storage location where needed):
 
-Hosts where the storage physically lives elsewhere symlink
-`/data/users/jon.crall` to the real location (e.g. namek's raid mount).
-Scripts always use the canonical path; the symlink is the per-host
+- `/data/Public/VIAME/viame_sealions_2026/` — shared data store,
+  **READ-ONLY**. Official kwcoco bundles + imagery. This is
+  `KCD_DATA_DPATH`.
+- `/data/users/jon.crall/` — per-user work area, read-write.
+  Holds `KCD_TRAINING_ROOT` (training workspaces),
+  `KCD_PRETRAINED_ROOT` (downloaded checkpoints), `KCD_SLURM_LOG_DPATH`
+  (slurm logs). This is `KCD_DATA_ROOT`.
+
+Scripts always use the canonical paths; the symlink is the per-host
 compatibility shim. Run `scripts/check_paths.sh` to verify your host.
 
 The project tree (scripts/docs/tests) lives in the kit and is
-transferred via git; data artifacts (kwcoco bundles, unpacked imagery)
-are NOT versioned and stay in `KCD_DATA_DPATH`. Work outputs
-(`KCD_TRAINING_ROOT`, `KCD_PRETRAINED_ROOT`) also live under
-`/data/users/jon.crall/` to keep workstation SSDs from filling up.
+transferred via git; data artifacts are NOT versioned. Work outputs
+live under `/data/users/jon.crall/` to keep workstation SSDs from
+filling up.
 
-Future: the data store will move to `/data/Public/VIAME/` (override
-`KCD_DATA_DPATH`); work dirs stay under jon.crall.
+Migration note: before 2026-05-22 the data store lived at
+`$KCD_DATA_ROOT/dvc-repos/viame_sealions_2026/`. Legacy symlinks at
+that path may still exist on some hosts during transition; scripts
+default to `/data/Public/VIAME/` and don't silently fall back.
 
 ## Workflow
 

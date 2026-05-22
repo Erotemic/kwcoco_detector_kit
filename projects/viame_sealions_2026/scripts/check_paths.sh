@@ -3,7 +3,10 @@
 #
 # Contract (see scripts/paths.sh):
 #   - /data/users/jon.crall/ exists (real dir or symlink that resolves).
+#   - /data/Public/VIAME/ exists (shared read-only data store root).
 #   - $KCD_DATA_DPATH exists and is readable (the project's data dir).
+#     Read-only by design — writability is NOT required (and a
+#     write-check would actually be misleading).
 #   - $KCD_TRAINING_ROOT exists or can be created (where runs write).
 #   - $KCD_PRETRAINED_ROOT exists or can be created.
 #   - $KCD_KIT_DPATH looks like a kwcoco_detector_kit checkout.
@@ -60,18 +63,28 @@ else
 fi
 
 echo
-echo "== Project data ($KCD_DATA_DPATH) =="
+echo "== Shared data store (read-only: $KCD_DATA_DPATH) =="
 if [ -d "$KCD_DATA_DPATH" ]; then
-    pass "$KCD_DATA_DPATH exists"
+    real="$(resolve "$KCD_DATA_DPATH")"
+    if [ -L "$KCD_DATA_DPATH" ]; then
+        pass "$KCD_DATA_DPATH -> $real (symlink)"
+    else
+        pass "$KCD_DATA_DPATH (real dir)"
+    fi
     if [ -d "$KCD_TRAINING_READY_DIR" ]; then
         pass "$KCD_TRAINING_READY_DIR present (per-scheme kwcoco bundles)"
     else
-        warn "$KCD_TRAINING_READY_DIR missing (run scripts/build_scheme_kwcoco.py to create)"
+        warn "$KCD_TRAINING_READY_DIR missing under $KCD_DATA_DPATH"
+        echo "      The official data store should already have this. If you're"
+        echo "      on a host that doesn't mirror /data/Public/VIAME/, override"
+        echo "      KCD_DATA_DPATH to point at your local copy."
     fi
+    # Read-only by design — no writability check here.
 else
     fail "$KCD_DATA_DPATH missing"
-    echo "    This is the project data dir. Either ssh to a host that has it,"
-    echo "    or override KCD_DATA_DPATH to point at your local copy."
+    echo "    This is the shared read-only data store (/data/Public/VIAME/...)"
+    echo "    On hosts that don't mount it directly, create a symlink to your"
+    echo "    local copy, or override KCD_DATA_DPATH."
 fi
 
 echo

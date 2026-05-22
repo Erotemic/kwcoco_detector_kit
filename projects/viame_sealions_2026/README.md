@@ -36,42 +36,38 @@ projects/viame_sealions_2026/
 Every script sources `scripts/paths.sh`. Override variables in your
 shell rc instead of editing scripts. Key variables:
 
-| variable | default | notes |
-|---|---|---|
-| `KCD_REPO_ROOT` | this directory | project tree inside the kit |
-| `KCD_DATA_DPATH` | `/data/users/jon.crall/dvc-repos/viame_sealions_2026` | sea-lion data dir |
-| `KCD_TRAINING_READY_DIR` | `$KCD_DATA_DPATH/training_ready_v1` | per-scheme kwcoco bundles |
-| `KCD_TRAINING_ROOT` | `$KCD_DATA_ROOT/kcd_sealion` | per-experiment workspaces |
-| `KCD_PRETRAINED_ROOT` | `$KCD_DATA_ROOT/pretrained_models` | downloaded checkpoints |
-| `KCD_KIT_DPATH` | `$HOME/code/kwcoco_detector_kit` | kit checkout for follow_job.py etc. |
+| variable | default | r/w | notes |
+|---|---|---|---|
+| `KCD_REPO_ROOT` | this directory | rw | project tree inside the kit |
+| `KCD_DATA_DPATH` | `/data/Public/VIAME/viame_sealions_2026` | **ro** | shared data store: kwcoco bundles + imagery |
+| `KCD_TRAINING_READY_DIR` | `$KCD_DATA_DPATH/training_ready_v1` | **ro** | per-scheme kwcoco bundles |
+| `KCD_TRAINING_ROOT` | `$KCD_DATA_ROOT/kcd_sealion` | rw | per-experiment workspaces |
+| `KCD_PRETRAINED_ROOT` | `$KCD_DATA_ROOT/pretrained_models` | rw | downloaded checkpoints |
+| `KCD_SLURM_LOG_DPATH` | `$KCD_DATA_ROOT/slurm_logs` | rw | slurm stdout/stderr |
+| `KCD_KIT_DPATH` | `$HOME/code/kwcoco_detector_kit` | rw | kit checkout for follow_job.py etc. |
 
 ### Canonical layout (every host)
 
-Every host runs against `/data/users/jon.crall/` as the canonical user
-data root. On hosts where the storage actually lives elsewhere (e.g.
-namek's raid mount), `/data/users/jon.crall` is a symlink to the real
-location — the scripts always use the canonical path. Verify your host
-satisfies the contract:
+Two roots with different contracts, both available as the same
+canonical path on every host (via per-host symlink where storage
+lives elsewhere):
+
+- **`/data/Public/VIAME/`** — shared data store, **read-only** for
+  this project. Holds the official `viame_sealions_2026` tree.
+- **`/data/users/jon.crall/`** — per-user work area, read-write.
+  Holds training workspaces, pretrained checkpoints, slurm logs.
+
+Verify your host satisfies the contract:
 
 ```bash
 bash projects/viame_sealions_2026/scripts/check_paths.sh
 ```
 
-It validates the data dir, work-dir writability, disk headroom, and
-that `KCD_KIT_DPATH` points at a real kit checkout with `follow_job.py`.
-
-### Future migration
-
-The shared data store (kwcoco bundles, raw imagery — `KCD_DATA_DPATH`)
-will move to `/data/Public/VIAME/` to live alongside other VIAME
-projects. Personal work directories (`KCD_TRAINING_ROOT`,
-`KCD_PRETRAINED_ROOT`) stay under `/data/users/jon.crall/`. When the
-move happens, the per-host symlink stays; only `KCD_DATA_DPATH` flips:
-
-```bash
-# future, post-migration
-export KCD_DATA_DPATH=/data/Public/VIAME/viame_sealions_2026
-```
+Migration note: prior to 2026-05-22 the data store lived at
+`$KCD_DATA_ROOT/dvc-repos/viame_sealions_2026/`. A legacy symlink at
+that path may still exist on some hosts during transition; scripts now
+default to `/data/Public/VIAME/...` and won't fall back to the legacy
+path silently.
 
 ## Workflow
 

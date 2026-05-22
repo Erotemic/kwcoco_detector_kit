@@ -55,10 +55,13 @@ else
         --include 'manifest.tsv' \
         --include 'manifest.json' \
         --include 'sweeps/*/index.tsv' \
+        --include 'sweeps/*/*.json' \
         --include 'runs/*/log.txt' \
+        --include 'runs/*/NaN.pth' \
         --include 'runs/*/eval/***' \
         --include 'runs/*/summary/***' \
         --include 'runs/*/generated_configs/***' \
+        --include 'runs/*/detector_prepared/*.json' \
         --exclude '__pycache__' \
         --exclude '*.pyc' \
         --exclude '*' \
@@ -66,12 +69,25 @@ else
 fi
 
 echo
-echo "=== Slurm logs ==="
+echo "=== Slurm logs (canonical $KCD_SLURM_LOG_DPATH) ==="
 rsync -avh --info=progress2 \
     --include '*.out' \
     --include '*.err' \
     --exclude '*' \
     "$REMOTE_LOG_SRC" "$LOCAL_LOG_DEST"
+
+# Legacy: pre-2026-05-22 runs wrote slurm logs into the kit checkout
+# instead of the data drive. Sweep those too so old runs aren't
+# stranded. Skipped silently if the legacy path is empty.
+LEGACY_LOG_SRC="${LEGACY_LOG_SRC:-arisia:/home/local/KHQ/jon.crall/code/kwcoco_detector_kit/projects/viame_sealions_2026/training_runs/slurm_logs/}"
+echo
+echo "=== Slurm logs (legacy kit-checkout path) ==="
+rsync -avh --info=progress2 \
+    --include '*.out' \
+    --include '*.err' \
+    --exclude '*' \
+    "$LEGACY_LOG_SRC" "$LOCAL_LOG_DEST" || \
+    echo "  (legacy path empty or unreachable — fine; only matters for pre-2026-05-22 jobs)"
 
 echo
 echo "Done."

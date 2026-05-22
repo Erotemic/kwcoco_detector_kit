@@ -24,8 +24,11 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 : "${KCD_USE_AMP:?_launch_train.sh: missing KCD_USE_AMP}"
 
 KCD_ROOT="$KCD_RUNS_DPATH/$KCD_RUN_NAME"
-TILE_DIR="$KCD_TILE_CACHE_DPATH/$KCD_SCHEME"
-TILES="$TILE_DIR/tiles.kwcoco.zip"
+# Tile cache is keyed by (scheme, tile-params-hash). Two runs of the
+# same scheme with identical tile params share the cache; different
+# tile params get a different sub-dir so we never silently reuse
+# mismatched tiles. The hash + a human-readable tile_params.txt are
+# computed once tile params are resolved below.
 
 # Scheme -> kwcoco bundles + category_names.
 SCHEME_DIR="$KCD_SCHEMES_DIR/$KCD_SCHEME"
@@ -102,7 +105,26 @@ fi
 TOTAL_BATCH=$(( KCD_PER_GPU_BATCH * KCD_NUM_GPUS ))
 TOTAL_VAL_BATCH=$(( 2 * KCD_PER_GPU_BATCH * KCD_NUM_GPUS ))
 
+# Tile-cache key. Hash the actual tile params (post-default-resolution)
+# so two runs with the same effective params share, and different ones
+# don't silently collide. sha1 truncated to 8 hex chars is plenty here.
+TILE_PARAMS_BODY=$(printf '%s\n' \
+    "tile_size=$KCD_TILE_SIZE" \
+    "source_scales=$KCD_TILE_SOURCE_SCALES" \
+    "stride_frac=$KCD_TILE_STRIDE_FRAC" \
+    "min_gt_area_frac=$KCD_TILE_MIN_GT_AREA_FRAC" \
+    "min_keep_fraction=$KCD_TILE_MIN_KEEP_FRACTION" \
+    "oversize_factor=$KCD_TILE_OVERSIZE_FACTOR" \
+    "keep_negative=$KCD_TILE_KEEP_NEGATIVE" \
+    "category_names=$KCD_CATEGORY_NAMES")
+TILE_HASH=$(printf '%s' "$TILE_PARAMS_BODY" | sha1sum | cut -c1-8)
+TILE_DIR="$KCD_TILE_CACHE_DPATH/$KCD_SCHEME/$TILE_HASH"
+TILES="$TILE_DIR/tiles.kwcoco.zip"
+
 mkdir -p "$KCD_ROOT" "$KCD_ROOT/nccl_traces" "$TILE_DIR"
+# Stash the human-readable params next to the bundle so the hash is
+# invertible by inspection.
+printf '%s\n' "$TILE_PARAMS_BODY" > "$TILE_DIR/tile_params.txt"
 
 # Disk guard.
 KCD_MIN_FREE_GB="${KCD_MIN_FREE_GB:-30}"
@@ -126,7 +148,8 @@ echo "  input_hw:     $KCD_INPUT_HW"
 echo "  train_policy: $KCD_TRAIN_POLICY"
 echo "  init_ckpt:    $INIT_CKPT_DISPLAY"
 echo "  kcd_root:     $KCD_ROOT"
-echo "  tiles:        $TILES (shared per-scheme cache)"
+echo "  tiles:        $TILES"
+echo "                (cache key = $KCD_SCHEME/$TILE_HASH; see tile_params.txt)"
 echo "  gpus:         $KCD_NUM_GPUS  (scale_tier=$KCD_SCALE_TIER)"
 echo "  batch:        total=$TOTAL_BATCH  per_gpu=$KCD_PER_GPU_BATCH  val_total=$TOTAL_VAL_BATCH"
 echo "  epochs:       $KCD_NUM_EPOCHS"

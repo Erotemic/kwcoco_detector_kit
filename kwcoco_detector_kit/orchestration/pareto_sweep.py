@@ -46,7 +46,11 @@ class SweepConfig(scfg.DataConfig):
         ),
     )
     variant = scfg.Value("mock_tiny", help="single-cell fallback")
-    input_hw = scfg.Value([256, 256], help="single-cell fallback (HxW)")
+    # type=str sidesteps scriptconfig's smartcast (the "string with
+    # commas" deprecation warning). Parsing happens via kwutil.Yaml.coerce
+    # in _normalize_input_hw so a YAML-style "[H, W]" or a bare scalar
+    # "S" all resolve to a [H, W] pair downstream.
+    input_hw = scfg.Value("[256, 256]", type=str, help="single-cell fallback (HxW); YAML-style list")
     train_policy = scfg.Value("fixed", help="single-cell fallback")
 
     num_epochs = scfg.Value(2)
@@ -100,6 +104,57 @@ class SweepConfig(scfg.DataConfig):
         run(config)
 
 
+def _normalize_input_hw(value) -> List[int]:
+    """Coerce --input_hw to [H, W].
+
+    Accepts a YAML-style ``"[H, W]"`` string, a bare scalar ``"S"`` /
+    ``S`` (interpreted as a square ``[S, S]``), or already-parsed
+    list/tuple. Falls back to shorthand parsing for ``"HxW"`` and
+    ``"H,W"`` so legacy wrappers keep working.
+
+    Implementation uses ``kwutil.Yaml.coerce`` for the canonical case
+    (YAML list) — keeps the kit's "you should be able to pass anything
+    YAML-ish" convention. Falls back to pyyaml.safe_load when kwutil
+    isn't installed (e.g. in a stripped-down local dev env); the
+    YAML-parse semantics are identical for the strings we accept.
+    """
+    parsed = value
+    if isinstance(value, str):
+        try:
+            from kwutil import Yaml
+            parsed = Yaml.coerce(value)
+        except ImportError:
+            import yaml as _yaml
+            try:
+                parsed = _yaml.safe_load(value)
+            except Exception:
+                parsed = value
+        except Exception:
+            parsed = value
+        # If YAML returned the string unchanged (e.g. "320x320" or
+        # "320,320" — neither valid YAML), try our shorthand split.
+        if isinstance(parsed, str):
+            normed = parsed.replace("x", ",").replace(" ", ",")
+            parsed = [int(p) for p in normed.split(",") if p.strip()]
+
+    if isinstance(parsed, int):
+        items = [parsed, parsed]
+    elif isinstance(parsed, (list, tuple)):
+        items = list(parsed)
+    else:
+        raise TypeError(
+            f"input_hw must coerce to int or list; got {type(parsed).__name__}: {parsed!r}"
+        )
+
+    if len(items) == 1:
+        items = [items[0], items[0]]
+    if len(items) != 2:
+        raise ValueError(
+            f"input_hw must resolve to two values; got {items!r} from {value!r}"
+        )
+    return [int(items[0]), int(items[1])]
+
+
 def _load_matrix(config) -> List[dict]:
     """Returns a list of cell dicts: {variant, input_hw, train_policy}."""
     if config.matrix:
@@ -112,7 +167,7 @@ def _load_matrix(config) -> List[dict]:
     # Single-cell fallback
     return [{
         "variant": str(config.variant),
-        "input_hw": list(config.input_hw),
+        "input_hw": _normalize_input_hw(config.input_hw),
         "train_policy": str(config.train_policy),
     }]
 

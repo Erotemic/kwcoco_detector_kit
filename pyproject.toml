@@ -28,6 +28,7 @@ dependencies = [
     # Core kwcoco / kwimage stack
     "kwcoco>=0.8",
     "kwimage>=0.11",
+    "kwutil>=0.3",
     "ubelt>=1.4",
     "scriptconfig>=0.9",
     "numpy>=1.24",

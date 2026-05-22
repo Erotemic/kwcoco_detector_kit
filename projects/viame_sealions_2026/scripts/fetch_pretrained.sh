@@ -83,9 +83,25 @@ if [ -n "$PTH_FPATH" ]; then
 elif [ -f "$SAFETENSORS_FPATH" ]; then
     echo
     echo "Converting safetensors -> DEIMv2 .pth ..."
-    python3 "$SCRIPT_DIR/safetensors_to_deimv2_pth.py" \
-        --src "$SAFETENSORS_FPATH" \
-        --dst "$CANONICAL_PTH"
+    # The converter needs `safetensors` and `torch`. The kit's docker
+    # image has both; the host's python may not. Prefer docker so this
+    # works on a fresh host without extra pip installs. Fall back to
+    # host python only if docker is unavailable.
+    KCD_IMAGE="${KCD_IMAGE:-kwcoco-detector-kit:ogdino-cu132-arisia}"
+    if command -v docker >/dev/null 2>&1 && docker image inspect "$KCD_IMAGE" >/dev/null 2>&1; then
+        docker run --rm \
+            -v "$KCD_DATA_ROOT:$KCD_DATA_ROOT" \
+            -v "$SCRIPT_DIR:$SCRIPT_DIR" \
+            "$KCD_IMAGE" \
+            python3 "$SCRIPT_DIR/safetensors_to_deimv2_pth.py" \
+                --src "$SAFETENSORS_FPATH" \
+                --dst "$CANONICAL_PTH"
+    else
+        echo "  (docker image $KCD_IMAGE not found; using host python)" >&2
+        python3 "$SCRIPT_DIR/safetensors_to_deimv2_pth.py" \
+            --src "$SAFETENSORS_FPATH" \
+            --dst "$CANONICAL_PTH"
+    fi
 else
     echo "ERROR: neither .pth nor model.safetensors found in $DEST_DIR" >&2
     echo "Contents:" >&2

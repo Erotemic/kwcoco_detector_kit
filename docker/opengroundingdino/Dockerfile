@@ -31,8 +31,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     ca-certificates \
     curl \
     git \
-    libgdal-dev \
-    gdal-bin \
     ninja-build \
     pkg-config \
     python3 \
@@ -99,7 +97,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         "Pillow>=10.0" \
         "transformers>=4.35,<4.47" \
         "huggingface_hub>=0.27" \
-        "GDAL==$(gdal-config --version)" \
         addict \
         yapf \
         pycocotools \
@@ -114,6 +111,15 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         "scipy" \
         "calflops" \
         "safetensors"
+
+# GDAL via Kitware's large-image wheel index (girder.github.io). The
+# wheels bundle libgdal so we don't need libgdal-dev / gdal-bin on the
+# system. kwcoco's `finish_install --with_gdal` resolves to the right
+# pinned version + finds it on Kitware's wheel index.
+# The kit's _preimport scaffold then loads osgeo.gdal before torch,
+# which is what delayed_image needs to take its fast path.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    ${PYTHON_BIN} -m kwcoco finish_install --with_gdal=True --strict=False
 
 # Copy and build the upstream trainer before copying the rest of the kit. The
 # CUDA extension depends on torch/nvcc + OpenGroundingDINO source, not on most

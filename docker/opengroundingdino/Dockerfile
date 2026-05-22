@@ -31,6 +31,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     ca-certificates \
     curl \
     git \
+    libgdal-dev \
+    gdal-bin \
     ninja-build \
     pkg-config \
     python3 \
@@ -97,6 +99,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         "Pillow>=10.0" \
         "transformers>=4.35,<4.47" \
         "huggingface_hub>=0.27" \
+        "GDAL==$(gdal-config --version)" \
         addict \
         yapf \
         pycocotools \

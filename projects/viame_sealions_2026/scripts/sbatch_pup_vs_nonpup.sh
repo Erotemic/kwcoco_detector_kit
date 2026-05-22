@@ -93,7 +93,7 @@ docker run --rm \
     -v "$KCD_REPO_ROOT:$KCD_REPO_ROOT" \
     -w "$KCD_REPO_ROOT" \
     "$KCD_IMAGE" \
-    bash scripts/launch_pup_vs_nonpup_arisia.sh
+    bash "$KCD_REPO_ROOT/scripts/launch_pup_vs_nonpup_arisia.sh"
 
 echo
 echo "Done. Output under: $KCD_ROOT_PUP_VS_NONPUP"

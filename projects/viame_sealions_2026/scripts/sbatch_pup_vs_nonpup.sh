@@ -95,6 +95,21 @@ echo
 # via --gpus all (docker reads slurm's CUDA_VISIBLE_DEVICES). Mount
 # the user's data tree so the kit can see kwcoco files, pretrained
 # checkpoints, and write training output.
+# Dev override: mount the host's tpl/DEIMv2 over the image's baked
+# copy. Useful for iterating on DEIMv2 patches (e.g. the criterion's
+# DDP loss-key alignment) without rebuilding the docker image each
+# time. The image's tpl/DEIMv2 is canonical; this flag only shadows
+# it for the run. Set KCD_DEV_MOUNT_DEIMV2=1 to enable.
+DEV_MOUNT_FLAGS=()
+if [ "${KCD_DEV_MOUNT_DEIMV2:-0}" = "1" ]; then
+    if [ -d "$KCD_KIT_DPATH/tpl/DEIMv2" ]; then
+        DEV_MOUNT_FLAGS+=(-v "$KCD_KIT_DPATH/tpl/DEIMv2:/opt/kwcoco_detector_kit/tpl/DEIMv2")
+        echo "DEV: mounting host tpl/DEIMv2 over image's copy" >&2
+    else
+        echo "WARNING: KCD_DEV_MOUNT_DEIMV2=1 but $KCD_KIT_DPATH/tpl/DEIMv2 not found" >&2
+    fi
+fi
+
 docker run --rm \
     --gpus all \
     --ipc=host \
@@ -106,6 +121,7 @@ docker run --rm \
     "${NCCL_DEBUG_FLAGS[@]}" \
     -v "$KCD_DATA_ROOT:$KCD_DATA_ROOT" \
     -v "$KCD_REPO_ROOT:$KCD_REPO_ROOT" \
+    "${DEV_MOUNT_FLAGS[@]}" \
     -w "$KCD_REPO_ROOT" \
     "$KCD_IMAGE" \
     bash "$KCD_REPO_ROOT/scripts/launch_pup_vs_nonpup_arisia.sh"

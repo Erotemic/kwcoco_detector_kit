@@ -92,6 +92,13 @@ KCD_SCHEMES_DIR="${KCD_SCHEMES_DIR:-$KCD_TRAINING_READY_DIR/by_scheme}"
 KCD_DEIMV2_DINOV3_S_COCO_DIR="${KCD_DEIMV2_DINOV3_S_COCO_DIR:-$KCD_PRETRAINED_ROOT/deimv2_dinov3_s_coco}"
 KCD_DEIMV2_DINOV3_S_COCO_PTH="${KCD_DEIMV2_DINOV3_S_COCO_PTH:-$KCD_DEIMV2_DINOV3_S_COCO_DIR/deimv2_dinov3_s_coco.pth}"
 
+# DEIMv2-HGNetv2-N COCO (43.0 AP, 3.6M params, native 320x320). Mobile-
+# class HGNetv2 B0 backbone + DEIM head, COCO-pretrained. The fastest
+# tier that's still useful as a real baseline (atto/femto/pico are
+# floor models). Native input is 320; doesn't support dynamic input.
+KCD_DEIMV2_HGNETV2_N_COCO_DIR="${KCD_DEIMV2_HGNETV2_N_COCO_DIR:-$KCD_PRETRAINED_ROOT/deimv2_hgnetv2_n_coco}"
+KCD_DEIMV2_HGNETV2_N_COCO_PTH="${KCD_DEIMV2_HGNETV2_N_COCO_PTH:-$KCD_DEIMV2_HGNETV2_N_COCO_DIR/deimv2_hgnetv2_n_coco.pth}"
+
 # -- Per-experiment workspaces -------------------------------------------
 
 KCD_ROOT_PUP_VS_NONPUP="${KCD_ROOT_PUP_VS_NONPUP:-$KCD_TRAINING_ROOT/pup_vs_nonpup}"

@@ -65,7 +65,7 @@ if [ "$FOLLOW" = "1" ] || [ "$FOLLOW" = "true" ]; then
     # exit code can't distinguish "user detached without cancel" from
     # "job finished naturally" (both return 0), so the squeue check is
     # the authoritative signal.
-    reattach_cmd="bash $SCRIPT_DIR/follow_pup_vs_nonpup.sh $jobid"
+    reattach_cmd="bash $SCRIPT_DIR/follow_job.sh $jobid"
     set +e
     python3 "$FOLLOW_SCRIPT" "$jobid" --stdout "$stdout_fpath"
     follow_rc=$?
@@ -81,4 +81,4 @@ if [ "$FOLLOW" = "1" ] || [ "$FOLLOW" = "true" ]; then
 fi
 
 echo "$jobid"
-echo "  reattach with: bash $SCRIPT_DIR/follow_pup_vs_nonpup.sh $jobid" >&2
+echo "  reattach with: bash $SCRIPT_DIR/follow_job.sh $jobid" >&2

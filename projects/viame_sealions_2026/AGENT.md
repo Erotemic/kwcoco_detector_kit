@@ -80,14 +80,22 @@ default to `/data/Public/VIAME/` and don't silently fall back.
 
 3. **Submit a slurm training run**
 
+   Entry points are descriptive per-run scripts named
+   `submit_train_<scheme>_<variant>_<ngpus>_<host>_v<N>.sh`. Every
+   hyperparameter is declared explicitly inside the file. Tweaking a
+   hyperparameter → new `_v<N+1>.sh` (never edit a prior version).
+
+   Examples:
+
    ```bash
-   bash scripts/submit_pup_vs_nonpup.sh
+   bash projects/viame_sealions_2026/scripts/submit_train_pup_vs_nonpup_deimv2_dinov3_s_4gpu_arisia_v1.sh
+   bash projects/viame_sealions_2026/scripts/submit_train_pup_vs_nonpup_deimv2_hgnetv2_n_1gpu_arisia_v1.sh
    ```
 
-   `sbatch`-submits [scripts/sbatch_pup_vs_nonpup.sh](scripts/sbatch_pup_vs_nonpup.sh)
-   and tails the log via the kit's `smoketests/dino_v2_4x/slurm/follow_job.py`.
-   The job runs [scripts/launch_pup_vs_nonpup_arisia.sh](scripts/launch_pup_vs_nonpup_arisia.sh)
-   inside the kit's docker image.
+   Each entry point exports `KCD_*` vars then runs `_submit_train.sh`
+   (boilerplate). The slurm job name + on-disk `kcd_root` are derived
+   from the entry-point filename so `squeue` / log files are
+   self-identifying.
 
 4. **Record the result**
 
@@ -104,7 +112,7 @@ default to `/data/Public/VIAME/` and don't silently fall back.
   close to the 72h sbatch limit if epochs slow down. Check `sacct -j 2477`
   for elapsed and queue a re-submit if it cuts close.
 - **Disk monitoring** on arisia: the previous run died after the
-  filesystem hosting `$KCD_TRAINING_ROOT` filled. `launch_pup_vs_nonpup_arisia.sh`
+  filesystem hosting `$KCD_TRAINING_ROOT` filled. `_launch_train.sh`
   now fails fast if less than `KCD_MIN_FREE_GB` (default 30) is
   available — but watch headroom during training.
 - **Next scheme to schedule**:

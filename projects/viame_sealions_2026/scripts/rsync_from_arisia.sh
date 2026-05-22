@@ -24,14 +24,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/paths.sh"
 
-# Default src = arisia's KCD_ROOT_PUP_VS_NONPUP. The default below
-# matches the canonical arisia layout from paths.sh; pass SRC to point
-# elsewhere (e.g. a different experiment's kcd_root or another host).
-SRC="${SRC:-arisia:/data/users/jon.crall/kcd_sealion/pup_vs_nonpup/}"
-
-# Local landing zone. Defaults to $KCD_ROOT_PUP_VS_NONPUP on this host
-# so the same env vars resolve to the same paths everywhere.
-DEST="${DEST:-$KCD_ROOT_PUP_VS_NONPUP/}"
+# Default src/dest = the canonical runs/ tree under KCD_TRAINING_ROOT.
+# Pulls every per-experiment workspace under runs/* and the shared
+# tile_cache/. Pass SRC/DEST to point elsewhere (e.g. a different
+# kcd_sealion-rooted tree or another host).
+SRC="${SRC:-arisia:$KCD_TRAINING_ROOT/}"
+DEST="${DEST:-$KCD_TRAINING_ROOT/}"
 
 # Slurm logs live under $KCD_SLURM_LOG_DPATH on every host (on the
 # data drive, NOT in the kit checkout). Same canonical path means we
@@ -49,19 +47,24 @@ if [ "${KCD_FETCH_FULL:-0}" = "1" ]; then
         "$SRC" "$DEST"
 else
     echo "=== Diagnostic fetch (logs + traces + eval only) ==="
+    # Layout (since the 2026-05-22 refactor):
+    #   $KCD_TRAINING_ROOT/runs/<run_name>/         per-experiment workspace
+    #     ├── nccl_traces/, eval/, summary/, ...
+    #     ├── sweeps/<ts>/                          per-sweep status table
+    #     └── runs/<candidate>/                     DEIMv2 output dir
     rsync -avh --info=progress2 \
         --include '*/' \
-        --include 'nccl_traces/***' \
-        --include 'manifest.tsv' \
-        --include 'manifest.json' \
-        --include 'sweeps/*/index.tsv' \
-        --include 'sweeps/*/*.json' \
-        --include 'runs/*/log.txt' \
-        --include 'runs/*/NaN.pth' \
-        --include 'runs/*/eval/***' \
-        --include 'runs/*/summary/***' \
-        --include 'runs/*/generated_configs/***' \
-        --include 'runs/*/detector_prepared/*.json' \
+        --include 'runs/*/nccl_traces/***' \
+        --include 'runs/*/manifest.tsv' \
+        --include 'runs/*/manifest.json' \
+        --include 'runs/*/sweeps/*/index.tsv' \
+        --include 'runs/*/sweeps/*/*.json' \
+        --include 'runs/*/runs/*/log.txt' \
+        --include 'runs/*/runs/*/NaN.pth' \
+        --include 'runs/*/runs/*/eval/***' \
+        --include 'runs/*/runs/*/summary/***' \
+        --include 'runs/*/runs/*/generated_configs/***' \
+        --include 'runs/*/runs/*/detector_prepared/*.json' \
         --exclude '__pycache__' \
         --exclude '*.pyc' \
         --exclude '*' \

@@ -95,8 +95,18 @@ KCD_DEIMV2_HGNETV2_N_COCO_DIR="${KCD_DEIMV2_HGNETV2_N_COCO_DIR:-$KCD_PRETRAINED_
 KCD_DEIMV2_HGNETV2_N_COCO_PTH="${KCD_DEIMV2_HGNETV2_N_COCO_PTH:-$KCD_DEIMV2_HGNETV2_N_COCO_DIR/deimv2_hgnetv2_n_coco.pth}"
 
 # -- Per-experiment workspaces -------------------------------------------
-
-KCD_ROOT_PUP_VS_NONPUP="${KCD_ROOT_PUP_VS_NONPUP:-$KCD_TRAINING_ROOT/pup_vs_nonpup}"
+#
+# Convention: descriptive submit_train_*.sh scripts derive their
+# experiment-specific KCD_ROOT from KCD_RUN_NAME (the script's basename
+# minus the submit_train_ prefix and .sh suffix). Example:
+#     submit_train_pup_vs_nonpup_deimv2_dinov3_s_4gpu_v1.sh
+#         -> KCD_RUN_NAME=pup_vs_nonpup_deimv2_dinov3_s_4gpu_v1
+#         -> KCD_ROOT=$KCD_TRAINING_ROOT/runs/pup_vs_nonpup_deimv2_dinov3_s_4gpu_v1
+#
+# Tile bundles are shared per-scheme (independent of variant), so each
+# scheme tiles once and every variant reuses the result.
+KCD_RUNS_DPATH="${KCD_RUNS_DPATH:-$KCD_TRAINING_ROOT/runs}"
+KCD_TILE_CACHE_DPATH="${KCD_TILE_CACHE_DPATH:-$KCD_TRAINING_ROOT/tile_cache}"
 
 # Sanity helper: callers can use `kcd_require_path foo /some/path` to fail
 # fast with a useful message when a required file/dir is missing.

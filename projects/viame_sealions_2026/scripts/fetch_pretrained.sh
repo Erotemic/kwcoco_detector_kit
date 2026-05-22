@@ -15,8 +15,10 @@
 # Idempotent: if the canonical .pth already exists, exits successfully
 # without re-downloading.
 #
-# Needs `huggingface-cli` on $PATH. Installed inside the kit's docker
-# image; to run on the host instead: pip install --user huggingface_hub.
+# Needs the `hf` CLI on $PATH (huggingface_hub >= 0.27 renamed
+# `huggingface-cli` -> `hf` and removed the old entry point). Installed
+# inside the kit's docker image; to run on the host:
+#     pip install --user --upgrade 'huggingface_hub>=0.27'
 #
 # Usage (assuming cwd = ~/code/kwcoco_detector_kit):
 #   bash projects/viame_sealions_2026/scripts/fetch_pretrained.sh                       # default: deimv2_dinov3_s
@@ -55,7 +57,18 @@ fi
 
 mkdir -p "$DEST_DIR"
 echo "Downloading $REPO_ID -> $DEST_DIR"
-huggingface-cli download "$REPO_ID" --local-dir "$DEST_DIR" >/dev/null
+# `hf download` is the modern entry point. Fall back to the deprecated
+# `huggingface-cli download` only if `hf` isn't on PATH (older images).
+if command -v hf >/dev/null 2>&1; then
+    hf download "$REPO_ID" --local-dir "$DEST_DIR" >/dev/null
+elif command -v huggingface-cli >/dev/null 2>&1; then
+    echo "WARNING: 'hf' not found; falling back to deprecated 'huggingface-cli'" >&2
+    huggingface-cli download "$REPO_ID" --local-dir "$DEST_DIR" >/dev/null
+else
+    echo "ERROR: neither 'hf' nor 'huggingface-cli' on PATH" >&2
+    echo "  Install with: pip install --user --upgrade 'huggingface_hub>=0.27'" >&2
+    exit 1
+fi
 
 # DEIMv2's load_tuning_state expects torch.load() returning a dict
 # with a 'model' key. HF repos ship either a .pth (already correct

@@ -168,10 +168,12 @@ if command -v sbatch >/dev/null 2>&1; then
 else
     warn "sbatch not on PATH (this host can't submit slurm jobs)"
 fi
-if command -v huggingface-cli >/dev/null 2>&1; then
-    pass "huggingface-cli on PATH (for fetch_pretrained.sh)"
+if command -v hf >/dev/null 2>&1; then
+    pass "hf CLI on PATH (for fetch_pretrained.sh)"
+elif command -v huggingface-cli >/dev/null 2>&1; then
+    warn "only deprecated huggingface-cli found; install: pip install --user --upgrade 'huggingface_hub>=0.27'"
 else
-    warn "huggingface-cli not on PATH (needed for the host-side fetch_pretrained.sh; runs inside docker on arisia)"
+    warn "neither 'hf' nor 'huggingface-cli' on PATH (needed for the host-side fetch_pretrained.sh; runs inside docker on arisia)"
 fi
 
 echo

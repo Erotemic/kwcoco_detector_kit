@@ -60,7 +60,25 @@ if [ "$FOLLOW" = "auto" ]; then
 fi
 
 if [ "$FOLLOW" = "1" ] || [ "$FOLLOW" = "true" ]; then
-    exec python3 "$FOLLOW_SCRIPT" "$jobid" --stdout "$stdout_fpath"
+    # Don't exec — after the tail returns, check squeue and print a
+    # reattach hint if the job is still in flight. follow_job.py's
+    # exit code can't distinguish "user detached without cancel" from
+    # "job finished naturally" (both return 0), so the squeue check is
+    # the authoritative signal.
+    reattach_cmd="bash $SCRIPT_DIR/follow_pup_vs_nonpup.sh $jobid"
+    set +e
+    python3 "$FOLLOW_SCRIPT" "$jobid" --stdout "$stdout_fpath"
+    follow_rc=$?
+    job_state="$(squeue -h -j "$jobid" -o '%T' 2>/dev/null | head -n1 || true)"
+    set -e
+    if [ -n "$job_state" ]; then
+        echo >&2
+        echo "[follow detached] job $jobid is still on slurm (state: $job_state)." >&2
+        echo "  reattach: $reattach_cmd" >&2
+        echo "  cancel:   scancel $jobid" >&2
+    fi
+    exit "$follow_rc"
 fi
 
 echo "$jobid"
+echo "  reattach with: bash $SCRIPT_DIR/follow_pup_vs_nonpup.sh $jobid" >&2

@@ -46,26 +46,40 @@ NUM_EPOCHS="${NUM_EPOCHS:-30}"
 KCD_PER_GPU_BATCH="${KCD_PER_GPU_BATCH:-16}"
 
 # NCCL/torch.distributed diagnostics — capture flight recorder traces on
-# watchdog timeout so we can see which rank skipped which collective
-# instead of just "rank X timed out." See PyTorch's NCCL flight recorder
-# docs and TORCH_NCCL_TRACE_BUFFER_SIZE.
+# watchdog timeout so a hang reveals which rank skipped which collective
+# instead of just "rank X timed out." Cheap: only fires on failure, no
+# per-iter log spam.
 #
-# Toggle off with KCD_NCCL_DEBUG=0 to save log volume once the training
-# is stable.
+# Set KCD_NCCL_DEBUG=verbose to also stream every collective live
+# (NCCL_DEBUG=INFO + SUBSYS=COLL). Useful when actively debugging, but
+# log volume balloons fast — don't leave it on for a 30-epoch run.
+# Set KCD_NCCL_DEBUG=0 to disable diagnostics entirely.
 KCD_NCCL_DEBUG="${KCD_NCCL_DEBUG:-1}"
 NCCL_DEBUG_FLAGS=()
-if [ "$KCD_NCCL_DEBUG" = "1" ]; then
+if [ "$KCD_NCCL_DEBUG" != "0" ]; then
     NCCL_DEBUG_FLAGS=(
-        # Dump per-rank trace of last N collectives on watchdog timeout.
+        # Flight recorder. TORCH_NCCL_TRACE_BUFFER_SIZE was renamed to
+        # TORCH_FR_BUFFER_SIZE in torch 2.6+; set both so the buffer
+        # is sized correctly on either version.
+        -e TORCH_FR_BUFFER_SIZE=20000
         -e TORCH_NCCL_TRACE_BUFFER_SIZE=20000
         -e TORCH_NCCL_DUMP_ON_TIMEOUT=1
-        -e TORCH_NCCL_DEBUG_INFO_TEMP_FILE=/tmp/nccl_trace_rank_
+        # Dump path lives under $KCD_ROOT_PUP_VS_NONPUP (on $KCD_DATA_ROOT
+        # — bind-mounted) so the per-rank trace files survive container
+        # teardown after a failure. Default /tmp/ would vanish with --rm.
+        -e TORCH_NCCL_DEBUG_INFO_TEMP_FILE="$KCD_ROOT_PUP_VS_NONPUP/nccl_traces/rank_"
         # Loudly report desync (rank-skew) before it becomes a hang.
         -e TORCH_NCCL_DESYNC_DEBUG=1
-        # NCCL itself: log collective-level events to stdout.
+    )
+fi
+if [ "$KCD_NCCL_DEBUG" = "verbose" ]; then
+    NCCL_DEBUG_FLAGS+=(
         -e NCCL_DEBUG=INFO
         -e NCCL_DEBUG_SUBSYS=COLL
     )
+fi
+if [ "$KCD_NCCL_DEBUG" != "0" ]; then
+    mkdir -p "$KCD_ROOT_PUP_VS_NONPUP/nccl_traces"
 fi
 
 echo "=== Slurm context ==="

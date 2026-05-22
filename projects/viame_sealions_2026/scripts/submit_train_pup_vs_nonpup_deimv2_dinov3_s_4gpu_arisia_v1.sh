@@ -20,6 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Hyperparameters
 # ============================================================
 export KCD_SCHEME=pup_vs_nonpup
+export KCD_CATEGORY_NAMES=pup,nonpup_sealion   # must match scheme target_classes order
 export KCD_VARIANT=deimv2_dinov3_s
 export KCD_NUM_GPUS=4
 export KCD_PER_GPU_BATCH=16

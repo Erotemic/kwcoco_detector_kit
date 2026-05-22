@@ -37,16 +37,28 @@ kcd_require_path "$KCD_SCHEME vali.kwcoco.zip" "$VALI_KWCOCO"
 kcd_require_path "$KCD_SCHEME test.kwcoco.zip" "$TEST_KWCOCO"
 
 if [ -z "${KCD_CATEGORY_NAMES:-}" ]; then
+    # build_scheme_kwcoco.py writes `target_classes` (list) at the top
+    # of scheme_report.json. Older schemes might use `target_order`;
+    # check both.
     KCD_CATEGORY_NAMES="$("$PYTHON_BIN" -c "
-import json, pathlib
+import json, pathlib, sys
 fp = pathlib.Path('$SCHEME_DIR/scheme_report.json')
+if not fp.exists():
+    sys.exit(f'scheme_report.json missing at {fp}')
 data = json.loads(fp.read_text())
-names = data.get('target_order') or list(data.get('per_target_class', {}).keys())
+names = data.get('target_classes') or data.get('target_order') or []
+if not names:
+    # Last-ditch fallback: read the train split's per_target_class.
+    names = list(data.get('splits', {}).get('train', {}).get('per_target_class', {}).keys())
+if not names:
+    sys.exit(f'no target_classes / target_order / per_target_class in {fp}')
 print(','.join(names))
 ")"
 fi
 [ -z "$KCD_CATEGORY_NAMES" ] && {
     echo "ERROR: could not resolve category_names for scheme=$KCD_SCHEME" >&2
+    echo "       Set KCD_CATEGORY_NAMES explicitly in the submit script, or" >&2
+    echo "       rebuild the scheme bundle (scripts/build_scheme_kwcoco.py)" >&2
     exit 1
 }
 

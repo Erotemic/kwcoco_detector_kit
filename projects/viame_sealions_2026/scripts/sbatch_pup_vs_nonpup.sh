@@ -45,6 +45,29 @@ KCD_IMAGE="${KCD_IMAGE:-kwcoco-detector-kit:ogdino-cu132-arisia}"
 NUM_EPOCHS="${NUM_EPOCHS:-30}"
 KCD_PER_GPU_BATCH="${KCD_PER_GPU_BATCH:-16}"
 
+# NCCL/torch.distributed diagnostics — capture flight recorder traces on
+# watchdog timeout so we can see which rank skipped which collective
+# instead of just "rank X timed out." See PyTorch's NCCL flight recorder
+# docs and TORCH_NCCL_TRACE_BUFFER_SIZE.
+#
+# Toggle off with KCD_NCCL_DEBUG=0 to save log volume once the training
+# is stable.
+KCD_NCCL_DEBUG="${KCD_NCCL_DEBUG:-1}"
+NCCL_DEBUG_FLAGS=()
+if [ "$KCD_NCCL_DEBUG" = "1" ]; then
+    NCCL_DEBUG_FLAGS=(
+        # Dump per-rank trace of last N collectives on watchdog timeout.
+        -e TORCH_NCCL_TRACE_BUFFER_SIZE=20000
+        -e TORCH_NCCL_DUMP_ON_TIMEOUT=1
+        -e TORCH_NCCL_DEBUG_INFO_TEMP_FILE=/tmp/nccl_trace_rank_
+        # Loudly report desync (rank-skew) before it becomes a hang.
+        -e TORCH_NCCL_DESYNC_DEBUG=1
+        # NCCL itself: log collective-level events to stdout.
+        -e NCCL_DEBUG=INFO
+        -e NCCL_DEBUG_SUBSYS=COLL
+    )
+fi
+
 echo "=== Slurm context ==="
 echo "SLURM_JOB_ID=${SLURM_JOB_ID:-<manual>}"
 echo "HOSTNAME=$(hostname)"
@@ -65,6 +88,7 @@ docker run --rm \
     -e NUM_EPOCHS="$NUM_EPOCHS" \
     -e KCD_PER_GPU_BATCH="$KCD_PER_GPU_BATCH" \
     -e SLURM_JOB_ID="${SLURM_JOB_ID:-manual}" \
+    "${NCCL_DEBUG_FLAGS[@]}" \
     -v "$KCD_DATA_ROOT:$KCD_DATA_ROOT" \
     -w "$KCD_REPO_ROOT" \
     "$KCD_IMAGE" \

@@ -87,6 +87,10 @@ else
 fi
 
 mkdir -p "$KCD_ROOT"
+# nccl_traces/ holds per-rank flight-recorder dumps when the NCCL
+# watchdog timeout fires. Created here (inside docker, root) because
+# the submit-side user typically can't write under $KCD_ROOT.
+mkdir -p "$KCD_ROOT/nccl_traces"
 TILES="$KCD_ROOT/tiles.kwcoco.zip"
 
 # Disk guard. The tile step + checkpoints + sweep eval artifacts can

@@ -78,9 +78,10 @@ if [ "$KCD_NCCL_DEBUG" = "verbose" ]; then
         -e NCCL_DEBUG_SUBSYS=COLL
     )
 fi
-if [ "$KCD_NCCL_DEBUG" != "0" ]; then
-    mkdir -p "$KCD_ROOT_PUP_VS_NONPUP/nccl_traces"
-fi
+# NOTE: nccl_traces/ is created inside docker (root) by
+# launch_pup_vs_nonpup_arisia.sh, not here. $KCD_ROOT_PUP_VS_NONPUP may
+# be root-owned because prior docker runs wrote into it, and the submit
+# user can't mkdir into a root-owned dir from outside the container.
 
 echo "=== Slurm context ==="
 echo "SLURM_JOB_ID=${SLURM_JOB_ID:-<manual>}"

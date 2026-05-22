@@ -68,8 +68,11 @@ KCD_PRETRAINED_ROOT="${KCD_PRETRAINED_ROOT:-$KCD_DATA_ROOT/pretrained_models}"
 
 # Where slurm stdout/stderr land. Lives on the data drive (NOT inside
 # the kit checkout, which is on the SSD on workstations) so log volume
-# doesn't fill workstation root filesystems.
-KCD_SLURM_LOG_DPATH="${KCD_SLURM_LOG_DPATH:-$KCD_TRAINING_ROOT/slurm_logs}"
+# doesn't fill workstation root filesystems. Placed under
+# $KCD_DATA_ROOT (user-owned) rather than $KCD_TRAINING_ROOT (which
+# may be root-owned because docker writes into it) so the submit-side
+# `mkdir -p` succeeds without elevated permissions.
+KCD_SLURM_LOG_DPATH="${KCD_SLURM_LOG_DPATH:-$KCD_DATA_ROOT/slurm_logs}"
 
 # kwcoco_detector_kit checkout on the host. Used by submit_*.sh to find
 # follow_job.py outside the docker container. Default is $HOME-relative

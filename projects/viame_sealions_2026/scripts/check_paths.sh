@@ -76,9 +76,17 @@ fi
 
 echo
 echo "== Work directories =="
+# Note on writability: these dirs are routinely created/written by
+# docker (running as root inside the container) on the training host.
+# When that happens, the host-side ls shows them as root-owned and not
+# writable by the submit user. Training still works because the next
+# docker run also runs as root. So we treat "exists but not writable"
+# as a warning, not a failure — and only fail when the dir is missing
+# AND the parent isn't writable either (no way to create it at all).
 for label_var in \
     "training-workspaces:$KCD_TRAINING_ROOT" \
-    "pretrained-models:$KCD_PRETRAINED_ROOT"
+    "pretrained-models:$KCD_PRETRAINED_ROOT" \
+    "slurm-logs:$KCD_SLURM_LOG_DPATH"
 do
     label="${label_var%%:*}"
     p="${label_var#*:}"
@@ -86,11 +94,12 @@ do
         if [ -w "$p" ]; then
             pass "$label: $p (writable)"
         else
-            fail "$label: $p exists but is not writable by $(whoami)"
+            owner="$(stat -c '%U:%G' "$p" 2>/dev/null || echo '?')"
+            warn "$label: $p exists but is not writable by $(whoami) — owner=$owner"
+            echo "      (probably created by a prior docker run; safe to ignore"
+            echo "       unless host-side mkdir/write is also needed)"
         fi
     else
-        # OK if missing — they'll be created on first write — but check
-        # the parent is writable.
         parent="$(dirname "$p")"
         if [ -d "$parent" ] && [ -w "$parent" ]; then
             pass "$label: $p (will be created in writable parent $parent)"

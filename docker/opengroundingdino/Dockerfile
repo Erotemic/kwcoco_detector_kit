@@ -96,6 +96,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         "opencv-python-headless>=4.8" \
         "Pillow>=10.0" \
         "transformers>=4.35,<4.47" \
+        "huggingface_hub>=0.27" \
         addict \
         yapf \
         pycocotools \

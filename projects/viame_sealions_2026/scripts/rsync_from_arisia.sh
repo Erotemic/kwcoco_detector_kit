@@ -33,10 +33,11 @@ SRC="${SRC:-arisia:/data/users/jon.crall/kcd_sealion/pup_vs_nonpup/}"
 # so the same env vars resolve to the same paths everywhere.
 DEST="${DEST:-$KCD_ROOT_PUP_VS_NONPUP/}"
 
-# Also fetch the slurm logs that live next to the project tree on the
-# remote (per submit_pup_vs_nonpup.sh: LOG_DPATH=$KCD_REPO_ROOT/training_runs/slurm_logs).
-REMOTE_LOG_SRC="${REMOTE_LOG_SRC:-arisia:/home/local/KHQ/jon.crall/code/kwcoco_detector_kit/projects/viame_sealions_2026/training_runs/slurm_logs/}"
-LOCAL_LOG_DEST="${LOCAL_LOG_DEST:-$KCD_REPO_ROOT/training_runs/slurm_logs/}"
+# Slurm logs live under $KCD_SLURM_LOG_DPATH on every host (on the
+# data drive, NOT in the kit checkout). Same canonical path means we
+# don't need a host-specific remote source path.
+REMOTE_LOG_SRC="${REMOTE_LOG_SRC:-arisia:$KCD_SLURM_LOG_DPATH/}"
+LOCAL_LOG_DEST="${LOCAL_LOG_DEST:-$KCD_SLURM_LOG_DPATH/}"
 
 mkdir -p "$DEST" "$LOCAL_LOG_DEST"
 

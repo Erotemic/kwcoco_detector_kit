@@ -45,17 +45,32 @@ shell rc instead of editing scripts. Key variables:
 | `KCD_PRETRAINED_ROOT` | `$KCD_DATA_ROOT/pretrained_models` | downloaded checkpoints |
 | `KCD_KIT_DPATH` | `$HOME/code/kwcoco_detector_kit` | kit checkout for follow_job.py etc. |
 
-### Host-specific overrides
+### Canonical layout (every host)
 
-**arisia** (compute host, active training): defaults match
-arisia's `/data/users/jon.crall/...` layout — no overrides needed.
-
-**namek** (workstation): the data lives on the raid mount, so:
+Every host runs against `/data/users/jon.crall/` as the canonical user
+data root. On hosts where the storage actually lives elsewhere (e.g.
+namek's raid mount), `/data/users/jon.crall` is a symlink to the real
+location — the scripts always use the canonical path. Verify your host
+satisfies the contract:
 
 ```bash
-# in ~/.bashrc or ~/.zshrc
-export KCD_DATA_DPATH=/media/joncrall/raid/home/joncrall/data/dvc-repos/viame_sealions_2026
-# KCD_TRAINING_READY_DIR etc. derive from KCD_DATA_DPATH automatically
+bash projects/viame_sealions_2026/scripts/check_paths.sh
+```
+
+It validates the data dir, work-dir writability, disk headroom, and
+that `KCD_KIT_DPATH` points at a real kit checkout with `follow_job.py`.
+
+### Future migration
+
+The shared data store (kwcoco bundles, raw imagery — `KCD_DATA_DPATH`)
+will move to `/data/Public/VIAME/` to live alongside other VIAME
+projects. Personal work directories (`KCD_TRAINING_ROOT`,
+`KCD_PRETRAINED_ROOT`) stay under `/data/users/jon.crall/`. When the
+move happens, the per-host symlink stays; only `KCD_DATA_DPATH` flips:
+
+```bash
+# future, post-migration
+export KCD_DATA_DPATH=/data/Public/VIAME/viame_sealions_2026
 ```
 
 ## Workflow

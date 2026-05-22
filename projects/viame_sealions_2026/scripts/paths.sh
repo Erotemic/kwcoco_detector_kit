@@ -2,15 +2,39 @@
 # Canonical paths for viame_sealions_2026 scripts. Every script that needs
 # a fixed location sources this file so paths are defined once.
 #
-# Override conventions:
-#   - Every variable uses `${VAR:-default}` so individual values can be
-#     overridden from the calling shell:  KCD_ROOT_BASE=/tmp/foo bash ...
-#   - The host-specific defaults below assume arisia's filesystem layout
-#     (/data/users/jon.crall/...). On a host with different layout, set
-#     KCD_DATA_ROOT and KCD_DATA_DPATH once in your shell rc and the
-#     rest derives from those.
+# # Canonical layout (every host)
 #
-# Usage:
+# Every host that runs this project — arisia, namek, future workstations
+# — must expose the canonical data root at:
+#
+#     /data/users/jon.crall/
+#
+# On hosts where the physical storage lives elsewhere, this is a symlink
+# (e.g. namek symlinks /data/users/jon.crall -> /media/joncrall/raid/...).
+# Scripts hard-code the canonical path; the per-host symlink is the
+# compatibility shim. Run `scripts/check_paths.sh` to verify your host
+# is set up correctly.
+#
+# # Future migration (planned, not yet active)
+#
+# The shared data store (kwcoco bundles, raw imagery) is planned to
+# move out from under jon.crall to a shared location at:
+#
+#     /data/Public/VIAME/
+#
+# Personal work directories (kcd_sealion training workspaces,
+# pretrained_models, ...) will stay under /data/users/jon.crall/.
+# When the move happens, override KCD_DATA_DPATH in your shell rc to
+# point at the new shared location; KCD_TRAINING_ROOT etc. stay put.
+#
+# # Override conventions
+#
+# Every variable uses `${VAR:-default}` so individual values can be
+# overridden from the calling shell or shell rc:
+#
+#     export KCD_DATA_DPATH=/data/Public/VIAME/viame_sealions_2026
+#
+# # Usage
 #
 #     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #     source "$SCRIPT_DIR/paths.sh"
@@ -23,28 +47,33 @@
 # (training_ready_v1, unpacked/, ...) lives at $KCD_DATA_DPATH below.
 KCD_REPO_ROOT="${KCD_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
-# Parent of all sea-lion experiment data. On arisia this is the shared
-# user-data volume; on namek override in your shell rc.
+# Canonical user data root — same on every host (via symlink where
+# needed). Run scripts/check_paths.sh to verify your host satisfies
+# this contract.
 KCD_DATA_ROOT="${KCD_DATA_ROOT:-/data/users/jon.crall}"
 
 # Sea-lion data directory (holds training_ready_v1/, unpacked/, etc.).
-# Default matches arisia's dvc-repos location. On namek override to the
-# raid mount, e.g.:
-#   export KCD_DATA_DPATH=/media/joncrall/raid/home/joncrall/data/dvc-repos/viame_sealions_2026
+# Currently under jon.crall; will move to /data/Public/VIAME/ in the
+# future without affecting the work-dir variables below.
 KCD_DATA_DPATH="${KCD_DATA_DPATH:-$KCD_DATA_ROOT/dvc-repos/viame_sealions_2026}"
 
 # Where trained-model workspaces (per-experiment kcd_root) live. The
-# kit's `--kcd_root` writes train/eval/manifest artifacts here.
+# kit's `--kcd_root` writes train/eval/manifest artifacts here. Stays
+# under jon.crall even after the public-data-store migration.
 KCD_TRAINING_ROOT="${KCD_TRAINING_ROOT:-$KCD_DATA_ROOT/kcd_sealion}"
 
 # Where downloaded pretrained checkpoints live, regardless of source
-# (HuggingFace, Drive, etc.).
+# (HuggingFace, Drive, etc.). Stays under jon.crall after the migration.
 KCD_PRETRAINED_ROOT="${KCD_PRETRAINED_ROOT:-$KCD_DATA_ROOT/pretrained_models}"
 
-# kwcoco_detector_kit checkout on the host (we shell out to its slurm
-# follow utility, run the docker image built from it, etc.). On arisia
-# this is $HOME/code/kwcoco_detector_kit; on namek it's the same path
-# under joncrall's home.
+# Where slurm stdout/stderr land. Lives on the data drive (NOT inside
+# the kit checkout, which is on the SSD on workstations) so log volume
+# doesn't fill workstation root filesystems.
+KCD_SLURM_LOG_DPATH="${KCD_SLURM_LOG_DPATH:-$KCD_TRAINING_ROOT/slurm_logs}"
+
+# kwcoco_detector_kit checkout on the host. Used by submit_*.sh to find
+# follow_job.py outside the docker container. Default is $HOME-relative
+# because the kit checkout is per-user; it doesn't live on $KCD_DATA_ROOT.
 KCD_KIT_DPATH="${KCD_KIT_DPATH:-$HOME/code/kwcoco_detector_kit}"
 
 # -- Dataset paths -------------------------------------------------------

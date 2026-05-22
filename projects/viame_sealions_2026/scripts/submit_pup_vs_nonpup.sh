@@ -18,7 +18,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/paths.sh"
 
-LOG_DPATH="${LOG_DPATH:-$KCD_REPO_ROOT/training_runs/slurm_logs}"
+LOG_DPATH="${LOG_DPATH:-$KCD_SLURM_LOG_DPATH}"
 FOLLOW="${FOLLOW:-auto}"
 SLURM_PARTITION="${SLURM_PARTITION:-}"
 ACCOUNT="${ACCOUNT:-}"

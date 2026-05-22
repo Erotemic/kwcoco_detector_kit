@@ -34,16 +34,22 @@ Schemes (P0 → P2):
 
 ## Data location
 
-- **arisia**: `/data/users/jon.crall/dvc-repos/viame_sealions_2026/`
-  (matches the `KCD_DATA_DPATH` default in `scripts/paths.sh`).
-- **namek**: the user has the data mounted at
-  `/media/joncrall/raid/home/joncrall/data/dvc-repos/viame_sealions_2026/`
-  and treats it as read-only. Override `KCD_DATA_DPATH` in your shell
-  rc on namek.
+Canonical on every host:
+`/data/users/jon.crall/dvc-repos/viame_sealions_2026/` (= `KCD_DATA_DPATH`).
+
+Hosts where the storage physically lives elsewhere symlink
+`/data/users/jon.crall` to the real location (e.g. namek's raid mount).
+Scripts always use the canonical path; the symlink is the per-host
+compatibility shim. Run `scripts/check_paths.sh` to verify your host.
 
 The project tree (scripts/docs/tests) lives in the kit and is
 transferred via git; data artifacts (kwcoco bundles, unpacked imagery)
-are NOT versioned and stay in `KCD_DATA_DPATH`.
+are NOT versioned and stay in `KCD_DATA_DPATH`. Work outputs
+(`KCD_TRAINING_ROOT`, `KCD_PRETRAINED_ROOT`) also live under
+`/data/users/jon.crall/` to keep workstation SSDs from filling up.
+
+Future: the data store will move to `/data/Public/VIAME/` (override
+`KCD_DATA_DPATH`); work dirs stay under jon.crall.
 
 ## Workflow
 

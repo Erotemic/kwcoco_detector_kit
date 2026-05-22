@@ -1,0 +1,81 @@
+# Class-collapse schemes for sea lion detector training.
+#
+# Each scheme maps the raw VIAME single-letter codes (B, S, F, J, P, NFS, O,
+# DP, DN) to a target category name. `drop` lists source codes that are
+# excluded entirely from the training/val/test kwcoco. `dropped_reason`
+# documents why.
+#
+# Source distribution (89,955 annotations total across 2021-2024 redacted
+# imagery on namek):
+#   F=20500, J=19478, P=18634, NFS=15965, B=5947, O=5909, S=3202, DP=301, DN=19
+#
+# This file is intentionally declarative — the registry CLI reads it but does
+# not write it. Add a new scheme by adding a top-level entry.
+
+schemes:
+
+  single_sealion:
+    description: All positives collapsed to a single 'sealion' class. P0 baseline.
+    num_classes: 1
+    # Order here defines the class index assigned by the trained model
+    # (i-th class -> integer label i). Downstream code reads this list,
+    # not the mapping's value-iteration order, so reordering `mapping`
+    # below is safe but reordering `target_order` is a breaking change
+    # for any already-trained checkpoint.
+    target_order: [sealion]
+    mapping:
+      B:   sealion
+      S:   sealion
+      F:   sealion
+      J:   sealion
+      P:   sealion
+      NFS: sealion
+      DP:  sealion
+    drop: [O, DN]
+    drop_reasons:
+      O:  background-only annotations; not a positive target
+      DN: only 19 instances, too few to be useful
+    notes: |
+      Current training_ready_v1/all_collapsed.kwcoco.zip implements this
+      scheme. Localization-only baseline.
+
+  pup_vs_nonpup:
+    description: Two-class operational split — pup vs adult/juvenile sealion.
+    num_classes: 2
+    target_order: [pup, nonpup_sealion]
+    mapping:
+      P: pup
+      B: nonpup_sealion
+      S: nonpup_sealion
+      F: nonpup_sealion
+      J: nonpup_sealion
+    drop: [NFS, O, DP, DN]
+    drop_reasons:
+      NFS: different species, kept as future hard-negative source
+      O:   background-only annotations
+      DP:  rare and ambiguous between pup vs dead non-pup; revisit
+      DN:  only 19 instances
+    notes: |
+      Pup count is the highest-value biological signal; small-object recall
+      on the `pup` class is the headline metric for this scheme.
+
+  lifestage_6cls:
+    description: Full operational age-sex classifier plus species distractor.
+    num_classes: 6
+    target_order: [bull, subadult_male, female, juvenile, pup, northern_fur_seal]
+    mapping:
+      B:   bull
+      S:   subadult_male
+      F:   female
+      J:   juvenile
+      P:   pup
+      NFS: northern_fur_seal
+    drop: [O, DP, DN]
+    drop_reasons:
+      O:   background-only annotations
+      DP:  301 instances split across classes hurts more than helps; revisit
+      DN:  only 19 instances
+    notes: |
+      subadult_male is the weakest class (3,202 instances) — watch its
+      per-class AP. NFS provides a species-boundary signal even though it is
+      not the operational target.

@@ -1,0 +1,21 @@
+runs:
+- id: 2026-05-21-arisia-deimv2_dinov3_s-pup_vs_nonpup
+  scheme: pup_vs_nonpup
+  variant: deimv2_dinov3_s
+  phase: operational_pup
+  host: arisia
+  status: planned
+  created: '2026-05-21'
+  updated: '2026-05-21'
+  kcd_root: /data/users/jon.crall/kcd_sealion/pup_vs_nonpup
+  train_kwcoco: training_ready_v1/by_scheme/pup_vs_nonpup/train.kwcoco.zip
+  vali_kwcoco: training_ready_v1/by_scheme/pup_vs_nonpup/vali.kwcoco.zip
+  test_kwcoco: training_ready_v1/by_scheme/pup_vs_nonpup/test.kwcoco.zip
+  train_policy: multiscale_512_768
+  input_hw:
+  - 640
+  - 640
+  num_epochs: 30
+  batch_size: 16
+  notes: First operational 2-class run. Multi-class detector enabled by kwcoco_detector_kit multiclass-detection
+    branch (see kit commits 8aa6b51..0f66858).

@@ -531,3 +531,19 @@ no bbox update, single-RNG correlation across multiprocessing workers.
 
 **Phase 5 — Upstream the kit reader → kwcoco_dataloader**, replacing
 the WIDS-based `LocalWebdatasetBuckets` train path.
+
+### Implementation venue (post-decision)
+
+- **Writer work happens in `kwcoco_dataloader`** (not forked into the
+  kit). Cross-repo iteration is slower but the writer is the
+  canonical artifact; downstream projects benefit. Kit gains/bumps
+  the `kwcoco-dataloader` optional-extra as the writer lands.
+- **Reader work happens in the kit during phases 2–4**, with the
+  explicit upstream-port plan in phase 5.
+- **DEIMv2's augmentation pipeline stays.** The FastImageBackend
+  yields decoded RGB arrays + per-sample target dicts; trainer-side
+  glue wraps them into a `CocoDetection`-shaped object so
+  Mosaic/IoUCrop/CopyBlend continue to run as DEIMv2 expects them
+  to. Lower risk; keeps DEIMv2's published recipe intact. Mosaic's
+  4-source-sample pressure on the dataloader stays; we accept that
+  in exchange for not rewriting the augment stack.

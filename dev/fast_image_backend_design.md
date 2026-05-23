@@ -538,12 +538,115 @@ the WIDS-based `LocalWebdatasetBuckets` train path.
   kit). Cross-repo iteration is slower but the writer is the
   canonical artifact; downstream projects benefit. Kit gains/bumps
   the `kwcoco-dataloader` optional-extra as the writer lands.
-- **Reader work happens in the kit during phases 2–4**, with the
-  explicit upstream-port plan in phase 5.
-- **DEIMv2's augmentation pipeline stays.** The FastImageBackend
-  yields decoded RGB arrays + per-sample target dicts; trainer-side
-  glue wraps them into a `CocoDetection`-shaped object so
-  Mosaic/IoUCrop/CopyBlend continue to run as DEIMv2 expects them
-  to. Lower risk; keeps DEIMv2's published recipe intact. Mosaic's
-  4-source-sample pressure on the dataloader stays; we accept that
-  in exchange for not rewriting the augment stack.
+- **Reader work happens in `kwcoco_dataloader` too, for now.** The
+  initial focus is the writer + reader pair landing in the canonical
+  place. Hooking the reader into DEIMv2 is deferred until the
+  format is locked in and round-trip-tested.
+- **DEIMv2 stays untouched for now.** No augmentation rewrites, no
+  CocoDetection adapter, no `KCD_DATA_BACKEND` flag yet. When the
+  reader is mature, phase 3 wires it in via a thin adapter that
+  feeds the existing DEIMv2 pipeline. Lower risk, smaller blast
+  radius, keeps the active baselines reproducible.
+
+### Compromises locked in (from 2026-05-22 review pass 2)
+
+The HDD constraint forces tradeoffs. Picking three of four from:
+
+  A. one physical pack forever
+  B. exact arbitrary per-run class ratios
+  C. cold-HDD sequential throughput
+  D. zero dropped/duplicated samples
+
+→ keep **A + C**, accept approximate **B**, allow controlled
+dropping/duplication for **D**.
+
+**What stays fully runtime-configurable:**
+- Class coarsening (raw → train) mapping.
+- Loss + eval category schemes.
+- Per-batch acceptance/drop policy.
+- Stream weights.
+
+**What's fixed at pack time:**
+- JPEG tile size + any oversize amount (no on-the-fly resize beyond
+  augmentation's final resize).
+- Raw annotation metadata (full kwcoco-derived JSON).
+- Bucket predicates (physical class-presence flags).
+- Coarse rare/common/empty grouping for streams.
+- Optional rare-sample duplication (repeat-factor at pack time).
+
+**What's approximate at runtime:**
+- Class ratios — chunk-mixed, not per-sample exact. Over an epoch
+  ratios converge; over a few batches they're lumpy. Acceptable for
+  Mosaic + DETR-style detection.
+- Per-batch balance.
+- Epoch length (when class queues drain → fallback policy).
+- Sample uniqueness (rare classes may be repeated; common dropped).
+
+The hard giveaway: **exact `BalancedSampleTree`-style sampling.**
+On HDD-backed WebDataset the replacement is approximate + buffered +
+chunked. If a future workload needs exact balanced sampling, that
+workload needs SSD storage, period.
+
+### Bucket key — refined
+
+Stable PHYSICAL buckets, NOT final-training classes (those change
+per scheme). Concretely, store per-class-presence booleans + a raw
+class histogram in each sample's JSON, then group shards by the
+*physical* presence pattern:
+
+```text
+empty/                          contains_any_box=False
+pup_only/                       contains_pup=True, contains_nonpup=False
+nonpup_only/                    contains_pup=False, contains_nonpup=True
+pup_and_nonpup/                 both
+other_positive_or_ambiguous/    contains-other-raw-class
+```
+
+The runtime layer derives stream weights from raw class histograms
+in each shard's footer. Same packing serves every scheme.
+
+### Runtime balancing layer (added)
+
+Above `WeightedChunkMix` (chunk-of-K from one bucket stream), add an
+optional **per-class RAM queue layer** between stream output and
+augmentation input:
+
+```
+WebDatasetStream(bucket=A) ─┐
+WebDatasetStream(bucket=B) ─┼─→ WeightedChunkMix(K=64) ─→ relabel ─→
+WebDatasetStream(bucket=C) ─┘                                       │
+                                                                    │
+                ┌── per-train-class RAM queue (small N=128) ──┐     │
+                ▼                                              ▼    ▼
+            pup queue                                       batch builder
+            nonpup queue       ─→ pull by target ratio ─→  → augment
+            empty queue
+```
+
+Queues give finer ratio control than raw stream weights alone, at
+the cost of small RAM (a few hundred samples × N classes). Fallback
+when a rare queue drains: read forward up to a budget, then relax
+the ratio for that batch (don't seek backwards).
+
+This adds the kit's "RAM queues per class" layer between the chunk
+mixer and the augment pipeline. Worth implementing — the chunk
+mixer alone is lumpy at the batch level.
+
+### Oversize tiles — refined
+
+Don't start at 20%. Start at **10–15%** (10% = 21% area cost,
+15% = 32%). At a 25 GB tile bundle on HDD that's 30–33 GB vs
+20%'s 36 GB. Test whether jitter is worth the cost; DEIMv2's Mosaic
++ RandomIoUCrop already deliver substantial scale/location jitter.
+
+If we do enable oversize-with-crop:
+- Crop must happen AFTER JPEG decode (read full bytes either way).
+- Crop must happen BEFORE Mosaic, NOT per-source-tile inside
+  Mosaic. Pre-Mosaic crop on each of 4 source tiles risks removing
+  rare-class objects near tile edges before Mosaic sees them.
+- Better: oversize at pack → light crop only if needed → Mosaic →
+  final crop/resize handles the rest.
+- For rare classes: track whether the crop actually preserved the
+  object. If not, the "balanced" batch lied about its class.
+  Either drop-and-redraw (costs a read) or count it as a miss for
+  the queue's ratio bookkeeping.

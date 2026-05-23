@@ -14,6 +14,14 @@
 #SBATCH --ntasks=1
 set -euo pipefail
 
+# _submit_train.sh writes all KCD_* env to KCD_ENV_FPATH (a single
+# file path that's safe to pass through sbatch --export, unlike the
+# comma-separated KEY=VAL form which truncates values containing
+# commas). Source it FIRST so the rest of this script sees the env.
+if [ -n "${KCD_ENV_FPATH:-}" ] && [ -f "$KCD_ENV_FPATH" ]; then
+    source "$KCD_ENV_FPATH"
+fi
+
 if [ -z "${KCD_REPO_ROOT:-}" ]; then
     KCD_REPO_ROOT="${SLURM_SUBMIT_DIR:-$(pwd)}"
 fi
@@ -54,7 +62,9 @@ if [ "$KCD_NCCL_DEBUG" = "verbose" ]; then
     NCCL_DEBUG_FLAGS+=(-e NCCL_DEBUG=INFO -e NCCL_DEBUG_SUBSYS=COLL)
 fi
 
-# Dev override: mount host's tpl/DEIMv2 over the image's baked copy.
+# Dev overrides: mount host source over the image's baked copies so a
+# kit-side fix can be tested without rebuilding the docker image
+# (~10-15 min each rebuild).
 DEV_MOUNT_FLAGS=()
 if [ "${KCD_DEV_MOUNT_DEIMV2:-0}" = "1" ]; then
     if [ -d "$KCD_KIT_DPATH/tpl/DEIMv2" ]; then
@@ -62,6 +72,18 @@ if [ "${KCD_DEV_MOUNT_DEIMV2:-0}" = "1" ]; then
         echo "DEV: mounting host tpl/DEIMv2 over image's copy" >&2
     else
         echo "WARNING: KCD_DEV_MOUNT_DEIMV2=1 but $KCD_KIT_DPATH/tpl/DEIMv2 not found" >&2
+    fi
+fi
+if [ "${KCD_DEV_MOUNT_KIT:-0}" = "1" ]; then
+    # Image installs the kit via `pip install -e .` at /opt/kwcoco_detector_kit/.
+    # Overlaying the Python package dir lets us iterate on kit code (sweep,
+    # tile, configs, ...) without a rebuild. tpl/ submodules and the entry
+    # points stay baked.
+    if [ -d "$KCD_KIT_DPATH/kwcoco_detector_kit" ]; then
+        DEV_MOUNT_FLAGS+=(-v "$KCD_KIT_DPATH/kwcoco_detector_kit:/opt/kwcoco_detector_kit/kwcoco_detector_kit")
+        echo "DEV: mounting host kwcoco_detector_kit/ over image's copy" >&2
+    else
+        echo "WARNING: KCD_DEV_MOUNT_KIT=1 but $KCD_KIT_DPATH/kwcoco_detector_kit not found" >&2
     fi
 fi
 

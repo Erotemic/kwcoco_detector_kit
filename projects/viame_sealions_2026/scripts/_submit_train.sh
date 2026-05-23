@@ -57,27 +57,30 @@ else
     KCD_TIME_LIMIT="${KCD_TIME_LIMIT:-48:00:00}"
 fi
 
-# Forward all KCD_* + RUN_NAME via --export so the sbatch script (which
-# runs in a fresh shell on the compute node) sees them.
-forward_vars=(KCD_REPO_ROOT="$KCD_REPO_ROOT" KCD_KIT_DPATH="$KCD_KIT_DPATH")
-for v in KCD_RUN_NAME KCD_SCHEME KCD_VARIANT KCD_NUM_GPUS KCD_PER_GPU_BATCH \
-         KCD_NUM_EPOCHS KCD_INPUT_HW KCD_TRAIN_POLICY KCD_LR KCD_BACKBONE_LR \
-         KCD_USE_AMP KCD_INIT_CHECKPOINT KCD_TRAIN_FROM_SCRATCH \
-         KCD_CATEGORY_NAMES KCD_NCCL_DEBUG KCD_DEV_MOUNT_DEIMV2 KCD_IMAGE \
+job_name="$KCD_RUN_NAME"
+
+# sbatch's --export uses commas as the entry separator, so any value
+# containing a comma (KCD_CATEGORY_NAMES, KCD_INPUT_HW, KCD_TILE_SOURCE_SCALES,
+# ...) silently truncates. Write the env to a sourceable file with
+# shell-quoted values (printf %q), pass ONLY the file path via --export,
+# then source it in the sbatch script.
+ENV_FPATH="$LOG_DPATH/${job_name}.env"
+: > "$ENV_FPATH"
+for v in KCD_REPO_ROOT KCD_KIT_DPATH KCD_RUN_NAME KCD_SCHEME KCD_VARIANT \
+         KCD_NUM_GPUS KCD_PER_GPU_BATCH KCD_NUM_EPOCHS KCD_INPUT_HW \
+         KCD_TRAIN_POLICY KCD_LR KCD_BACKBONE_LR KCD_USE_AMP \
+         KCD_INIT_CHECKPOINT KCD_TRAIN_FROM_SCRATCH \
+         KCD_CATEGORY_NAMES KCD_NCCL_DEBUG \
+         KCD_DEV_MOUNT_DEIMV2 KCD_DEV_MOUNT_KIT KCD_IMAGE \
          KCD_TILE_SIZE KCD_TILE_SOURCE_SCALES KCD_TILE_STRIDE_FRAC \
          KCD_TILE_MIN_GT_AREA_FRAC KCD_TILE_MIN_KEEP_FRACTION \
          KCD_TILE_OVERSIZE_FACTOR KCD_TILE_KEEP_NEGATIVE \
          KCD_SCALE_TIER; do
     val="${!v:-}"
-    [ -n "$val" ] && forward_vars+=("$v=$val")
+    if [ -n "$val" ]; then
+        printf 'export %s=%q\n' "$v" "$val" >> "$ENV_FPATH"
+    fi
 done
-
-export_str="ALL"
-for kv in "${forward_vars[@]}"; do
-    export_str="$export_str,$kv"
-done
-
-job_name="$KCD_RUN_NAME"
 
 sbatch_args=(
     --parsable
@@ -90,7 +93,7 @@ sbatch_args=(
     --ntasks=1
     --output="$LOG_DPATH/%x-%j.out"
     --error="$LOG_DPATH/%x-%j.out"
-    --export="$export_str"
+    --export=ALL,KCD_ENV_FPATH="$ENV_FPATH"
     --chdir="$KCD_REPO_ROOT"
 )
 [ -n "$SLURM_PARTITION" ] && sbatch_args+=(--partition="$SLURM_PARTITION")

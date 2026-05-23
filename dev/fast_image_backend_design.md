@@ -532,6 +532,52 @@ no bbox update, single-RNG correlation across multiprocessing workers.
 **Phase 5 — Upstream the kit reader → kwcoco_dataloader**, replacing
 the WIDS-based `LocalWebdatasetBuckets` train path.
 
+### Phase ⊥ (parallel): Rust-port the hot path
+
+Long-term plan: once the Python reference implementation is
+established and the benchmark numbers show where the bottleneck
+actually is, rewrite the hot path in Rust for an additional 5–10×
+on top of the WebDataset gains.
+
+The reference Python reader is structured to be Rust-port-friendly:
+
+- **Pure functions in the hot path.**
+  `_sample_from_wds_raw` (JSON parse + image decode) and
+  `relabel_detection_sample` (scheme remap) are decorated with
+  `@line_profiler.profile` and have no Python side effects beyond
+  return value. Maps directly to Rust functions.
+- **The `Sample` dataclass** is a small struct (key + image bytes +
+  target dict). Translates to a Rust struct with a `HashMap<String,
+  serde_json::Value>` target.
+- **`WeightedChunkMix.__iter__`** uses an explicit `while` loop with
+  obvious state (current source index, chunk countdown). No
+  generator-comprehension tricks. Translates to a Rust iterator
+  with `impl Iterator for WeightedChunkMix`.
+- **No global mutable state** in the reader path. The only mutable
+  state is per-instance `self.epoch`, set via `set_epoch()`.
+- **Backend layering** is identified up-front: `WebDatasetStream`
+  could be replaced with a Rust crate (`tar` + `serde_json` +
+  `image`/`turbojpeg`) without changing the surrounding code; the
+  composition (relabel + chunk-mix) stays Python.
+
+Likely Rust-side gains, in order of impact:
+
+1. **JPEG decode** via `turbojpeg-rs` (libjpeg-turbo bindings) — 2–4×
+   over Python PIL. Easy first port.
+2. **JSON parse** via `serde_json` — moderate gain unless the JSON
+   blobs are very large. Detection annotations are small; expect 2×.
+3. **Tar reading + member iteration** via the `tar` crate — modest
+   gain over webdataset's Python tar parser, but eliminates the
+   Python loop overhead in the hot path.
+4. **Image array allocation + zero-copy passthrough** to torch via
+   `ndarray` + `pyo3` — avoids one or two extra copies in the
+   bytes-to-tensor path.
+
+Skip until the Python benchmark shows where the actual bottleneck
+is. Premature Rust = wasted engineering. The
+`bench_detection_throughput.py` profile is the input that decides
+which piece to port first.
+
 ### Implementation venue (post-decision)
 
 - **Writer work happens in `kwcoco_dataloader`** (not forked into the

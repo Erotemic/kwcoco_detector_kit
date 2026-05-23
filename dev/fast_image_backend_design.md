@@ -369,3 +369,165 @@ Before writing any code:
 - WebDataset docs: https://webdataset.github.io/webdataset/
 - MosaicML Streaming: https://github.com/mosaicml/streaming (for the random-access-with-tar trick if we change our minds later)
 - DEIMv2 train.py CocoDetection path (tpl/DEIMv2/engine/data/coco_dataset.py)
+
+---
+
+## Decisions locked in after research pass (2026-05-22)
+
+External-research review of WebDataset + kwcoco_dataloader, focused
+on HDD constraints + dynamic balancing + on-the-fly relabel.
+Concrete decisions:
+
+### Backend
+
+- **WebDataset for train + eval, NOT WIDS.** WIDS = map-style indexed
+  access over WebDataset shards. With `shuffle=True` it becomes a
+  per-sample random-seek storm on HDD — exactly the pattern we're
+  trying to escape. WIDS docs themselves recommend classic
+  `webdataset.WebDataset` for training and reserve WIDS for "random
+  access, sparse sampling, indexed samplers, or legacy code." Use it
+  for debug / inspection / one-off eval only.
+- **Drop `LocalWebdatasetBuckets` from the training path.** It's a
+  map-style Dataset that defaults to WIDS, exactly the HDD anti-
+  pattern. Repurpose for debug + eval-with-shuffle=False; build a
+  new iterable streaming reader for train.
+- **DDP via WebDataset's own sharding** (`nodesplitter=split_by_node`,
+  `workersplitter=split_by_worker`), NOT `DistributedSampler`.
+  Lightning/map-style assumptions don't apply to IterableDatasets.
+
+### Writer (in `kwcoco_dataloader`)
+
+- **Keep `BucketShardWriter`'s core idea** (bucketed sub-dirs +
+  per-shard `__header__.json`/`__footer__.json`/`.index`). Useful as
+  the data-side index for the runtime scheduler.
+- **Change the bucket key from class-tuples → semantic class-presence
+  flags.** Detection tiles can contain multiple classes; bucketing by
+  the full tuple fragments shards and makes per-class streams hard.
+  Bucket by `contains_<class>` booleans + `contains_any_box` +
+  `n_empty` instead.
+- **Enrich the footer manifest** with raw class histograms so the
+  reader's scheduler can compute stream weights:
+
+  ```json
+  {"url":"...tar","nsamples":1000,
+   "raw_class_hist":{"P":83,"B":410,"S":102},
+   "contains_pup":75,"contains_nonpup_sealion":430,
+   "contains_any_box":505,"n_empty":495,"byte_size":7e8}
+  ```
+
+- **Sample format**: simple `<key>.jpg` + `<key>.json` pairs (NOT the
+  `collated.npz + non_collatable.pyd` packing the existing fusion
+  datamodule uses). JSON carries: image_id, width, height, list of
+  annotations (with `source_category` preserved per the kit's
+  universal-tile invariant), and a tile-provenance block
+  (`{kwcoco_gid, space_slice}`).
+- **No tile-time class collapse.** The scheme mapping is a runtime
+  label transform; the on-disk shards encode the *raw* class labels
+  (one shard set serves every scheme).
+
+### Reader (kit-side initially; migrates to `kwcoco_dataloader`)
+
+Three layers:
+
+1. **`WebDatasetStream`** — thin wrapper around `wds.WebDataset(urls,
+   shardshuffle=N, nodesplitter=split_by_node, workersplitter=
+   split_by_worker, ...)` + `.shuffle(buf)` + `.decode("pil")`.
+   Yields raw `{__key__, jpg, json}` dicts.
+2. **`.map(relabel_detection_sample)`** — runtime scheme collapse.
+   Reads `source_category` from each annotation, applies the scheme
+   yaml's mapping, drops unmapped (or marks ignore — TBD policy),
+   re-densifies `category_id` to `0..N-1` for DETR. Documents the
+   mapping in the run's checkpoint metadata.
+3. **`WeightedChunkMix`** — custom `IterableDataset` that opens one
+   `WebDatasetStream` per bucket group (e.g. `pup-positive`,
+   `nonpup-positive`, `empty-negative`), picks a source by weighted
+   random, and drains `K=64` samples before re-picking. K is the
+   HDD seek-amortization knob; default 64, drop to 32 if responsiveness
+   matters, push to 128 if seek thrash is observed.
+
+```python
+class WeightedChunkMix(torch.utils.data.IterableDataset):
+    def __init__(self, streams, weights, chunk_size=64, epoch_size=None,
+                 seed=0):
+        ...
+    def __iter__(self):
+        rng = random.Random(self.seed + 1000003 * self.epoch)
+        iters = [iter(s) for s in self.streams]
+        n = 0
+        while self.epoch_size is None or n < self.epoch_size:
+            i = rng.choices(range(len(iters)), weights=self.weights, k=1)[0]
+            for _ in range(self.chunk_size):
+                if self.epoch_size is not None and n >= self.epoch_size:
+                    return
+                try:
+                    yield next(iters[i]); n += 1
+                except StopIteration:
+                    iters[i] = iter(self.streams[i])
+                    break
+```
+
+### Class-balanced sampling strategy
+
+Locked: **strategy B (segregated bucket streams + chunked weighted
+mixer)** as the default. Strategy A (mixed-shard intra-shard buffer)
+as a fallback for "don't care about runtime balance" runs — same
+shard format, different scheduler. Reject-sampling (C) considered
+only for moderate-ratio nudges and explicitly NOT for extreme rare-
+class up-weighting.
+
+For object detection specifically, also consider **repeat-factor
+packing at pack time**: physically duplicate rare-positive tiles 2–5×
+in the bucket they land in. ~25 GB dataset can absorb the
+duplication; gives smoother stream weights at runtime.
+
+### Resolution jitter (oversize + crop-on-load)
+
+Locked: **defer to phase 3, prove it pays first.** The 44% HDD byte
+penalty is real; DEIMv2's existing Mosaic / RandomIoUCrop /
+CopyBlend already do scale/context jitter. Three A/B/C variants to
+benchmark before locking in:
+
+- A. normal tile → DEIMv2 aug pipeline
+- B. oversized tile → kit-side RandomCrop → DEIMv2 aug
+- C. oversized tile → DEIMv2 aug (its IoUCrop handles the jitter)
+
+Expect A or C to win on HDD; B costs the 44% without obvious gain.
+
+If we do build a crop-on-load step, it MUST: clip bboxes, drop boxes
+below a visibility threshold, update `area`/`iscrowd`, preserve
+`source_category` + `kwcoco_ann_id`, record crop offset, and use a
+per-worker/per-sample RNG (not a dataset-construction-time one).
+`TimeSpaceAugmenter` in kwcoco_dataloader has the right concept but
+has known bugs: off-by-one crop high-bound (`H - h` should be `H - h + 1`),
+no bbox update, single-RNG correlation across multiprocessing workers.
+
+### Phase plan (updated)
+
+**Phase 1 — Writer + format lockdown (in kwcoco_dataloader)**
+1. Add a detection-tile writer mode to `build_webdataset` that
+   produces `<key>.jpg` + `<key>.json` pairs (not the fusion-style
+   .npz/.pyd packing).
+2. Update `BucketShardWriter` bucket keys to use semantic class-
+   presence flags instead of class tuples.
+3. Enrich footer manifests with raw class histograms +
+   contains-class counts.
+4. Add a single-pass round-trip test: kwcoco → shards → read first
+   N samples → verify counts, bboxes, source_category match.
+
+**Phase 2 — Streaming reader (kit-side, kit/data/fast_backend.py)**
+5. `WebDatasetStream` thin wrapper.
+6. `relabel_detection_sample` map function (driven by scheme yaml).
+7. `WeightedChunkMix` IterableDataset.
+8. Trainer-side glue: adapter that exposes Sample → DEIMv2's
+   `CocoDetection` interface.
+
+**Phase 3 — Wire into DEIMv2 + benchmark**
+9. Add `KCD_DATA_BACKEND=webdataset|kwcoco` to the sweep config.
+10. Run pup_vs_nonpup_deimv2_hgnetv2_n_1gpu_arisia_v2 against both
+    backends; compare iter time + GPU util.
+11. If WebDataset wins clearly, set as default. Otherwise diagnose.
+
+**Phase 4 — Oversize + crop (only if A/B/C benchmark says it helps)**
+
+**Phase 5 — Upstream the kit reader → kwcoco_dataloader**, replacing
+the WIDS-based `LocalWebdatasetBuckets` train path.

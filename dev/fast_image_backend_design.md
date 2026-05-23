@@ -22,6 +22,19 @@ bundle via the standard CocoDetection → PIL/cv2 path. Concretely:
     image — but the underlying many-small-files pattern remains the
     deeper bottleneck).
 
+**Storage reality: arisia's training filesystem is spinning rust
+(HDD), not SSD.** This dominates the design space:
+
+- Random seek ~10 ms vs ~0.1 ms on SSD → 100× per-seek penalty.
+- Sequential throughput ~100–200 MB/s is still respectable when the
+  workload actually reads contiguous bytes.
+- Page cache is load-bearing — 250k tiles × ~150 KB ≈ 37 GB; with
+  RAM ≥ that, epoch-2+ get cheaper, but cold-start (epoch 1, post-
+  reboot, cross-job) is brutal.
+- Random-access-per-sample formats (LMDB, packed memmap) inherit
+  the same HDD seek penalty and lose much of their theoretical
+  advantage.
+
 We want to move from many-small-files-random-read to a
 sequential-IO-friendly format without rewriting the trainer plugins.
 
@@ -63,10 +76,14 @@ sequential-IO-friendly format without rewriting the trainer plugins.
 | Arrow/Parquet | high columnar | per-row | yes | Great for tabular metadata, awkward for image bytes. |
 | NVIDIA DALI | very high | depends | n/a | Replaces the whole augment pipeline. Invasive. |
 
-For v1: **WebDataset for train (huge throughput, iter-first matches
-our shuffle-each-epoch usage) + LMDB for eval (random access matches
-COCO-eval's deterministic order)**. Both can live behind one read
-interface.
+For v1 (HDD-aware): **WebDataset tar shards for both train AND eval**.
+LMDB's per-sample random access is poisoned by HDD seek latency; eval
+just needs a no-shuffle iteration order, which WebDataset can do via
+single-shard, no-shuffle reads.
+
+If we later move to SSD-backed storage, LMDB / MosaicML Streaming
+re-enter consideration. The reader interface is designed so the
+backend is swappable without touching trainer plugins.
 
 ## Interface
 

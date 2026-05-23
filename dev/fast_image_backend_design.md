@@ -55,6 +55,100 @@ sequential-IO-friendly format without rewriting the trainer plugins.
    `kwcoco_dataloader` later. Live in the kit during incubation;
    migrate once the interface is settled and tested.
 
+## Additional capabilities required
+
+### 1. On-the-fly class coarsening (scheme collapse at load time)
+
+The kit's universal-tile pipeline (commit 5d99545) already tiles
+against the upstream 'sealion' bundle with `source_category`
+preserved on each annotation. The scheme's class-collapse currently
+happens via a separate post-step (`apply_scheme_to_kwcoco.py`) that
+writes a per-scheme kwcoco bundle.
+
+For the fast backend, the natural place to apply the collapse is
+**at load time** — the Sample carries `source_category` from the
+shard; the reader maps it to the run's target_classes per the scheme
+yaml. Benefits:
+
+- One tar shard set serves *every* scheme. No re-pack per scheme.
+- Changing schemes is a runtime swap of the mapping table.
+- The on-disk format never lies about the source data — collapse is
+  purely a view.
+
+Implication for `Sample`: `category_id` is the *raw* class (matching
+the tile bundle's `source_category`); the scheme mapping happens in
+the trainer-side glue, not in the backend.
+
+### 2. Dynamic class-balanced sampling (HDD-aware)
+
+We want to vary class-mix ratios at runtime (up-weight rare classes,
+50/50 binary, etc.) — analogous to kwcoco_dataloader's
+`BalancedSampleTree` but adapted for tar-shard sequential reads.
+On HDD this can't be per-sample random; the seek penalty would
+dominate.
+
+Three candidate strategies, in tension between flexibility and HDD-
+friendliness:
+
+**A. Class-mixed shards + intra-shard shuffle buffer (max-sequential):**
+Pack shards so each contains the global class mix. Read sequentially
+through a shard; maintain an in-RAM shuffle buffer (~thousands of
+samples) for intra-batch variety. Ratios are fixed at pack time. Best
+HDD throughput; no runtime ratio control.
+
+**B. Class-segregated shards + weighted shard scheduler (max-flexible):**
+Pack one shard set per class (or per coarse group). A scheduler picks
+which shard to advance next based on the target ratio, reading a
+chunk of K samples before re-deciding. Cross-shard seeks happen at
+chunk boundaries; K amortizes the HDD penalty. K is the responsiveness
+knob — too small → seek storm; too large → ratio drifts within a
+batch. K ≈ 256–1024 likely sweet spot.
+
+Risk: "dovetailing reads from N shards" sounds like an HDD anti-
+pattern. In practice modern HDDs have prefetchers + the kernel page
+cache helps, so reading a contiguous K samples from one tar before
+moving to another is fine. Reading 1 sample then switching is fatal.
+
+**C. Class-mixed shards + reject-sample (lazy filter):**
+Read sequentially from class-mixed shards, reject samples that
+exceed the target ratio. Zero seek penalty, but wastes IO on
+rejected samples — bad for rare-class up-weighting (most reads get
+dropped). Works for moderate ratio shifts (±2× from natural).
+
+**Recommendation: B for the main path, with A as the fallback for
+"don't care about runtime balance" runs.** A and B can share the same
+shard format if shards are packed class-segregated by default;
+strategy A is then just "scheduler uses uniform random shard pick."
+
+Open: kwcoco_dataloader's BalancedSampleTree is a tree-weighted
+index sampler. The shard scheduler is its natural shard-granularity
+analog. Lift the tree-weighting math; rewrite the leaf semantics
+from "pick sample index i" → "advance shard s by K samples."
+
+### 3. Resolution jitter via oversized tiles + crop-on-load
+
+`data/tile.py` already supports `oversize_factor>1.0` — cuts larger
+tiles than the model input and records `tile_model_input_size` in
+the kwcoco image record. Today this only matters when the trainer's
+own augment pipeline does the final crop (we currently set
+`oversize_factor=1.2`).
+
+For the fast backend, the contract is:
+
+- Shards store the oversized tile bytes (matching the on-disk kwcoco).
+- The reader returns a Sample where `image` is the oversized array.
+- The trainer-side glue does a `RandomCrop(model_input_hw)` during
+  train and `CenterCrop` during eval, BEFORE DEIMv2's transform
+  pipeline sees the sample. (Or threads through DEIMv2's transform
+  ops as another step.)
+- Annotation bboxes get clipped against the crop window — the same
+  `_clip_bbox_xywh` logic tile.py already uses.
+
+Tradeoff: ~44% more bytes/sample on disk and per-iter (1.2² = 1.44).
+Worth it for the augmentation diversity + eliminates the tile-time
+hard commitment to one input resolution. The fast backend should
+make the byte penalty manageable.
+
 ## Non-goals (for v1)
 
 - Cloud-mount / streaming-from-S3. Local disk only.

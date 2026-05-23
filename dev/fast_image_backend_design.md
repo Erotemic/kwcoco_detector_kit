@@ -587,6 +587,40 @@ On HDD-backed WebDataset the replacement is approximate + buffered +
 chunked. If a future workload needs exact balanced sampling, that
 workload needs SSD storage, period.
 
+### Phase 1 — locked decisions (after pass 3)
+
+**Where:** dedicated new CLI in
+`kwcoco_dataloader/cli/build_detection_webdataset.py`. Coexists with
+the fusion-style `build_webdataset.py`; doesn't replace it.
+
+**Must stay kwcoco-agnostic.** No sea-lion-specific code paths. Tests
+use kwcoco's built-in demo generators (`shapes8`, `vidshapes`, ...)
+with varied parameters (different category counts, with/without
+`source_category`, with/without tile_* metadata) so edge cases are
+caught at the format level.
+
+**Bucket layout:** `dominant_raw=<class>/NNNNNN.tar` subdirs as the
+default; shards are mixed-but-biased toward the dominant class. An
+option for flat layout (all shards in one dir, scheduler picks from
+footer histograms) reserved for future. The per-shard footer carries
+the FULL raw histogram regardless of layout, so the scheduler
+always has precise info.
+
+**Shard sizing:** `maxcount=5000` AND `maxsize_mb=1024`, whichever
+hits first. `wds.ShardWriter` already supports both natively.
+
+**Provenance fields ON by default**, drop-flag opt-out. Defaults
+include `tile_role`, `tile_source_gid`, `tile_resize_scale`,
+`tile_extent_xyxy_in_source`, `tile_model_input_size`,
+`tile_oversize_factor` if present in the source kwcoco image record.
+`--drop_provenance` flag strips them at write time when storage
+is at a premium.
+
+**JPEG passthrough** when the source image file extension is
+`.jpg`/`.jpeg` — skip the decode→re-encode round-trip. For other
+formats (PNG, TIFF, ...) decode-and-re-encode to JPEG with
+configurable quality.
+
 ### Bucket key — refined
 
 Stable PHYSICAL buckets, NOT final-training classes (those change

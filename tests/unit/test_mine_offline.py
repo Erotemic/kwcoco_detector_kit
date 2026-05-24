@@ -57,7 +57,7 @@ def _train_mock_tiny(tmp_workdir: Path, train_kwcoco: Path):
         use_amp=False,
         channels="r|g|b", scale_tier="S", num_gpus=1,
         data_format="kwcoco",
-        extra={"category_name": "widget"},
+        extra={"category_names": ["widget"]},
     )
     trainer.launch(cfg, num_gpus=1)
     return tmp_workdir

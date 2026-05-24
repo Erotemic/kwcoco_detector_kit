@@ -29,6 +29,7 @@ ALL_VARIANTS = HGNETV2_VARIANTS + DINOV3_VARIANTS
 def _generate(trainer, tmp_path, *, variant, num_classes, input_hw=(256, 256)):
     workdir = tmp_path / "wd"
     workdir.mkdir(parents=True, exist_ok=True)
+    category_names = [f"cat{i}" for i in range(int(num_classes))]
     cfg_fpath = trainer.generate_config(
         train_kwcoco_fpath="/tmp/train.mscoco.json",
         vali_kwcoco_fpath="/tmp/vali.mscoco.json",
@@ -41,7 +42,7 @@ def _generate(trainer, tmp_path, *, variant, num_classes, input_hw=(256, 256)):
         lr=5e-4, backbone_lr=2.5e-5, use_amp=False,
         channels="r|g|b", scale_tier="S", num_gpus=1,
         data_format="kwcoco",
-        extra=None,
+        extra={"category_names": category_names},
     )
     return yaml.safe_load(Path(cfg_fpath).read_text())
 

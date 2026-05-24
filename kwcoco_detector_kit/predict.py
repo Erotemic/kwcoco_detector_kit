@@ -63,8 +63,10 @@ def _load_labels(package_root: Path, manifest: dict) -> list[str]:
             labels = data.get("labels")
             if labels:
                 return [str(lbl) for lbl in labels]
-    category_name = manifest.get("category_name") or "object"
-    return [str(category_name)]
+    category_names = manifest.get("category_names")
+    if category_names:
+        return [str(n) for n in category_names]
+    return ["object"]
 
 
 def _build_kwcoco_from_image_dir(image_dpath: Path):

@@ -15,6 +15,7 @@ ENV PATH=/opt/venv/bin:/usr/local/cuda/bin:${PATH}
 ENV CUDA_HOME=/usr/local/cuda
 ENV PYTHON_BIN=/opt/venv/bin/python
 ENV KCD_OPENGROUNDINGDINO_REPO_DPATH=/opt/kwcoco_detector_kit/tpl/Open-GroundingDino
+ENV KCD_DEIMV2_REPO_DPATH=/opt/kwcoco_detector_kit/tpl/DEIMv2
 ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 ENV TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 ENV PIP_CACHE_DIR=${PIP_CACHE_DIR}
@@ -83,6 +84,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     ${PYTHON_BIN} -m pip install \
         "kwcoco>=0.8" \
         "kwimage>=0.11" \
+        "kwutil>=0.3" \
         "ubelt>=1.4" \
         "scriptconfig>=0.9" \
         "numpy>=1.24" \
@@ -94,13 +96,30 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         "opencv-python-headless>=4.8" \
         "Pillow>=10.0" \
         "transformers>=4.35,<4.47" \
+        "huggingface_hub>=0.27" \
         addict \
         yapf \
         pycocotools \
         matplotlib \
         timm \
         colorlog \
-        jsonlines
+        jsonlines \
+        "pytest>=8" \
+        "pytest-cov>=4" \
+        "faster-coco-eval>=1.6.7" \
+        "tensorboard" \
+        "scipy" \
+        "calflops" \
+        "safetensors"
+
+# GDAL via Kitware's large-image wheel index (girder.github.io). The
+# wheels bundle libgdal so we don't need libgdal-dev / gdal-bin on the
+# system. kwcoco's `finish_install --with_gdal` resolves to the right
+# pinned version + finds it on Kitware's wheel index.
+# The kit's _preimport scaffold then loads osgeo.gdal before torch,
+# which is what delayed_image needs to take its fast path.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    ${PYTHON_BIN} -m kwcoco finish_install --with_gdal=True --strict=False
 
 # Copy and build the upstream trainer before copying the rest of the kit. The
 # CUDA extension depends on torch/nvcc + OpenGroundingDINO source, not on most
@@ -113,11 +132,19 @@ RUN --mount=type=cache,target=/root/.cache/torch_extensions \
     ${PYTHON_BIN} setup.py build_ext --inplace -v && \
     cp MultiScaleDeformableAttention*.so /opt/kwcoco_detector_kit/tpl/Open-GroundingDino/
 
+# DEIMv2 is pure Python — no CUDA extension to compile. Copy after the
+# heavier OGDino build so kit edits don't invalidate the OGDino layer.
+COPY tpl/DEIMv2 /opt/kwcoco_detector_kit/tpl/DEIMv2
+RUN test -f /opt/kwcoco_detector_kit/tpl/DEIMv2/train.py || \
+        (echo "DEIMv2 submodule contents are missing from Docker build context. Run: git submodule update --init tpl/DEIMv2" >&2; exit 1)
+
 COPY kwcoco_detector_kit /opt/kwcoco_detector_kit/kwcoco_detector_kit
 COPY docs /opt/kwcoco_detector_kit/docs
 COPY examples /opt/kwcoco_detector_kit/examples
 COPY docker /opt/kwcoco_detector_kit/docker
 COPY dev /opt/kwcoco_detector_kit/dev
+COPY smoketests /opt/kwcoco_detector_kit/smoketests
+COPY tests /opt/kwcoco_detector_kit/tests
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     ${PYTHON_BIN} -m pip install --no-deps -e "." && \
@@ -125,8 +152,20 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         --groups core,opengroundingdino \
         --strict_import
 
+# Run the fast unit tests inside the image to verify the build. Tests
+# marked `requires_gpu` skip automatically (no GPU during docker build).
+# Set --build-arg RUN_TESTS=0 to skip this step in CI / for quick rebuilds.
+ARG RUN_TESTS=1
+RUN if [ "${RUN_TESTS}" = "1" ]; then \
+        cd /opt/kwcoco_detector_kit && \
+        ${PYTHON_BIN} -m pytest tests/unit -m "not requires_gpu" -q --no-header; \
+    else \
+        echo "skipping in-image pytest run (RUN_TESTS=${RUN_TESTS})"; \
+    fi
+
 COPY docker/opengroundingdino/entrypoint.sh /usr/local/bin/kcd-ogdino-entrypoint
-RUN chmod +x /usr/local/bin/kcd-ogdino-entrypoint
+COPY docker/opengroundingdino/kcd-pytest /usr/local/bin/kcd-pytest
+RUN chmod +x /usr/local/bin/kcd-ogdino-entrypoint /usr/local/bin/kcd-pytest
 
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/kcd-ogdino-entrypoint"]

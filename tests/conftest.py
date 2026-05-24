@@ -37,15 +37,22 @@ def _make_synthetic_bundle(
     num_images: int = 4,
     image_size: Tuple[int, int] = (256, 256),
     boxes_per_image: int = 1,
-    category_name: str = "widget",
+    category_names=("widget",),
     seed: int = 0,
 ) -> Path:
     """Build a small kwcoco bundle on disk with synthetic JPEG assets.
 
-    Returns the path of the written .kwcoco.zip.
+    Returns the path of the written .kwcoco.zip. When multiple category
+    names are given, boxes are round-robin-assigned to each category so
+    every class has annotations.
     """
     import kwcoco
     import kwimage
+
+    if isinstance(category_names, str):
+        category_names = (category_names,)
+    category_names = tuple(category_names)
+    assert category_names, "need at least one category name"
 
     rng = np.random.RandomState(seed)
     asset_dpath = bundle_dpath / "synth_assets"
@@ -53,9 +60,10 @@ def _make_synthetic_bundle(
 
     dset = kwcoco.CocoDataset()
     dset.fpath = str(bundle_dpath / "synth.kwcoco.zip")
-    cid = dset.add_category(name=category_name)
+    cids = [dset.add_category(name=name) for name in category_names]
 
     H, W = image_size
+    box_counter = 0
     for k in range(num_images):
         img = (rng.rand(H, W, 3) * 255).astype(np.uint8)
         boxes = []
@@ -64,7 +72,9 @@ def _make_synthetic_bundle(
             bh = rng.randint(20, H // 4)
             bx = int(rng.randint(0, W - bw))
             by = int(rng.randint(0, H - bh))
-            boxes.append((bx, by, bw, bh))
+            cid = cids[box_counter % len(cids)]
+            boxes.append((bx, by, bw, bh, cid))
+            box_counter += 1
             # Burn an obvious bright square into the image so a real
             # detector has signal.
             img[by:by + bh, bx:bx + bw] = (255, 50, 50)
@@ -77,7 +87,7 @@ def _make_synthetic_bundle(
             file_name=str(fpath.relative_to(bundle_dpath)),
             width=W, height=H, name=f"synth_{k:04d}",
         )
-        for (bx, by, bw, bh) in boxes:
+        for (bx, by, bw, bh, cid) in boxes:
             dset.add_annotation(
                 image_id=gid, category_id=cid,
                 bbox=[float(bx), float(by), float(bw), float(bh)],

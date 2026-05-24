@@ -34,7 +34,14 @@ class MergeConfig(scfg.DataConfig):
     )
     dst = scfg.Value(None, help="output kwcoco for this round's training", required=True)
 
-    category_name = scfg.Value("widget", help="category name to copy (positives only)")
+    category_names = scfg.Value(
+        "widget",
+        help=(
+            "comma-separated category names to copy from the positives "
+            "bundle. Order is preserved and assigned to output "
+            "category_id 1, 2, ... — matches data.tile output."
+        ),
+    )
     neg_over_pos = scfg.Value(
         3.0,
         help="target ratio of negatives to positives in output. Capped by the actual neg pool. <=0 keeps ALL negatives.",
@@ -55,7 +62,14 @@ def run(config):
     pos_fpath = Path(str(config.pos_kwcoco)).expanduser().resolve()
     neg_fpath = Path(str(config.neg_kwcoco)).expanduser().resolve()
     dst_fpath = Path(str(config.dst)).expanduser().resolve()
-    target_cat = str(config.category_name)
+
+    raw_names = config.category_names
+    if isinstance(raw_names, (list, tuple)):
+        target_cats = [str(n).strip() for n in raw_names if str(n).strip()]
+    else:
+        target_cats = [s.strip() for s in str(raw_names).split(",") if s.strip()]
+    if not target_cats:
+        raise RuntimeError("--category_names must contain at least one name")
 
     pos_dset = kwcoco.CocoDataset.coerce(str(pos_fpath))
     neg_dset = kwcoco.CocoDataset.coerce(str(neg_fpath))
@@ -91,7 +105,10 @@ def run(config):
 
     out_dset = kwcoco.CocoDataset()
     out_dset.fpath = str(dst_fpath)
-    cat_id = out_dset.add_category(name=target_cat)
+    # Output category IDs are 1, 2, ... in the order names were given —
+    # matches the convention used by data.tile and downstream MSCOCO export.
+    new_cat_ids = [out_dset.add_category(name=name) for name in target_cats]
+    target_name_to_new_cid = dict(zip(target_cats, new_cat_ids))
 
     # positives — copy images + their annotations.
     # Rewrite file_name to the SOURCE bundle's absolute path before adding
@@ -118,14 +135,14 @@ def run(config):
         if src_gid not in pos_set:
             continue
         src_cat = pos_cats_by_id.get(ann.get("category_id"))
-        if not src_cat or src_cat["name"] != target_cat:
+        if not src_cat or src_cat["name"] not in target_name_to_new_cid:
             continue
         new_gid = src_gid_to_new_gid[("pos", src_gid)]
         bbox = ann.get("bbox")
         if not bbox:
             continue
         out_dset.add_annotation(
-            image_id=new_gid, category_id=cat_id,
+            image_id=new_gid, category_id=target_name_to_new_cid[src_cat["name"]],
             bbox=list(bbox), area=float(ann.get("area", bbox[2] * bbox[3])),
             iscrowd=int(ann.get("iscrowd", 0)),
         )

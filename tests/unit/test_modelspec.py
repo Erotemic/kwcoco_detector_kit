@@ -12,7 +12,7 @@ def test_write_modelspec_round_trip(tmp_path):
     onnx_fpath.write_bytes(b"x")
     out = write_modelspec(
         onnx_fpath, input_hw=(320, 416), input_channels=3,
-        variant="deimv2_hgnetv2_n", category_name="widget",
+        variant="deimv2_hgnetv2_n", category_names=["widget"],
         candidate_kind="real",
         postprocess_score_thresh=0.25, postprocess_nms_iou_thresh=0.45,
     )
@@ -21,7 +21,7 @@ def test_write_modelspec_round_trip(tmp_path):
     assert payload["postprocess"]["score_thresh"] == 0.25
     assert payload["postprocess"]["nms_iou_thresh"] == 0.45
     assert payload["meta"]["variant"] == "deimv2_hgnetv2_n"
-    assert payload["meta"]["category_name"] == "widget"
+    assert payload["meta"]["category_names"] == ["widget"]
 
 
 def test_write_modelspec_model_id_default(tmp_path):

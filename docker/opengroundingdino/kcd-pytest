@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Run the baked-in kwcoco_detector_kit pytest suite. Arguments are forwarded
+# to pytest verbatim, so callers can pass selectors, -k, -m, etc.
+#
+# By default runs against the baked copy at /opt/kwcoco_detector_kit. Pass
+# KCD_TEST_REPO=/path to point at a bind-mounted editable checkout instead.
+#
+# Examples (run with `docker run --rm`):
+#
+#     # Full fast unit suite (no GPU markers).
+#     docker run --rm <image> kcd-pytest tests/unit -m "not requires_gpu"
+#
+#     # Just the multi-class pipeline test.
+#     docker run --rm <image> kcd-pytest tests/unit/test_multiclass_pipeline.py
+#
+#     # GPU-aware run (use --gpus all on the docker run line):
+#     docker run --rm --gpus all <image> kcd-pytest tests/unit
+set -euo pipefail
+
+KCD_TEST_REPO="${KCD_TEST_REPO:-/opt/kwcoco_detector_kit}"
+cd "$KCD_TEST_REPO"
+exec python -m pytest "$@"

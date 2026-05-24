@@ -47,7 +47,7 @@ echo "=== 1. Multi-scale tile ==="
     --min_keep_fraction 0.20 \
     --oversize_factor 1.2 \
     --keep_negative true \
-    --category_name "$KCD_CATEGORY"
+    --category_names "$KCD_CATEGORY"
 
 echo
 echo "=== 2. Sweep (train + export + eval + bench) ==="
@@ -67,8 +67,7 @@ fi
     --num_epochs 30 \
     --batch_size 16 \
     --val_batch_size 32 \
-    --num_classes 1 \
-    --category_name "$KCD_CATEGORY" \
+    --category_names "$KCD_CATEGORY" \
     --lr 5e-4 \
     --backbone_lr 2.5e-5 \
     --use_amp true \

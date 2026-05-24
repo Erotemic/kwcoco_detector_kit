@@ -5,44 +5,62 @@ etc.) that don't speak kwcoco directly.
 
 The exported json has:
 
-- ``categories`` — one entry, the requested ``category_name`` (others dropped).
+- ``categories`` — one entry per requested name (in caller-supplied order),
+  with ``id`` starting at ``category_id_start`` (default 0) and incrementing.
+  Annotations whose source category name is not in the requested list are
+  dropped.
 - ``images`` — one row per source image, with absolute ``file_name``.
 - ``annotations`` — one row per kept annotation, bbox in MSCOCO xywh.
   Optionally carries ``segmentation`` polygons. Bbox falls back to the
   segmentation's enclosing box when missing (mirrors v9's
   ``ensure_true_bboxes``).
-
-Lifted from the prior project's ``coco_adapter._build_coco_export``.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 
 def export_mscoco(
     src,
     dst,
     *,
-    category_name: str = "widget",
+    category_names: Sequence[str],
     include_segmentations: bool = True,
-    category_id: int = 0,
+    category_id_start: int = 0,
 ):
-    """Write a single MSCOCO json from a kwcoco bundle. Returns the dst path."""
+    """Write a single MSCOCO json from a kwcoco bundle. Returns the dst path.
+
+    Args:
+        category_names: ordered sequence of source category names to keep.
+            The order determines the MSCOCO ``category_id`` assigned
+            (``category_id_start + i``), so it must match the order the
+            trainer expects (it is used to interpret model class indices at
+            eval time).
+    """
     import kwcoco
     import kwimage
+
+    if isinstance(category_names, str):
+        raise TypeError(
+            "category_names must be a sequence of names, not a single string"
+        )
+    category_names = list(category_names)
+    if not category_names:
+        raise ValueError("category_names must contain at least one name")
+
+    name_to_id = {name: category_id_start + i for i, name in enumerate(category_names)}
 
     src_dset = kwcoco.CocoDataset.coerce(src)
     export: dict = {
         "info": {},
         "images": [],
         "annotations": [],
-        "categories": [{
-            "id": category_id,
-            "name": category_name,
-            "supercategory": category_name,
-        }],
+        "categories": [
+            {"id": name_to_id[name], "name": name, "supercategory": name}
+            for name in category_names
+        ],
     }
 
     kept_gids = set()
@@ -71,12 +89,12 @@ def export_mscoco(
         if src_cid is None:
             continue
         cat = src_dset.cats.get(src_cid)
-        if cat is None or cat["name"] != category_name:
+        if cat is None or cat["name"] not in name_to_id:
             continue
         new_ann = {
             "id": ann_id,
             "image_id": gid,
-            "category_id": category_id,
+            "category_id": name_to_id[cat["name"]],
             "iscrowd": int(ann.get("iscrowd", 0)),
             "bbox": ann.get("bbox"),
             "area": float(ann.get("area", 0.0)),
@@ -108,9 +126,9 @@ def export_training_splits(
     output_dpath,
     *,
     test_kwcoco: Optional[str] = None,
-    category_name: str = "widget",
+    category_names: Sequence[str],
     include_segmentations: bool = True,
-    category_id: int = 0,
+    category_id_start: int = 0,
 ):
     """Export train+vali (+optional test) MSCOCO jsons next to each other."""
     output_dpath = Path(output_dpath)
@@ -119,24 +137,24 @@ def export_training_splits(
         "train": export_mscoco(
             train_kwcoco,
             output_dpath / "train.mscoco.json",
-            category_name=category_name,
+            category_names=category_names,
             include_segmentations=include_segmentations,
-            category_id=category_id,
+            category_id_start=category_id_start,
         ),
         "vali": export_mscoco(
             vali_kwcoco,
             output_dpath / "vali.mscoco.json",
-            category_name=category_name,
+            category_names=category_names,
             include_segmentations=include_segmentations,
-            category_id=category_id,
+            category_id_start=category_id_start,
         ),
     }
     if test_kwcoco is not None:
         exports["test"] = export_mscoco(
             test_kwcoco,
             output_dpath / "test.mscoco.json",
-            category_name=category_name,
+            category_names=category_names,
             include_segmentations=include_segmentations,
-            category_id=category_id,
+            category_id_start=category_id_start,
         )
     return exports

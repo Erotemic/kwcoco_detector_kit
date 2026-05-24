@@ -83,7 +83,14 @@ class TileConfig(scfg.DataConfig):
         ),
     )
 
-    category_name = scfg.Value("widget", help="category name to keep; others dropped")
+    category_names = scfg.Value(
+        "widget",
+        help=(
+            "comma-separated category names to keep (others dropped). Order "
+            "is preserved and assigned to output category_id 1, 2, ... so "
+            "downstream MSCOCO export can map class indices consistently."
+        ),
+    )
     output_ext = scfg.Value(".jpg", help="asset extension")
     jpeg_quality = scfg.Value(90, help="JPEG quality if output_ext is .jpg")
     progress = scfg.Value(True, help="show ubelt.ProgIter progress")
@@ -276,6 +283,26 @@ def _tile_extents_quadrant(width: int, height: int, grid: int, overlap: float) -
     return [(x0, y0, x1, y1) for (x0, x1) in xs for (y0, y1) in ys]
 
 
+# Annotation fields preserved as-is from source to tile output. The
+# core fields (id, image_id, category_id, bbox, area, iscrowd) are
+# computed by tile.py; everything in this whitelist passes through so
+# downstream pipelines (e.g. scheme-aware MSCOCO export) can collapse
+# / filter using metadata that survived the tiling step.
+#
+# Extending: add the field name; do NOT enable wildcard passthrough
+# (some sources carry multi-MB caption fields that would bloat tiles).
+_PASSTHROUGH_ANN_FIELDS = (
+    "source_category",   # raw class label before any scheme collapse
+    "track_id",          # cross-frame instance tracking
+    "caption",           # short text caption per annotation
+    "score",             # confidence (e.g. weak-labeler output)
+)
+
+
+def _passthrough_fields(src_ann: dict) -> dict:
+    return {k: src_ann[k] for k in _PASSTHROUGH_ANN_FIELDS if k in src_ann}
+
+
 def _read_image_rgb(coco_img):
     """Read a kwcoco coco_image as a (H, W, 3) uint8 ndarray; gracefully fallback."""
     import numpy as np
@@ -309,12 +336,12 @@ def _dump_kwcoco(out: dict, dst_fpath: Path):
 # ---------------------------------------------------------------------------
 
 
-def _run_full_only(config, src_dset, dst_fpath, asset_dpath, target_cat_name, keep_cat_ids):
+def _run_full_only(config, src_dset, dst_fpath, asset_dpath, target_cat_names, src_cid_to_new_cid):
     """Resize each source image to ``full_dim``; warp annotations through the scale."""
     import ubelt as ub
 
     full_dim = int(config.full_dim)
-    out = _init_out(config, target_cat_name, "full_only")
+    out = _init_out(config, target_cat_names, "full_only")
     next_gid = 1
     next_ann_id = 1
 
@@ -330,7 +357,7 @@ def _run_full_only(config, src_dset, dst_fpath, asset_dpath, target_cat_name, ke
         gid = coco_img.img["id"]
         anns = [
             ann for ann in src_dset.annots(gid=gid).objs
-            if ann.get("category_id") in keep_cat_ids and ann.get("bbox") is not None
+            if ann.get("category_id") in src_cid_to_new_cid and ann.get("bbox") is not None
         ]
         resized, scale = _resize_with_long_side(image, full_dim)
         stem = f"gid{gid:08d}_full"
@@ -355,9 +382,10 @@ def _run_full_only(config, src_dset, dst_fpath, asset_dpath, target_cat_name, ke
             bx, by, bw, bh = ann["bbox"]
             new_bbox = [bx * scale, by * scale, bw * scale, bh * scale]
             out["annotations"].append({
+                **_passthrough_fields(ann),
                 "id": next_ann_id,
                 "image_id": next_gid,
-                "category_id": 1,
+                "category_id": src_cid_to_new_cid[ann["category_id"]],
                 "bbox": new_bbox,
                 "area": float(new_bbox[2] * new_bbox[3]),
                 "iscrowd": int(ann.get("iscrowd", 0)),
@@ -373,11 +401,11 @@ def _run_full_only(config, src_dset, dst_fpath, asset_dpath, target_cat_name, ke
     print(f"tile.full_only: wrote {n_imgs} images, {n_anns} annotations to {dst_fpath}")
 
 
-def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_name, keep_cat_ids):
+def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_names, src_cid_to_new_cid):
     """NxN overlapping tiles cut from full-resolution source images + optional resized full-frame."""
     import ubelt as ub
 
-    out = _init_out(config, target_cat_name, "quadrant")
+    out = _init_out(config, target_cat_names, "quadrant")
     next_gid = 1
     next_ann_id = 1
     full_dim = int(config.full_dim)
@@ -400,7 +428,7 @@ def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_name, kee
         gid = coco_img.img["id"]
         anns = [
             ann for ann in src_dset.annots(gid=gid).objs
-            if ann.get("category_id") in keep_cat_ids and ann.get("bbox") is not None
+            if ann.get("category_id") in src_cid_to_new_cid and ann.get("bbox") is not None
         ]
 
         # full frame
@@ -427,9 +455,10 @@ def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_name, kee
                 bx, by, bw, bh = ann["bbox"]
                 new_bbox = [bx * scale, by * scale, bw * scale, bh * scale]
                 out["annotations"].append({
+                    **_passthrough_fields(ann),
                     "id": next_ann_id,
                     "image_id": next_gid,
-                    "category_id": 1,
+                    "category_id": src_cid_to_new_cid[ann["category_id"]],
                     "bbox": new_bbox,
                     "area": float(new_bbox[2] * new_bbox[3]),
                     "iscrowd": int(ann.get("iscrowd", 0)),
@@ -472,9 +501,10 @@ def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_name, kee
                 new_bbox, keep = clipped
                 new_bbox = [v * scale for v in new_bbox]
                 out["annotations"].append({
+                    **_passthrough_fields(ann),
                     "id": next_ann_id,
                     "image_id": next_gid,
-                    "category_id": 1,
+                    "category_id": src_cid_to_new_cid[ann["category_id"]],
                     "bbox": new_bbox,
                     "area": float(new_bbox[2] * new_bbox[3]),
                     "iscrowd": int(ann.get("iscrowd", 0)),
@@ -491,7 +521,7 @@ def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_name, kee
     print(f"tile.quadrant: wrote {n_imgs} images, {n_anns} annotations to {dst_fpath}")
 
 
-def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_name, keep_cat_ids):
+def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, src_cid_to_new_cid):
     """Fixed-size square tiles from N pre-downscaled copies of each source image."""
     import numpy as np
     import ubelt as ub
@@ -505,7 +535,7 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_name, k
     min_gt_area_abs = float(config.min_gt_area_frac) * (base_tile_size * base_tile_size)
     min_keep = float(config.min_keep_fraction)
 
-    out = _init_out(config, target_cat_name, "multiscale")
+    out = _init_out(config, target_cat_names, "multiscale")
     next_gid = 1
     next_ann_id = 1
     n_pos = 0
@@ -524,7 +554,7 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_name, k
         gid = coco_img.img["id"]
         anns_src = [
             ann for ann in src_dset.annots(gid=gid).objs
-            if ann.get("category_id") in keep_cat_ids and ann.get("bbox") is not None
+            if ann.get("category_id") in src_cid_to_new_cid and ann.get("bbox") is not None
         ]
 
         for scale_name, scale_factor in scales:
@@ -545,6 +575,8 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_name, k
                              bw * actual_scale, bh * actual_scale],
                     "iscrowd": int(ann.get("iscrowd", 0)),
                     "src_ann_id": ann.get("id"),
+                    "new_cid": src_cid_to_new_cid[ann["category_id"]],
+                    "passthrough": _passthrough_fields(ann),
                 })
 
             for x0 in xs:
@@ -571,6 +603,7 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_name, k
                             "bbox": new_bbox,
                             "iscrowd": ann["iscrowd"],
                             "src_ann_id": ann["src_ann_id"],
+                            "new_cid": ann["new_cid"],
                         })
                         total_kept_area += new_bbox[2] * new_bbox[3]
 
@@ -610,9 +643,10 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_name, k
                     })
                     for ann in kept_anns:
                         out["annotations"].append({
+                            **ann.get("passthrough", {}),
                             "id": next_ann_id,
                             "image_id": next_gid,
-                            "category_id": 1,
+                            "category_id": ann["new_cid"],
                             "bbox": ann["bbox"],
                             "area": float(ann["bbox"][2] * ann["bbox"][3]),
                             "iscrowd": ann["iscrowd"],
@@ -640,14 +674,16 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_name, k
 # ---------------------------------------------------------------------------
 
 
-def _init_out(config, target_cat_name, mode_label):
+def _init_out(config, target_cat_names, mode_label):
+    """target_cat_names is a list of (name, new_cid) pairs ordered as
+    they appear in --category_names; new_cid starts at 1 and increments."""
     return {
         "info": [{
             "name": "kwcoco_detector_kit.data.tile",
             "mode": mode_label,
             "src": str(config.src),
             "config": {k: getattr(config, k) for k in [
-                "mode", "category_name", "output_ext", "jpeg_quality",
+                "mode", "category_names", "output_ext", "jpeg_quality",
                 "oversize_factor", "min_keep_fraction",
                 "full_dim", "keep_full",
                 "tile_grid", "tile_overlap", "tile_output_dim",
@@ -656,7 +692,10 @@ def _init_out(config, target_cat_name, mode_label):
                 "keep_negative",
             ]},
         }],
-        "categories": [{"id": 1, "name": target_cat_name, "supercategory": target_cat_name}],
+        "categories": [
+            {"id": new_cid, "name": name, "supercategory": name}
+            for name, new_cid in target_cat_names
+        ],
         "images": [],
         "annotations": [],
     }
@@ -676,19 +715,37 @@ def run(config):
     asset_dpath = dst_fpath.parent / asset_dname
     asset_dpath.mkdir(parents=True, exist_ok=True)
 
-    target_cat_name = str(config.category_name)
+    raw = config.category_names
+    if isinstance(raw, (list, tuple)):
+        cat_name_list = [str(n).strip() for n in raw if str(n).strip()]
+    else:
+        cat_name_list = [s.strip() for s in str(raw).split(",") if s.strip()]
+    if not cat_name_list:
+        raise RuntimeError("--category_names must contain at least one name")
+
     src_cats_by_id = {c["id"]: c for c in src_dset.dataset.get("categories", [])}
-    keep_cat_ids = {cid for cid, cat in src_cats_by_id.items() if cat["name"] == target_cat_name}
-    if not keep_cat_ids:
-        raise RuntimeError(f"No category named {target_cat_name!r} in {src_fpath}")
+    src_name_to_cid = {cat["name"]: cid for cid, cat in src_cats_by_id.items()}
+    missing = [n for n in cat_name_list if n not in src_name_to_cid]
+    if missing:
+        raise RuntimeError(
+            f"Categories {missing!r} not present in {src_fpath}; "
+            f"available: {sorted(src_name_to_cid)}"
+        )
+
+    # Build (name, new_cid) pairs in CLI order and the src_cid -> new_cid map.
+    target_cat_names = [(name, i + 1) for i, name in enumerate(cat_name_list)]
+    src_cid_to_new_cid = {
+        src_name_to_cid[name]: new_cid for name, new_cid in target_cat_names
+    }
 
     mode = str(config.mode)
+    args = (config, src_dset, dst_fpath, asset_dpath, target_cat_names, src_cid_to_new_cid)
     if mode == "full_only":
-        _run_full_only(config, src_dset, dst_fpath, asset_dpath, target_cat_name, keep_cat_ids)
+        _run_full_only(*args)
     elif mode == "quadrant":
-        _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_name, keep_cat_ids)
+        _run_quadrant(*args)
     elif mode == "multiscale":
-        _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_name, keep_cat_ids)
+        _run_multiscale(*args)
     else:
         raise ValueError(f"Unknown tile mode: {mode!r}")
 

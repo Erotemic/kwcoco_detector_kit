@@ -35,15 +35,22 @@ _detect_host_cuda() {
     nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: \([0-9][0-9.]*\).*/\1/p' | head -1
 }
 
-_ensure_submodule() {
-    if [ ! -f tpl/Open-GroundingDino/models/GroundingDINO/ops/setup.py ]; then
-        echo "Open-GroundingDino submodule is missing; initializing it now."
-        git submodule update --init tpl/Open-GroundingDino
+_ensure_one_submodule() {
+    local path="$1"
+    local sentinel="$2"
+    if [ ! -f "$sentinel" ]; then
+        echo "$path submodule is missing; initializing it now."
+        git submodule update --init "$path"
     fi
-    if [ ! -f tpl/Open-GroundingDino/models/GroundingDINO/ops/setup.py ]; then
-        echo "Failed to initialize tpl/Open-GroundingDino; cannot build Docker image." >&2
+    if [ ! -f "$sentinel" ]; then
+        echo "Failed to initialize $path; cannot build Docker image." >&2
         exit 1
     fi
+}
+
+_ensure_submodule() {
+    _ensure_one_submodule tpl/Open-GroundingDino tpl/Open-GroundingDino/models/GroundingDINO/ops/setup.py
+    _ensure_one_submodule tpl/DEIMv2 tpl/DEIMv2/train.py
 }
 
 profile="${KCD_DOCKER_CUDA_PROFILE:-${CUDA_PROFILE:-auto}}"

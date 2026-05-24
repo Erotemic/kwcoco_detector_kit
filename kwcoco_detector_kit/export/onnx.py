@@ -21,7 +21,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 
 from kwcoco_detector_kit.export.modelspec import write_modelspec
 
@@ -47,7 +47,7 @@ def export_onnx(
     out_fpath: Optional[Path] = None,
     opset: int = DEFAULT_OPSET,
     score_thresh: float = 0.30,
-    category_name: str = "widget",
+    category_names: Sequence[str] = ("widget",),
     force: bool = False,
 ) -> Path:
     """Dispatch to the trainer-appropriate ONNX exporter.
@@ -67,7 +67,7 @@ def export_onnx(
             out_fpath=out_fpath,
             opset=opset,
             score_thresh=score_thresh,
-            category_name=category_name,
+            category_names=category_names,
             force=force,
         )
     # Default: torch.onnx.export against the predictor's underlying model.
@@ -78,7 +78,7 @@ def export_onnx(
         out_fpath=out_fpath,
         opset=opset,
         score_thresh=score_thresh,
-        category_name=category_name,
+        category_names=category_names,
         force=force,
     )
 
@@ -91,7 +91,7 @@ def _export_inproc(
     out_fpath: Optional[Path],
     opset: int,
     score_thresh: float,
-    category_name: str,
+    category_names: Sequence[str],
     force: bool,
 ) -> Path:
     """In-process torch.onnx.export for trainer plugins (mock_tiny etc.).
@@ -144,7 +144,7 @@ def _export_inproc(
         input_hw=(H, W),
         postprocess_score_thresh=float(score_thresh),
         variant=variant,
-        category_name=category_name,
+        category_names=category_names,
         candidate_kind=candidate_kind,
         model_id=policy.get("candidate_id"),
         extra_meta={"opset": int(opset)},
@@ -160,7 +160,7 @@ def _export_deimv2(
     out_fpath: Optional[Path],
     opset: int,
     score_thresh: float,
-    category_name: str,
+    category_names: Sequence[str],
     force: bool,
 ) -> Path:
     """Subprocess DEIMv2's ``tools/deployment/export_onnx.py``.
@@ -243,7 +243,7 @@ def _export_deimv2(
         input_hw=(H, W),
         postprocess_score_thresh=float(score_thresh),
         variant=policy.get("variant", "deimv2"),
-        category_name=category_name,
+        category_names=category_names,
         candidate_kind=policy.get("candidate_kind", "real"),
         model_id=policy.get("candidate_id"),
         extra_meta={"opset": int(opset)},

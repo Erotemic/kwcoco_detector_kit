@@ -39,8 +39,14 @@ class RoundLoopConfig(scfg.DataConfig):
     variant = scfg.Value("mock_tiny")
     input_hw = scfg.Value([256, 256])
     train_policy = scfg.Value("fixed")
-    category_name = scfg.Value("widget")
-    num_classes = scfg.Value(1)
+    category_names = scfg.Value(
+        "widget",
+        help=(
+            "comma-separated category names to train on. Order determines "
+            "the class index assigned in the trained detector. num_classes "
+            "is derived from len(category_names)."
+        ),
+    )
 
     num_rounds = scfg.Value(3)
     round0_neg_over_pos = scfg.Value(3.0)
@@ -96,18 +102,20 @@ def _coerce_policy_for_variant(trainer, variant: str, requested_policy: str) -> 
 
 
 def _merge_round(*, pos_kwcoco: Path, neg_kwcoco: Path, dst: Path,
-                 neg_over_pos: float, round_index: int, category_name: str,
+                 neg_over_pos: float, round_index: int, category_names,
                  seed: int = 0):
     """In-process call into data.merge.run."""
     from kwcoco_detector_kit.data.merge import MergeConfig, run as merge_run
 
+    if not isinstance(category_names, str):
+        category_names = ",".join(category_names)
     cfg = MergeConfig.cli(
         argv=False,
         data={
             "pos_kwcoco": str(pos_kwcoco),
             "neg_kwcoco": str(neg_kwcoco),
             "dst": str(dst),
-            "category_name": category_name,
+            "category_names": category_names,
             "neg_over_pos": float(neg_over_pos),
             "seed": int(seed),
             "round_index": int(round_index),
@@ -142,11 +150,13 @@ def _mine_round(*, neg_kwcoco: Path, workdir: Path, dst: Path,
 
 
 def _train_round(trainer, *, train_kwcoco: Path, vali_kwcoco: Path, workdir: Path,
-                 variant: str, input_hw, train_policy: str, num_classes: int,
+                 variant: str, input_hw, train_policy: str, category_names,
                  batch_size: int, val_batch_size: int, num_epochs: int,
                  lr: float, backbone_lr: float, use_amp: bool, scale_tier: str,
-                 num_gpus: int, category_name: str,
+                 num_gpus: int,
                  init_checkpoint=None):
+    if isinstance(category_names, str):
+        category_names = [s.strip() for s in category_names.split(",") if s.strip()]
     cfg_fpath = trainer.generate_config(
         train_kwcoco_fpath=str(train_kwcoco),
         vali_kwcoco_fpath=str(vali_kwcoco),
@@ -154,7 +164,7 @@ def _train_round(trainer, *, train_kwcoco: Path, vali_kwcoco: Path, workdir: Pat
         variant=variant,
         input_hw=tuple(input_hw),
         train_policy=train_policy,
-        num_classes=int(num_classes),
+        num_classes=len(category_names),
         batch_size=int(batch_size),
         val_batch_size=int(val_batch_size),
         num_epochs=int(num_epochs),
@@ -166,7 +176,7 @@ def _train_round(trainer, *, train_kwcoco: Path, vali_kwcoco: Path, workdir: Pat
         scale_tier=str(scale_tier),
         num_gpus=int(num_gpus),
         data_format="kwcoco",
-        extra={"category_name": category_name,
+        extra={"category_names": category_names,
                "init_checkpoint": str(init_checkpoint) if init_checkpoint else ""},
     )
     trainer.launch(
@@ -233,7 +243,7 @@ def run(config):
         _merge_round(
             pos_kwcoco=pos_fpath, neg_kwcoco=neg_for_round, dst=train_kwcoco,
             neg_over_pos=n_over_p, round_index=round_index,
-            category_name=str(config.category_name),
+            category_names=str(config.category_names),
         )
 
         # Pick the init checkpoint for THIS round.
@@ -259,18 +269,18 @@ def run(config):
                     f"train successfully?"
                 )
 
-        # Train this round (skip if already done)
+        # Train this round (skip if already done -- the b5aeaec resume
+        # protocol stays intact through the multi-class refactor merge).
         os.environ["KCD_ROUND"] = str(round_index)
         if not already_trained:
             _train_round(
                 trainer, train_kwcoco=train_kwcoco, vali_kwcoco=str(config.vali_kwcoco),
                 workdir=workdir, variant=variant, input_hw=config.input_hw,
-                train_policy=effective_policy, num_classes=int(config.num_classes),
+                train_policy=effective_policy, category_names=str(config.category_names),
                 batch_size=int(config.batch_size), val_batch_size=int(config.val_batch_size),
                 num_epochs=int(config.num_epochs), lr=float(config.lr),
                 backbone_lr=float(config.backbone_lr), use_amp=bool(config.use_amp),
                 scale_tier=str(config.scale_tier), num_gpus=int(config.num_gpus),
-                category_name=str(config.category_name),
                 init_checkpoint=this_init_ckpt,
             )
         prior_round_workdir = workdir

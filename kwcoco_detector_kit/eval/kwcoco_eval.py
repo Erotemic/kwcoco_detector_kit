@@ -15,7 +15,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
-from typing import Tuple
+from typing import Sequence, Tuple
 
 
 def _valid_detection_bbox(bbox) -> bool:
@@ -87,11 +87,16 @@ def run_kwcoco_eval(
     test_kwcoco: str,
     kcd_root: Path,
     candidate_id: str,
-    category_name: str = "widget",
+    category_names: Sequence[str],
     score_thresh: float = 0.001,
     force: bool = False,
 ) -> Path:
     """Score every image in `test_kwcoco` with the trained model; eval.
+
+    ``category_names`` must be the same ordered list passed to training so
+    the predictor's class indices map back to the correct kwcoco category
+    names. ``kwcoco eval`` matches true/pred categories by name, so the
+    pred bundle is built with the same names as the trainer used.
 
     ``score_thresh`` defaults to 0.001 so the COCO AP integral sees the
     full precision-recall curve. Setting this above ~0.01 caps recall
@@ -99,6 +104,14 @@ def run_kwcoco_eval(
     AP on shitspotter pico@416 vs. matching v4's evaluation).
     """
     import kwcoco
+
+    if isinstance(category_names, str):
+        raise TypeError(
+            "category_names must be a sequence of names, not a single string"
+        )
+    category_names = list(category_names)
+    if not category_names:
+        raise ValueError("category_names must contain at least one name")
 
     workdir = Path(workdir)
     eval_root = Path(kcd_root) / "eval" / candidate_id
@@ -116,7 +129,10 @@ def run_kwcoco_eval(
     true = kwcoco.CocoDataset.coerce(str(test_kwcoco))
     pred = kwcoco.CocoDataset()
     pred.fpath = str(eval_root / "pred_boxes.kwcoco.zip")
-    cat_id = pred.add_category(name=str(category_name))
+    # Predictor labels are 0-indexed in the order training used; map each
+    # label -> the kwcoco category_id we register here in the same order.
+    label_to_cat_id = [pred.add_category(name=name) for name in category_names]
+    n_labels = len(label_to_cat_id)
     # Copy image rows but rewrite file_name to the absolute on-disk path so
     # the eval subprocess can reroot regardless of where pred_boxes.kwcoco.zip
     # lives. Without this, kwcoco reroots against the pred bundle's dir and
@@ -131,6 +147,7 @@ def run_kwcoco_eval(
             pass
         pred.add_image(**new, id=img["id"])
 
+    dropped_unknown_label = 0
     for gid in list(true.images()):
         coco_img = true.coco_image(gid)
         try:
@@ -144,12 +161,24 @@ def run_kwcoco_eval(
             score = float(det.get("score", 0.0))
             if score < float(score_thresh):
                 continue
+            label = int(det.get("label", 0))
+            if label < 0 or label >= n_labels:
+                # Out-of-range label from the predictor (e.g. background
+                # slot in a model that emits num_classes+1). Drop quietly
+                # but count so we can warn.
+                dropped_unknown_label += 1
+                continue
             x1, y1, x2, y2 = det["bbox_xyxy"]
             pred.add_annotation(
-                image_id=gid, category_id=cat_id,
+                image_id=gid, category_id=label_to_cat_id[label],
                 bbox=[float(x1), float(y1), float(x2 - x1), float(y2 - y1)],
                 score=score,
             )
+    if dropped_unknown_label:
+        print(
+            f"  eval: dropped {dropped_unknown_label} detections with "
+            f"label outside [0, {n_labels})"
+        )
     pred.dump()
 
     true_filtered, true_kept, true_dropped = filter_bbox_only_kwcoco(

@@ -46,14 +46,25 @@ class SweepConfig(scfg.DataConfig):
         ),
     )
     variant = scfg.Value("mock_tiny", help="single-cell fallback")
-    input_hw = scfg.Value([256, 256], help="single-cell fallback (HxW)")
+    # type=str sidesteps scriptconfig's smartcast (the "string with
+    # commas" deprecation warning). Parsing happens via kwutil.Yaml.coerce
+    # in _normalize_input_hw so a YAML-style "[H, W]" or a bare scalar
+    # "S" all resolve to a [H, W] pair downstream.
+    input_hw = scfg.Value("[256, 256]", type=str, help="single-cell fallback (HxW); YAML-style list")
     train_policy = scfg.Value("fixed", help="single-cell fallback")
 
     num_epochs = scfg.Value(2)
     batch_size = scfg.Value(2)
     val_batch_size = scfg.Value(2)
-    num_classes = scfg.Value(1)
-    category_name = scfg.Value("widget")
+    category_names = scfg.Value(
+        "widget",
+        help=(
+            "comma-separated category names to train on. Order determines "
+            "the class index assigned in the trained detector, which the "
+            "predictor returns at eval time. num_classes is derived from "
+            "the length of this list."
+        ),
+    )
     lr = scfg.Value(1e-2)
     backbone_lr = scfg.Value(1e-2)
     use_amp = scfg.Value(False)
@@ -93,6 +104,57 @@ class SweepConfig(scfg.DataConfig):
         run(config)
 
 
+def _normalize_input_hw(value) -> List[int]:
+    """Coerce --input_hw to [H, W].
+
+    Accepts a YAML-style ``"[H, W]"`` string, a bare scalar ``"S"`` /
+    ``S`` (interpreted as a square ``[S, S]``), or already-parsed
+    list/tuple. Falls back to shorthand parsing for ``"HxW"`` and
+    ``"H,W"`` so legacy wrappers keep working.
+
+    Implementation uses ``kwutil.Yaml.coerce`` for the canonical case
+    (YAML list) — keeps the kit's "you should be able to pass anything
+    YAML-ish" convention. Falls back to pyyaml.safe_load when kwutil
+    isn't installed (e.g. in a stripped-down local dev env); the
+    YAML-parse semantics are identical for the strings we accept.
+    """
+    parsed = value
+    if isinstance(value, str):
+        try:
+            from kwutil import Yaml
+            parsed = Yaml.coerce(value)
+        except ImportError:
+            import yaml as _yaml
+            try:
+                parsed = _yaml.safe_load(value)
+            except Exception:
+                parsed = value
+        except Exception:
+            parsed = value
+        # If YAML returned the string unchanged (e.g. "320x320" or
+        # "320,320" — neither valid YAML), try our shorthand split.
+        if isinstance(parsed, str):
+            normed = parsed.replace("x", ",").replace(" ", ",")
+            parsed = [int(p) for p in normed.split(",") if p.strip()]
+
+    if isinstance(parsed, int):
+        items = [parsed, parsed]
+    elif isinstance(parsed, (list, tuple)):
+        items = list(parsed)
+    else:
+        raise TypeError(
+            f"input_hw must coerce to int or list; got {type(parsed).__name__}: {parsed!r}"
+        )
+
+    if len(items) == 1:
+        items = [items[0], items[0]]
+    if len(items) != 2:
+        raise ValueError(
+            f"input_hw must resolve to two values; got {items!r} from {value!r}"
+        )
+    return [int(items[0]), int(items[1])]
+
+
 def _load_matrix(config) -> List[dict]:
     """Returns a list of cell dicts: {variant, input_hw, train_policy}."""
     if config.matrix:
@@ -105,7 +167,7 @@ def _load_matrix(config) -> List[dict]:
     # Single-cell fallback
     return [{
         "variant": str(config.variant),
-        "input_hw": list(config.input_hw),
+        "input_hw": _normalize_input_hw(config.input_hw),
         "train_policy": str(config.train_policy),
     }]
 
@@ -167,6 +229,17 @@ def _find_bench_json(workdir: Path) -> Optional[Path]:
 # ---------------------------------------------------------------------------
 
 
+def _parse_category_names(raw) -> List[str]:
+    if isinstance(raw, (list, tuple)):
+        names = [str(n).strip() for n in raw]
+    else:
+        names = [s.strip() for s in str(raw).split(",")]
+    names = [n for n in names if n]
+    if not names:
+        raise ValueError("category_names must contain at least one name")
+    return names
+
+
 def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Path:
     # Propagate the sweep's candidate identity into the trainer's
     # policy.json so the eligibility manifest joins the sweep index +
@@ -185,6 +258,7 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
                 f"scratch (expect 5-10 AP loss vs. a COCO init), or bind-mount "
                 f"the path into the container."
             )
+    category_names = _parse_category_names(config.category_names)
     cfg_fpath = trainer.generate_config(
         train_kwcoco_fpath=str(config.train_kwcoco),
         vali_kwcoco_fpath=str(config.vali_kwcoco),
@@ -192,7 +266,7 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
         variant=str(cell["variant"]),
         input_hw=tuple(cell["input_hw"]),
         train_policy=str(cell.get("train_policy", "fixed")),
-        num_classes=int(config.num_classes),
+        num_classes=len(category_names),
         batch_size=int(config.batch_size),
         val_batch_size=int(config.val_batch_size),
         num_epochs=int(config.num_epochs),
@@ -204,7 +278,7 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
         scale_tier=str(config.scale_tier),
         num_gpus=int(config.num_gpus),
         data_format="kwcoco",
-        extra={"category_name": str(config.category_name),
+        extra={"category_names": category_names,
                "candidate_id": candidate_id,
                "init_checkpoint": init_ckpt or ""},
     )
@@ -229,7 +303,7 @@ def _run_export(trainer, *, workdir: Path, cell, force: bool = False) -> Path:
 
 
 def _run_eval(trainer, *, workdir: Path, test_kwcoco: str, kcd_root: Path,
-              candidate_id: str, category_name: str, score_thresh: float = 0.001,
+              candidate_id: str, category_names, score_thresh: float = 0.001,
               force: bool = False) -> Path:
     from kwcoco_detector_kit.eval.kwcoco_eval import run_kwcoco_eval
     return run_kwcoco_eval(
@@ -238,7 +312,7 @@ def _run_eval(trainer, *, workdir: Path, test_kwcoco: str, kcd_root: Path,
         test_kwcoco=test_kwcoco,
         kcd_root=kcd_root,
         candidate_id=candidate_id,
-        category_name=category_name,
+        category_names=category_names,
         score_thresh=score_thresh,
         force=force,
     )
@@ -348,7 +422,7 @@ def run(config):
                     _run_eval(
                         trainer, workdir=workdir, test_kwcoco=str(config.test_kwcoco),
                         kcd_root=kcd_root, candidate_id=candidate_id,
-                        category_name=str(config.category_name),
+                        category_names=_parse_category_names(config.category_names),
                         force=bool(config.force_eval),
                     )
                 except Exception as ex:

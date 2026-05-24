@@ -1,0 +1,5 @@
+# Slurm logs live on the data drive ($KCD_SLURM_LOG_DPATH), not here.
+# Anything that lands inside the project tree by accident is local-only.
+training_runs/
+__pycache__/
+*.pyc

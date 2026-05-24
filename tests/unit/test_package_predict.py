@@ -38,7 +38,7 @@ def test_mock_tiny_package_zip_predict_roundtrip(synthetic_kwcoco, tmp_workdir, 
         scale_tier="S",
         num_gpus=1,
         data_format="kwcoco",
-        extra={"category_name": "widget", "score_thresh": 0.01},
+        extra={"category_names": ["widget"], "score_thresh": 0.01},
     )
     trainer.launch(cfg, num_gpus=1)
 
@@ -62,7 +62,7 @@ def test_mock_tiny_package_zip_predict_roundtrip(synthetic_kwcoco, tmp_workdir, 
         out=package_zip,
         trainer="mock_tiny",
         variant="mock_tiny",
-        category_name="widget",
+        category_names=["widget"],
         dataset_slug="synthetic",
         experiment_slug="unit",
         train_kwcoco=str(synthetic_kwcoco),

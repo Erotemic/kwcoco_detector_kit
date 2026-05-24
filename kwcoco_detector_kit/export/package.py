@@ -19,7 +19,7 @@ import time
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, Optional
+from typing import Any, Dict, Iterable, Iterator, Optional, Sequence
 
 import scriptconfig as scfg
 import yaml
@@ -166,7 +166,7 @@ def build_model_package(
     out: Path,
     trainer: str,
     variant: Optional[str] = None,
-    category_name: Optional[str] = None,
+    category_names: Optional[Sequence[str]] = None,
     dataset_slug: Optional[str] = None,
     experiment_slug: Optional[str] = None,
     run_id: Optional[str] = None,
@@ -188,10 +188,12 @@ def build_model_package(
 
     policy = _safe_read_json(workdir / "policy.json")
     variant = variant or policy.get("variant") or trainer
-    category_name = category_name or policy.get("category_name")
-    if not category_name:
-        labels = policy.get("label_list") or []
-        category_name = labels[0] if len(labels) == 1 else "object"
+    if category_names is None:
+        category_names = policy.get("category_names")
+    if not category_names:
+        # Fall back to label_list in policy if present, else the catch-all "object".
+        category_names = policy.get("label_list") or ["object"]
+    category_names = list(category_names)
     dataset_slug = dataset_slug or "unknown_dataset"
     experiment_slug = experiment_slug or str(policy.get("candidate_id") or variant)
     run_id = run_id or os.environ.get("SLURM_JOB_ID") or _now_id()
@@ -235,7 +237,7 @@ def build_model_package(
     if modelspec:
         artifacts["modelspec"] = _copy_optional(modelspec, package_root, f"exports/{modelspec.name}", missing)
 
-    labels = policy.get("label_list") or [category_name]
+    labels = policy.get("label_list") or list(category_names)
     (package_root / "labels.json").write_text(json.dumps({"labels": labels}, indent=2))
     artifacts["labels"] = "labels.json"
 
@@ -244,7 +246,7 @@ def build_model_package(
         "backend": "trainer_checkpoint",
         "trainer": str(trainer),
         "variant": str(variant),
-        "category_name": str(category_name),
+        "category_names": list(category_names),
         "dataset_slug": str(dataset_slug),
         "experiment_slug": str(experiment_slug),
         "run_id": str(run_id),
@@ -371,7 +373,7 @@ class PackageBuildConfig(scfg.DataConfig):
     out_root = scfg.Value(None, help="root for automatic user/host-separated package paths")
     trainer = scfg.Value(None, required=True, help="trainer name")
     variant = scfg.Value(None, help="model variant")
-    category_name = scfg.Value(None, help="primary category")
+    category_names = scfg.Value(None, help="comma-separated category names in train order")
     dataset_slug = scfg.Value(None, help="dataset identity")
     experiment_slug = scfg.Value(None, help="experiment identity")
     run_id = scfg.Value(None, help="run id")
@@ -409,12 +411,18 @@ class PackageBuildConfig(scfg.DataConfig):
                 username=str(username),
                 hostname=str(hostname),
             )
+        if config.category_names is None:
+            cli_category_names = None
+        elif isinstance(config.category_names, (list, tuple)):
+            cli_category_names = [str(n).strip() for n in config.category_names if str(n).strip()]
+        else:
+            cli_category_names = [s.strip() for s in str(config.category_names).split(",") if s.strip()]
         out = build_model_package(
             workdir=workdir,
             out=out,
             trainer=str(config.trainer),
             variant=variant,
-            category_name=config.category_name,
+            category_names=cli_category_names,
             dataset_slug=dataset_slug,
             experiment_slug=experiment_slug,
             run_id=run_id,

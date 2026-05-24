@@ -185,5 +185,24 @@ def run_kwcoco_eval(
             f"  kwcoco eval exited {result.returncode} but {metrics_fpath} "
             "is present — recovering metrics."
         )
+
+    # Stamp provenance + test-bundle fingerprint into the metrics file so
+    # the eval is self-describing. Don't disturb the existing schema;
+    # additional top-level keys are tolerated by every downstream reader.
+    try:
+        import json as _json
+        from kwcoco_detector_kit._provenance import provenance_dict
+        m = _json.loads(metrics_fpath.read_text())
+        m.setdefault("provenance", provenance_dict())
+        m.setdefault("eval_inputs", {
+            "test_kwcoco": str(test_kwcoco),
+            "score_thresh": float(score_thresh),
+            "candidate_id": str(candidate_id),
+            "category_name": str(category_name),
+        })
+        metrics_fpath.write_text(_json.dumps(m, indent=2))
+    except Exception as ex:
+        print(f"  warn: failed to stamp provenance into {metrics_fpath}: {ex}")
+
     print(f"  wrote {metrics_fpath}")
     return metrics_fpath

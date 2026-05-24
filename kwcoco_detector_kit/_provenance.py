@@ -45,12 +45,18 @@ def _read_provenance_file() -> Dict[str, Any]:
 
 
 def _git_rev(repo: Path) -> Optional[str]:
-    """`git rev-parse HEAD` for `repo` if it's a git working tree."""
+    """`git rev-parse HEAD` for `repo` if it's a git working tree.
+
+    Uses ``-c safe.directory=*`` so bind-mounted repos in docker (which
+    have a UID mismatch with the in-container root user) don't trip
+    git's dubious-ownership guard.
+    """
     if not repo.exists():
         return None
     try:
         out = subprocess.check_output(
-            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            ["git", "-c", "safe.directory=*", "-C", str(repo),
+             "rev-parse", "HEAD"],
             text=True, stderr=subprocess.DEVNULL,
             timeout=5,
         )
@@ -65,7 +71,8 @@ def _git_dirty(repo: Path) -> Optional[bool]:
         return None
     try:
         out = subprocess.check_output(
-            ["git", "-C", str(repo), "status", "--porcelain"],
+            ["git", "-c", "safe.directory=*", "-C", str(repo),
+             "status", "--porcelain"],
             text=True, stderr=subprocess.DEVNULL,
             timeout=5,
         )

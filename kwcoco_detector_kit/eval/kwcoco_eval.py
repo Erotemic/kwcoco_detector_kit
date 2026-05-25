@@ -227,7 +227,7 @@ def run_kwcoco_eval(
             "test_kwcoco": str(test_kwcoco),
             "score_thresh": float(score_thresh),
             "candidate_id": str(candidate_id),
-            "category_name": str(category_name),
+            "category_names": list(category_names),
         })
         metrics_fpath.write_text(_json.dumps(m, indent=2))
     except Exception as ex:

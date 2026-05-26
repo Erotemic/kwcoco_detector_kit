@@ -119,7 +119,11 @@ if [ -z "${KCD_SCALE_TIER:-}" ]; then
 fi
 
 TOTAL_BATCH=$(( KCD_PER_GPU_BATCH * KCD_NUM_GPUS ))
-TOTAL_VAL_BATCH=$(( 2 * KCD_PER_GPU_BATCH * KCD_NUM_GPUS ))
+# Val batch ratio: 2x train was too aggressive when training memory is
+# already tight (v4 OOM cycle). Allow override via env; default keeps
+# val == train so a denser-than-average val batch can't kill the run.
+KCD_VAL_BATCH_MULT="${KCD_VAL_BATCH_MULT:-1}"
+TOTAL_VAL_BATCH=$(( KCD_VAL_BATCH_MULT * KCD_PER_GPU_BATCH * KCD_NUM_GPUS ))
 
 # Tile-cache key — scheme-AGNOSTIC. Hash tile geometry params PLUS a
 # fingerprint of the tile writer's passthrough-field whitelist (so a

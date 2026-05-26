@@ -429,6 +429,8 @@ def _build_train_yml(
     backbone_lr: float,
     use_amp: bool,
     policy: _PolicyResolution,
+    train_num_workers: int = 4,
+    val_num_workers: int = 2,
 ) -> Dict[str, Any]:
     H, W = int(input_hw[0]), int(input_hw[1])
     if family == "hgnetv2":
@@ -464,7 +466,7 @@ def _build_train_yml(
         },
         "train_dataloader": {
             "total_batch_size": int(batch_size),
-            "num_workers": 4,
+            "num_workers": int(train_num_workers),
             "dataset": {
                 "img_folder": "/",
                 "ann_file": str(train_mscoco_fpath),
@@ -480,7 +482,7 @@ def _build_train_yml(
         },
         "val_dataloader": {
             "total_batch_size": int(val_batch_size),
-            "num_workers": 2,
+            "num_workers": int(val_num_workers),
             "dataset": {
                 "img_folder": "/",
                 "ann_file": str(vali_mscoco_fpath),
@@ -808,6 +810,8 @@ class DEIMv2Trainer:
             backbone_lr=float(backbone_lr),
             use_amp=bool(use_amp),
             policy=policy,
+            train_num_workers=int((extra or {}).get("train_num_workers", 4)),
+            val_num_workers=int((extra or {}).get("val_num_workers", 2)),
         )
 
         cfg_fpath.write_text(yaml.safe_dump(yml, sort_keys=False))

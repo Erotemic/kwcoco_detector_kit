@@ -56,6 +56,8 @@ class SweepConfig(scfg.DataConfig):
     num_epochs = scfg.Value(2)
     batch_size = scfg.Value(2)
     val_batch_size = scfg.Value(2)
+    train_num_workers = scfg.Value(4, help="DataLoader workers for the train loop")
+    val_num_workers = scfg.Value(2, help="DataLoader workers for the val loop")
     category_names = scfg.Value(
         "widget",
         help=(
@@ -280,7 +282,9 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
         data_format="kwcoco",
         extra={"category_names": category_names,
                "candidate_id": candidate_id,
-               "init_checkpoint": init_ckpt or ""},
+               "init_checkpoint": init_ckpt or "",
+               "train_num_workers": int(config.train_num_workers),
+               "val_num_workers": int(config.val_num_workers)},
     )
     # init_ckpt was already resolved + validated above.
     trainer.launch(

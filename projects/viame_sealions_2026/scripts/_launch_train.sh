@@ -290,6 +290,8 @@ DIST_FLAG=(--num_gpus "$KCD_NUM_GPUS")
     --num_epochs "$KCD_NUM_EPOCHS" \
     --batch_size "$TOTAL_BATCH" \
     --val_batch_size "$TOTAL_VAL_BATCH" \
+    --train_num_workers "${KCD_TRAIN_NUM_WORKERS:-4}" \
+    --val_num_workers "${KCD_VAL_NUM_WORKERS:-2}" \
     --category_names "$KCD_CATEGORY_NAMES" \
     --lr "$KCD_LR" \
     --backbone_lr "$KCD_BACKBONE_LR" \

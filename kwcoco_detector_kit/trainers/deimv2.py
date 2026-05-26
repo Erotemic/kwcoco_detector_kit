@@ -592,6 +592,10 @@ def _dump_policy_json(workdir: Path, *, candidate_id: str, variant: str,
         "effective_train_scale_min": int(policy.effective_min),
         "effective_train_scale_max": int(policy.effective_max),
     }
+    # Stamp kit + submodule SHAs so this workdir is self-describing.
+    # See kwcoco_detector_kit/_provenance.py for the resolution chain.
+    from kwcoco_detector_kit._provenance import stamp_into
+    stamp_into(obj)
     (workdir / "policy.json").write_text(json.dumps(obj, indent=2))
 
 

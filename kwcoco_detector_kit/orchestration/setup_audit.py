@@ -280,6 +280,20 @@ def _runtime_probe(*, require_gpu: bool) -> int:
     """
     rc = 0
 
+    # --- Provenance ---
+    try:
+        from kwcoco_detector_kit._provenance import provenance_dict
+        p = provenance_dict()
+        print(
+            f"[check-env runtime] provenance: kit={p['kit_sha'][:12]} "
+            f"deimv2={p['deimv2_sha'][:12]} "
+            f"ogdino={p['opengroundingdino_sha'][:12]} "
+            f"src={p['source']}"
+            + ("  DIRTY-KIT" if p.get("kit_dirty") else "")
+        )
+    except Exception as ex:
+        print(f"[check-env runtime] provenance probe failed: {type(ex).__name__}: {ex}")
+
     # --- GPU ---
     try:
         import torch  # type: ignore

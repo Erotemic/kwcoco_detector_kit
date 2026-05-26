@@ -290,8 +290,11 @@ DIST_FLAG=(--num_gpus "$KCD_NUM_GPUS")
     --num_epochs "$KCD_NUM_EPOCHS" \
     --batch_size "$TOTAL_BATCH" \
     --val_batch_size "$TOTAL_VAL_BATCH" \
-    --train_num_workers "${KCD_TRAIN_NUM_WORKERS:-4}" \
-    --val_num_workers "${KCD_VAL_NUM_WORKERS:-2}" \
+    `# TODO: re-enable --train_num_workers / --val_num_workers once` \
+    `# the docker image is rebuilt with pareto_sweep that accepts them` \
+    `# (commit 3bca71e). KCD_TRAIN_NUM_WORKERS / KCD_VAL_NUM_WORKERS env vars` \
+    `# are honoured at the trainer layer's default; bumping them is a` \
+    `# throughput win, not a stability requirement.` \
     --category_names "$KCD_CATEGORY_NAMES" \
     --lr "$KCD_LR" \
     --backbone_lr "$KCD_BACKBONE_LR" \

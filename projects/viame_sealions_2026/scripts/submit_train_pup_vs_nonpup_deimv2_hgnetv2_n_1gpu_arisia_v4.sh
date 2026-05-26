@@ -10,14 +10,12 @@
 #   - Batch per-GPU: 64 -> 48. v3 sat at 44/47 GB (94% util) with no
 #     headroom for variance; a denser-than-average batch will OOM
 #     mid-epoch. 48 should put peak around 33-35 GB.
-#   - Dataloader workers: 4 -> 8 (train), 2 -> 4 (val). v3 showed
-#     10-99% GPU util oscillation = dataloader-bound. JPEG decode +
-#     augmentation on 320x320 tiles parallelises well; more workers
-#     should keep the GPU above 80% steady-state.
-#
-#     Caveat: workers fork the dataset object which loads the full
-#     kwcoco json into RAM. 8 train + 4 val workers x ~1 GB per copy
-#     = ~12 GB of host RAM, well within arisia's budget.
+#   - Dataloader workers: planned 4 -> 8 (train), 2 -> 4 (val) but
+#     temporarily disabled — the deployed docker image's pareto_sweep
+#     doesn't accept the new CLI flag. Reactivate after the next image
+#     rebuild (see _launch_train.sh TODO). v3 was dataloader-bound
+#     (10-99% GPU util) so this is a throughput win for a later cycle,
+#     not a stability requirement.
 #
 # Submit (from kit root):
 #   bash projects/viame_sealions_2026/scripts/submit_train_pup_vs_nonpup_deimv2_hgnetv2_n_1gpu_arisia_v4.sh

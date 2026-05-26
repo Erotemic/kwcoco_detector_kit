@@ -6,6 +6,10 @@
 # -> manifest. Don't invoke directly; called by _sbatch_train.sh.
 set -euo pipefail
 
+# Group-writable outputs so the user (host UID) can clean / mutate
+# anything this container (root inside) writes. Files 0664, dirs 0775.
+umask 002
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/paths.sh"
 

@@ -722,7 +722,13 @@ def _init_out(config, target_cat_names, mode_label):
 
 def run(config):
     """Entry point — dispatches to the per-mode runner."""
+    import os
     import kwcoco
+
+    # Group-writable outputs so a teammate (or a future docker-as-root
+    # run) can clean / mutate the tile cache. umask 0o002 → files 0664,
+    # dirs 0775. Affects every mkdir/imwrite/dump in this run.
+    os.umask(0o002)
 
     src_fpath = Path(str(config.src)).expanduser().resolve()
     dst_fpath = Path(str(config.dst)).expanduser().resolve()

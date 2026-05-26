@@ -117,11 +117,17 @@ fi
 TOTAL_BATCH=$(( KCD_PER_GPU_BATCH * KCD_NUM_GPUS ))
 TOTAL_VAL_BATCH=$(( 2 * KCD_PER_GPU_BATCH * KCD_NUM_GPUS ))
 
-# Tile-cache key — scheme-AGNOSTIC. Hash only tile geometry params:
-# the universal tile bundle is built once with category_names=sealion
-# and reused across every scheme via the apply-scheme post-step.
-# Different geometry → different sub-dir so we never silently reuse
-# mismatched tiles. sha1 truncated to 8 hex chars is plenty here.
+# Tile-cache key — scheme-AGNOSTIC. Hash tile geometry params PLUS a
+# fingerprint of the tile writer's passthrough-field whitelist (so a
+# kit code change that adds/removes preserved annotation fields auto-
+# invalidates older caches). Different geometry or whitelist → different
+# sub-dir; we never silently reuse mismatched tiles. The May-24 episode
+# (48h * 3 jobs trained on empty targets because the cache predated the
+# source_category passthrough) is the cost of NOT having this.
+WRITER_FINGERPRINT=$("$PYTHON_BIN" -c "
+from kwcoco_detector_kit.data import tile
+print(','.join(sorted(tile._PASSTHROUGH_ANN_FIELDS)))
+" 2>/dev/null || echo 'unknown')
 TILE_PARAMS_BODY=$(printf '%s\n' \
     "tile_size=$KCD_TILE_SIZE" \
     "source_scales=$KCD_TILE_SOURCE_SCALES" \
@@ -129,7 +135,8 @@ TILE_PARAMS_BODY=$(printf '%s\n' \
     "min_gt_area_frac=$KCD_TILE_MIN_GT_AREA_FRAC" \
     "min_keep_fraction=$KCD_TILE_MIN_KEEP_FRACTION" \
     "oversize_factor=$KCD_TILE_OVERSIZE_FACTOR" \
-    "keep_negative=$KCD_TILE_KEEP_NEGATIVE")
+    "keep_negative=$KCD_TILE_KEEP_NEGATIVE" \
+    "writer_passthrough=$WRITER_FINGERPRINT")
 TILE_HASH=$(printf '%s' "$TILE_PARAMS_BODY" | sha1sum | cut -c1-8)
 TILE_DIR="$KCD_TILE_CACHE_DPATH/_universal/$TILE_HASH"
 UNIVERSAL_TILES="$TILE_DIR/tiles.kwcoco.zip"
@@ -225,6 +232,39 @@ for split in "train:$UNIVERSAL_TILES:$TRAIN_KWCOCO" \
     "$PYTHON_BIN" "$APPLY_SCHEME" \
         --src "$src" --dst "$dst" --scheme "$KCD_SCHEME"
 done
+
+# Fail-fast guard: empty annotations in scheme_applied/train.kwcoco.zip
+# is the silent-killer that burned 48h * 3 jobs on May 24. Either the
+# tile cache was built before tile.py's source_category passthrough
+# landed, or the scheme's mapping/drop rules wiped every label. Bail
+# now instead of training 48h on empty targets.
+echo
+echo "=== 2b. Sanity check: nonzero annotations after apply_scheme ==="
+N_TRAIN_ANNS=$("$PYTHON_BIN" -c "
+import kwcoco
+print(kwcoco.CocoDataset.coerce('$TRAIN_KWCOCO').n_annots)
+" 2>/dev/null || echo 0)
+N_VALI_ANNS=$("$PYTHON_BIN" -c "
+import kwcoco
+print(kwcoco.CocoDataset.coerce('$VALI_KWCOCO').n_annots)
+" 2>/dev/null || echo 0)
+echo "  scheme_applied/train.kwcoco.zip: $N_TRAIN_ANNS annotations"
+echo "  scheme_applied/vali.kwcoco.zip:  $N_VALI_ANNS annotations"
+if [ "$N_TRAIN_ANNS" -eq 0 ]; then
+    echo "ERROR: scheme_applied/train.kwcoco.zip has 0 annotations." >&2
+    echo "  Most likely cause: the universal tile cache was built before" >&2
+    echo "  tile.py's source_category passthrough was added (kit commit 5d99545)." >&2
+    echo "  Fix:" >&2
+    echo "    rm -rf $KCD_TILE_CACHE_DPATH/_universal" >&2
+    echo "    rm -rf $SCHEME_APPLIED_DIR" >&2
+    echo "    # then resubmit. The tile step will re-build from the patched code." >&2
+    echo "  Refusing to start a 48h training run with empty targets." >&2
+    exit 1
+fi
+if [ "$N_VALI_ANNS" -eq 0 ]; then
+    echo "WARNING: scheme_applied/vali.kwcoco.zip has 0 annotations." >&2
+    echo "  Eval mAP will be meaningless. Continuing anyway." >&2
+fi
 
 echo
 echo "=== 3. Sweep (train + export + eval + bench) ==="

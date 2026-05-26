@@ -44,3 +44,5 @@ already in the code or research_plan — link to it.
 
 - [2026-05-26 — first 1-GPU baseline cycle: 48h spent training empty
   targets](2026-05-26_first_baseline_attempt.md)
+- [2026-05-26 — passthrough whitelist wasn't enough: tile writer
+  needed to stamp source_category](2026-05-26_passthrough_was_not_enough.md)

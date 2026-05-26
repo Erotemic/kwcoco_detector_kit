@@ -126,7 +126,10 @@ TOTAL_VAL_BATCH=$(( 2 * KCD_PER_GPU_BATCH * KCD_NUM_GPUS ))
 # source_category passthrough) is the cost of NOT having this.
 WRITER_FINGERPRINT=$("$PYTHON_BIN" -c "
 from kwcoco_detector_kit.data import tile
-print(','.join(sorted(tile._PASSTHROUGH_ANN_FIELDS)))
+print('v{}:{}'.format(
+    getattr(tile, '_TILE_WRITER_VERSION', 1),
+    ','.join(sorted(tile._PASSTHROUGH_ANN_FIELDS)),
+))
 " 2>/dev/null || echo 'unknown')
 TILE_PARAMS_BODY=$(printf '%s\n' \
     "tile_size=$KCD_TILE_SIZE" \

@@ -299,8 +299,26 @@ _PASSTHROUGH_ANN_FIELDS = (
 )
 
 
-def _passthrough_fields(src_ann: dict) -> dict:
-    return {k: src_ann[k] for k in _PASSTHROUGH_ANN_FIELDS if k in src_ann}
+def _passthrough_fields(src_ann: dict, src_dset=None) -> dict:
+    out = {k: src_ann[k] for k in _PASSTHROUGH_ANN_FIELDS if k in src_ann}
+    if "source_category" not in out and src_dset is not None:
+        # Stamp source_category from the source dataset's category lookup
+        # when the input is raw (untiled) data that carries class info via
+        # category_id only. Without this, downstream scheme-collapse has
+        # no way to recover the original class name.
+        cid = src_ann.get("category_id")
+        if cid is not None:
+            cat = src_dset.cats.get(cid) if hasattr(src_dset, "cats") else None
+            if cat is not None and "name" in cat:
+                out["source_category"] = cat["name"]
+    return out
+
+
+# Bump this when changing the tile-writer's annotation/image emit semantics
+# in a way that downstream consumers can detect (e.g. new passthrough field,
+# new stamping logic). Mixed into the universal-tile cache fingerprint so
+# the launcher gets a fresh hash and rebuilds the bundle.
+_TILE_WRITER_VERSION = 2
 
 
 def _read_image_rgb(coco_img):
@@ -382,7 +400,7 @@ def _run_full_only(config, src_dset, dst_fpath, asset_dpath, target_cat_names, s
             bx, by, bw, bh = ann["bbox"]
             new_bbox = [bx * scale, by * scale, bw * scale, bh * scale]
             out["annotations"].append({
-                **_passthrough_fields(ann),
+                **_passthrough_fields(ann, src_dset),
                 "id": next_ann_id,
                 "image_id": next_gid,
                 "category_id": src_cid_to_new_cid[ann["category_id"]],
@@ -455,7 +473,7 @@ def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_names, sr
                 bx, by, bw, bh = ann["bbox"]
                 new_bbox = [bx * scale, by * scale, bw * scale, bh * scale]
                 out["annotations"].append({
-                    **_passthrough_fields(ann),
+                    **_passthrough_fields(ann, src_dset),
                     "id": next_ann_id,
                     "image_id": next_gid,
                     "category_id": src_cid_to_new_cid[ann["category_id"]],
@@ -501,7 +519,7 @@ def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_names, sr
                 new_bbox, keep = clipped
                 new_bbox = [v * scale for v in new_bbox]
                 out["annotations"].append({
-                    **_passthrough_fields(ann),
+                    **_passthrough_fields(ann, src_dset),
                     "id": next_ann_id,
                     "image_id": next_gid,
                     "category_id": src_cid_to_new_cid[ann["category_id"]],
@@ -576,7 +594,7 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
                     "iscrowd": int(ann.get("iscrowd", 0)),
                     "src_ann_id": ann.get("id"),
                     "new_cid": src_cid_to_new_cid[ann["category_id"]],
-                    "passthrough": _passthrough_fields(ann),
+                    "passthrough": _passthrough_fields(ann, src_dset),
                 })
 
             for x0 in xs:
@@ -604,6 +622,7 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
                             "iscrowd": ann["iscrowd"],
                             "src_ann_id": ann["src_ann_id"],
                             "new_cid": ann["new_cid"],
+                            "passthrough": ann.get("passthrough", {}),
                         })
                         total_kept_area += new_bbox[2] * new_bbox[3]
 

@@ -267,3 +267,34 @@ def test_tile_extent_is_recorded_for_quadrant(synthetic_kwcoco, tmp_path):
         assert ext is not None and len(ext) == 4
         x0, y0, x1, y1 = ext
         assert x1 > x0 and y1 > y0
+
+
+# ---------------------------------------------------------------------------
+# source_category passthrough — regression for the May-2026 baseline-empty bug
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", ["full_only", "quadrant", "multiscale"])
+def test_source_category_is_stamped_from_src_dset(synthetic_kwcoco, tmp_path, mode):
+    """Annotations in the source bundle carry class info via category_id only
+    (no pre-set source_category). The tile writer must stamp source_category
+    from the source dataset's category lookup so apply_scheme can collapse
+    classes downstream. Regression for the May-2026 cycle where tiled output
+    had 903,603 anns and zero source_category, producing empty MSCOCO and
+    a 48h x 3-job dud.
+    """
+    dst = tmp_path / f"sc_{mode}.kwcoco.zip"
+    dset = _tile_run(
+        synthetic_kwcoco, dst, mode=mode, category_names="widget",
+        progress=False,
+        tile_size=128, source_scales="1.0", min_source_scale_long_side=32,
+    )
+    anns = list(dset.dataset.get("annotations", []))
+    assert anns, f"{mode}: no annotations emitted"
+    missing = [a for a in anns if not a.get("source_category")]
+    assert not missing, (
+        f"{mode}: {len(missing)}/{len(anns)} annotations missing "
+        f"source_category (sample: {missing[:1]})"
+    )
+    assert all(a["source_category"] == "widget" for a in anns), \
+        f"{mode}: source_category should be the raw source class name"

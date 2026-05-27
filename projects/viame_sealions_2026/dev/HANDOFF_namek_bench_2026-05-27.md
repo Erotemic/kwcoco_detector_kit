@@ -30,51 +30,35 @@ touch arisia.
   (`kwcoco_dataloader/benchmarks/bench_detection_throughput.py`):
   baseline (kwcoco CocoDetection-style) vs WebDataset stream
   reader; `--no_loader` torch-optional fallback.
-- **Project driver script**
-  (`projects/viame_sealions_2026/scripts/bench_dataloader_throughput.sh`,
-  commit `e866bec`): runs 3 variants in sequence:
+- **Driver script** (project-agnostic, lives in kwcoco_dataloader):
+  `~/code/kwcoco_dataloader/dev/bench_dataloader_throughput.sh`.
+  Runs 3 variants in sequence:
   1. baseline (kwcoco / PIL)
   2. webdataset (kwcoco_dataloader reader)
   3. webdataset + `LINE_PROFILE=1`
 
-  Each writes a log under `$KCD_BENCH_ROOT/<variant>.log`; the
-  third also drops `profile_output.{lprof,txt}`.
+  Data is synthesized via `kwcoco toydata` (vidshapes flavor) so the
+  benchmark is self-contained — no dependency on sealion tile caches.
+  Each variant writes a log under `$BENCH_OUT_DPATH/<variant>.log`;
+  the third also drops `profile_output.{lprof,txt}`.
 
 ## How to run
 
 ```bash
-cd ~/code/kwcoco_detector_kit
-# Sanity-check: does the universal tile bundle exist on namek?
-ls $KCD_TILE_CACHE_DPATH/_universal/*/tiles.kwcoco.zip 2>/dev/null
-# If not, you'll need to build one — see "If tiles aren't on namek".
-
-# Default run (auto-picks the newest universal tile bundle):
-bash projects/viame_sealions_2026/scripts/bench_dataloader_throughput.sh
+bash ~/code/kwcoco_dataloader/dev/bench_dataloader_throughput.sh
 
 # Larger sample count + more workers:
-KCD_BENCH_N_SAMPLES=2000 KCD_BENCH_WORKERS=8 \
-    bash projects/viame_sealions_2026/scripts/bench_dataloader_throughput.sh
+BENCH_N_SAMPLES=2000 BENCH_WORKERS=8 \
+    bash ~/code/kwcoco_dataloader/dev/bench_dataloader_throughput.sh
+
+# Benchmark against a real kwcoco bundle instead of toydata:
+BENCH_KWCOCO=/path/to/data.kwcoco.zip \
+    bash ~/code/kwcoco_dataloader/dev/bench_dataloader_throughput.sh
 ```
 
-The script sources `paths.sh` for `$KCD_TILE_CACHE_DPATH` and
-defaults output under `$KCD_TRAINING_ROOT/bench/<timestamp>/`.
-
-`KCD_KWCOCO_DATALOADER_DPATH` should point at
-`~/code/kwcoco_dataloader` so the script can `pip install -e .` it
-into your venv. Check the script header for the full env-var menu.
-
-### If tiles aren't on namek
-
-The simplest path is to build them from arisia's data mount (if
-namek has access) or to scp/rsync a small kwcoco bundle from arisia
-and run `python3 -m kwcoco_detector_kit.data.tile` locally. Don't
-re-tile the entire 230k-tile sea-lion bundle just for a benchmark —
-a 5-10k tile subset is enough to measure throughput.
-
-A small purpose-built synthetic bundle would also work:
-`tests/conftest.py::_make_synthetic_bundle` produces a runnable
-kwcoco for unit tests; you can scale it up by passing
-`num_images=5000, boxes_per_image=10`.
+Defaults: data under `$HOME/data/kwcoco_dataloader_bench/data/`,
+outputs under `$HOME/data/kwcoco_dataloader_bench/runs/<ts>/`. See
+the script header for the full env-var menu.
 
 ## What the benchmark should tell us
 

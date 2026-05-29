@@ -48,3 +48,5 @@ already in the code or research_plan — link to it.
   needed to stamp source_category](2026-05-26_passthrough_was_not_enough.md)
 - [2026-05-29 — NFS must count as a negative; pup is the binding
   constraint](2026-05-29_nfs_must_be_negative_and_first_per_class_ap.md)
+- [2026-05-29 — per-checkpoint vali rescoring: in-train selection
+  agrees, last.pth ≡ epoch-0.pth](2026-05-29_per_checkpoint_rescoring_results.md)

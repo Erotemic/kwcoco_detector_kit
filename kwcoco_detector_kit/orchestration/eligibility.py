@@ -264,8 +264,14 @@ def _find_eval_ap(kcd_root: Path, candidate_id: str,
 
     def find_ap(node):
         if isinstance(node, dict):
+            # Full kwcoco-eval schema: area_range block -> nocls_measures -> ap
             if "nocls_measures" in node and isinstance(node["nocls_measures"], dict):
                 v = node["nocls_measures"].get("ap")
+                if v is not None:
+                    return float(v)
+            # Compact recompute_sealion_ap.py / sidecar schema: flat nocls_ap
+            if "nocls_ap" in node and not isinstance(node["nocls_ap"], dict):
+                v = node["nocls_ap"]
                 if v is not None:
                     return float(v)
             for v in node.values():

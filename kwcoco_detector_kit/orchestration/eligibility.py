@@ -237,12 +237,23 @@ def _find_eval_ap(kcd_root: Path, candidate_id: str,
 
     Falls back to inferring the root from <workdir>/../../eval/<candidate_id>/
     if <kcd_root> was wrong (e.g. KCD_ROOT unset when invoked).
+
+    Selection precedence: prefer the most-pruned sidecar metrics file when
+    present (e.g. ``detect_metrics.northern_fur_seal.json``) so model
+    selection runs on the corrected AP rather than the with-NFS AP.
+    The original ``detect_metrics.json`` stays on disk as a diagnostic.
     """
-    metrics_fpath = kcd_root / "eval" / candidate_id / "eval" / "detect_metrics.json"
-    if not metrics_fpath.exists() and workdir is not None:
-        inferred = workdir.parent.parent / "eval" / candidate_id / "eval" / "detect_metrics.json"
-        if inferred.exists():
-            metrics_fpath = inferred
+    eval_dir = kcd_root / "eval" / candidate_id / "eval"
+    if not eval_dir.exists() and workdir is not None:
+        eval_dir = workdir.parent.parent / "eval" / candidate_id / "eval"
+    if not eval_dir.exists():
+        return None
+
+    # Prefer sidecar metrics files (detect_metrics.<excluded>.json) over
+    # the with-everything detect_metrics.json. Tie-break alphabetically
+    # so the choice is deterministic across runs.
+    sidecars = sorted(p for p in eval_dir.glob("detect_metrics.*.json"))
+    metrics_fpath = sidecars[0] if sidecars else (eval_dir / "detect_metrics.json")
     if not metrics_fpath.exists():
         return None
     try:

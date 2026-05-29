@@ -46,3 +46,5 @@ already in the code or research_plan — link to it.
   targets](2026-05-26_first_baseline_attempt.md)
 - [2026-05-26 — passthrough whitelist wasn't enough: tile writer
   needed to stamp source_category](2026-05-26_passthrough_was_not_enough.md)
+- [2026-05-29 — NFS must count as a negative; pup is the binding
+  constraint](2026-05-29_nfs_must_be_negative_and_first_per_class_ap.md)

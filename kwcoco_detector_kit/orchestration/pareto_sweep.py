@@ -94,6 +94,17 @@ class SweepConfig(scfg.DataConfig):
             "epoch 0. Use this after a slurm walltime kill."
         ),
     )
+    exclude_eval_classes = scfg.Value(
+        None,
+        help=(
+            "Comma-separated list of category names to exclude from the GT + "
+            "predictions before scoring AP. Triggers a second eval pass that "
+            "writes detect_metrics.<excluded>.json next to the standard "
+            "metrics; eligibility selects on the excluded-version when present. "
+            "Use case (sea-lion project): pass northern_fur_seal so NFS "
+            "predictions don't count as positive sea-lion detections."
+        ),
+    )
     keep_going = scfg.Value(True, isflag=True, help="continue past failed cells")
     do_export = scfg.Value(True, isflag=True, help="run ONNX export per cell")
     do_eval = scfg.Value(True, isflag=True, help="run kwcoco eval per cell")
@@ -326,7 +337,7 @@ def _run_export(trainer, *, workdir: Path, cell, force: bool = False) -> Path:
 
 def _run_eval(trainer, *, workdir: Path, test_kwcoco: str, kcd_root: Path,
               candidate_id: str, category_names, score_thresh: float = 0.001,
-              force: bool = False) -> Path:
+              force: bool = False, exclude_eval_classes=None) -> Path:
     from kwcoco_detector_kit.eval.kwcoco_eval import run_kwcoco_eval
     return run_kwcoco_eval(
         trainer=trainer,
@@ -337,6 +348,7 @@ def _run_eval(trainer, *, workdir: Path, test_kwcoco: str, kcd_root: Path,
         category_names=category_names,
         score_thresh=score_thresh,
         force=force,
+        exclude_eval_classes=exclude_eval_classes,
     )
 
 
@@ -441,11 +453,18 @@ def run(config):
             else:
                 did_any_stage = True
                 try:
+                    exclude_eval = None
+                    if config.exclude_eval_classes:
+                        exclude_eval = [
+                            s.strip() for s in str(config.exclude_eval_classes).split(",")
+                            if s.strip()
+                        ]
                     _run_eval(
                         trainer, workdir=workdir, test_kwcoco=str(config.test_kwcoco),
                         kcd_root=kcd_root, candidate_id=candidate_id,
                         category_names=_parse_category_names(config.category_names),
                         force=bool(config.force_eval),
+                        exclude_eval_classes=exclude_eval,
                     )
                 except Exception as ex:
                     row["status"] = "fail_eval"

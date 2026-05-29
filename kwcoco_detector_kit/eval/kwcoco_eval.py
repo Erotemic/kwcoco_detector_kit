@@ -80,6 +80,94 @@ def filter_bbox_only_kwcoco(src_fpath, dst_fpath) -> Tuple[Path, int, int]:
     return dst_fpath, kept, len(drop_ids)
 
 
+def _excluded_metrics_fpath(metrics_fpath: Path, exclude_eval_classes) -> Path:
+    """Sidecar filename for the NFS-excluded (or other-excluded) eval pass.
+
+    A single excluded class produces ``detect_metrics.<name>.json``;
+    multiple classes are joined by ``_`` so the filename remains
+    self-describing. This is the file eligibility's model-selection
+    path looks for first.
+    """
+    if not exclude_eval_classes:
+        return metrics_fpath
+    suffix = "_".join(sorted(c.strip() for c in exclude_eval_classes if c.strip()))
+    if not suffix:
+        return metrics_fpath
+    # detect_metrics.json -> detect_metrics.<suffix>.json
+    return metrics_fpath.with_name(f"{metrics_fpath.stem}.{suffix}.json")
+
+
+def _rerun_eval_excluding(true_fpath: Path, pred_fpath: Path,
+                          exclude_names, out_fpath: Path,
+                          score_thresh: float, test_kwcoco: str,
+                          candidate_id: str, category_names) -> Path:
+    """Run kwcoco eval with the given classes pruned from both bundles.
+
+    Reuses the bbox-only filtered kwcocos (cheap; we already wrote them).
+    Writes a sibling metrics json so the original ``detect_metrics.json``
+    (which still contains the with-NFS numbers) is preserved as a
+    diagnostic.
+    """
+    import json as _json
+    import shutil
+    import tempfile
+    import kwcoco
+    from kwcoco_detector_kit._provenance import provenance_dict
+
+    exclude_set = {n.strip() for n in exclude_names if n.strip()}
+    if not exclude_set:
+        return out_fpath
+
+    def _prune(src_fpath, suffix):
+        src = kwcoco.CocoDataset.coerce(str(src_fpath))
+        cat_ids_to_drop = {c["id"] for c in src.dataset["categories"]
+                           if c["name"] in exclude_set}
+        if not cat_ids_to_drop:
+            return src_fpath
+        keep = [a for a in src.dataset["annotations"]
+                if a.get("category_id") not in cat_ids_to_drop]
+        src.dataset["annotations"] = keep
+        src._build_index()
+        dst = src_fpath.with_name(src_fpath.stem.replace(".kwcoco", "")
+                                  + f".sans_{suffix}.kwcoco.zip")
+        src._update_fpath(str(dst))
+        src.dump()
+        return dst
+
+    suffix = "_".join(sorted(exclude_set))
+    true_pruned = _prune(true_fpath, suffix)
+    pred_pruned = _prune(pred_fpath, suffix)
+
+    cmd = [
+        sys.executable, "-m", "kwcoco", "eval",
+        "--true_dataset", str(true_pruned),
+        "--pred_dataset", str(pred_pruned),
+        "--out_dpath", str(out_fpath.parent),
+        "--out_fpath", str(out_fpath),
+        "--draw", "False",
+        "--iou_thresh", "0.5",
+    ]
+    result = subprocess.run(cmd)
+    if result.returncode != 0 and not out_fpath.exists():
+        raise subprocess.CalledProcessError(result.returncode, cmd)
+
+    try:
+        m = _json.loads(out_fpath.read_text())
+        m.setdefault("provenance", provenance_dict())
+        m.setdefault("eval_inputs", {
+            "test_kwcoco": str(test_kwcoco),
+            "score_thresh": float(score_thresh),
+            "candidate_id": str(candidate_id),
+            "category_names": list(category_names),
+            "excluded_classes": sorted(exclude_set),
+        })
+        out_fpath.write_text(_json.dumps(m, indent=2))
+    except Exception as ex:
+        print(f"  warn: failed to stamp provenance into {out_fpath}: {ex}")
+
+    return out_fpath
+
+
 def run_kwcoco_eval(
     *,
     trainer,
@@ -90,6 +178,7 @@ def run_kwcoco_eval(
     category_names: Sequence[str],
     score_thresh: float = 0.001,
     force: bool = False,
+    exclude_eval_classes=None,
 ) -> Path:
     """Score every image in `test_kwcoco` with the trained model; eval.
 
@@ -234,4 +323,35 @@ def run_kwcoco_eval(
         print(f"  warn: failed to stamp provenance into {metrics_fpath}: {ex}")
 
     print(f"  wrote {metrics_fpath}")
+
+    # Optional second pass: drop non-target classes (e.g. NFS) from both
+    # GT and pred, rerun the scorer, write a sibling metrics json.
+    # Eligibility's selection key prefers this sidecar when present.
+    if exclude_eval_classes:
+        excluded_fpath = _excluded_metrics_fpath(metrics_fpath, exclude_eval_classes)
+        if excluded_fpath.exists() and not bool(force):
+            print(f"  reusing existing excluded-class metrics: {excluded_fpath}")
+        else:
+            print(
+                f"  running second eval pass with classes excluded: "
+                f"{sorted(exclude_eval_classes)}"
+            )
+            try:
+                _rerun_eval_excluding(
+                    true_fpath=true_filtered,
+                    pred_fpath=pred_filtered,
+                    exclude_names=exclude_eval_classes,
+                    out_fpath=excluded_fpath,
+                    score_thresh=score_thresh,
+                    test_kwcoco=test_kwcoco,
+                    candidate_id=candidate_id,
+                    category_names=category_names,
+                )
+                print(f"  wrote {excluded_fpath}")
+            except Exception as ex:
+                print(
+                    f"  warn: excluded-class eval failed: {ex}. "
+                    "Eligibility will fall back to the full metrics."
+                )
+
     return metrics_fpath

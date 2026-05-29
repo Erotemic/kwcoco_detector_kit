@@ -50,6 +50,12 @@ export KCD_TRAIN_POLICY=fixed
 export KCD_LR=4.9e-4
 export KCD_BACKBONE_LR=2.45e-4
 export KCD_USE_AMP=true
+# Operational rule: NFS is in the data as a hard-negative source so the
+# model learns to discriminate; it must NOT count as a positive when
+# scoring sea-lion detection ability. Eval writes a sidecar
+# detect_metrics.northern_fur_seal.json with NFS pruned from GT+pred;
+# eligibility selects on that file.
+export KCD_EXCLUDE_EVAL_CLASSES=northern_fur_seal
 
 export KCD_TILE_SIZE=640
 export KCD_TILE_SOURCE_SCALES=1.0,0.5,0.25,0.125

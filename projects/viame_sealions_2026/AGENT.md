@@ -58,6 +58,19 @@ Migration note: before 2026-05-22 the data store lived at
 that path may still exist on some hosts during transition; scripts
 default to `/data/Public/VIAME/` and don't silently fall back.
 
+## Journals
+
+After every meaningful training cycle (success or failure), debug
+session that ended with a fix, or pipeline refactor, drop a dated
+narrative entry in [docs/journals/](docs/journals/). See
+[docs/journals/README.md](docs/journals/README.md) for the
+convention. The journal is the place to record *why* we did things
+the way we did, what we tried that didn't work, and the lessons
+that should outlive the immediate context.
+
+Before starting any non-trivial new work in this project: skim the
+most recent journal entries to avoid retreading ground.
+
 ## Workflow
 
 1. **Build a per-scheme kwcoco bundle**

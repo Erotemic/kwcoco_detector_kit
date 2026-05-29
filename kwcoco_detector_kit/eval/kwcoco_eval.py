@@ -80,6 +80,94 @@ def filter_bbox_only_kwcoco(src_fpath, dst_fpath) -> Tuple[Path, int, int]:
     return dst_fpath, kept, len(drop_ids)
 
 
+def _distractor_sidecar_fpath(metrics_fpath: Path, distractor_classes) -> Path:
+    """Sidecar filename for the NFS-excluded (or other-excluded) eval pass.
+
+    A single excluded class produces ``detect_metrics.<name>.json``;
+    multiple classes are joined by ``_`` so the filename remains
+    self-describing. This is the file eligibility's model-selection
+    path looks for first.
+    """
+    if not distractor_classes:
+        return metrics_fpath
+    suffix = "_".join(sorted(c.strip() for c in distractor_classes if c.strip()))
+    if not suffix:
+        return metrics_fpath
+    # detect_metrics.json -> detect_metrics.<suffix>.json
+    return metrics_fpath.with_name(f"{metrics_fpath.stem}.{suffix}.json")
+
+
+def _rerun_eval_dropping_distractors(true_fpath: Path, pred_fpath: Path,
+                          distractor_names, out_fpath: Path,
+                          score_thresh: float, test_kwcoco: str,
+                          candidate_id: str, category_names) -> Path:
+    """Run kwcoco eval with distractor classes pruned from both bundles.
+
+    Distractor classes are kept in the trained model's class set (so it
+    learns to discriminate them) but excluded from class-agnostic
+    detection AP. Reuses the bbox-only filtered kwcocos (cheap; we
+    already wrote them). Writes a sibling metrics json; the original
+    ``detect_metrics.json`` stays on disk with full per-class numbers
+    (including distractor AP) as a diagnostic.
+    """
+    import json as _json
+    import kwcoco
+    from kwcoco_detector_kit._provenance import provenance_dict
+
+    distractor_set = {n.strip() for n in distractor_names if n.strip()}
+    if not distractor_set:
+        return out_fpath
+
+    def _prune(src_fpath, suffix):
+        src = kwcoco.CocoDataset.coerce(str(src_fpath))
+        cat_ids_to_drop = {c["id"] for c in src.dataset["categories"]
+                           if c["name"] in distractor_set}
+        if not cat_ids_to_drop:
+            return src_fpath
+        keep = [a for a in src.dataset["annotations"]
+                if a.get("category_id") not in cat_ids_to_drop]
+        src.dataset["annotations"] = keep
+        src._build_index()
+        dst = src_fpath.with_name(src_fpath.stem.replace(".kwcoco", "")
+                                  + f".sans_{suffix}.kwcoco.zip")
+        src._update_fpath(str(dst))
+        src.dump()
+        return dst
+
+    suffix = "_".join(sorted(distractor_set))
+    true_pruned = _prune(true_fpath, suffix)
+    pred_pruned = _prune(pred_fpath, suffix)
+
+    cmd = [
+        sys.executable, "-m", "kwcoco", "eval",
+        "--true_dataset", str(true_pruned),
+        "--pred_dataset", str(pred_pruned),
+        "--out_dpath", str(out_fpath.parent),
+        "--out_fpath", str(out_fpath),
+        "--draw", "False",
+        "--iou_thresh", "0.5",
+    ]
+    result = subprocess.run(cmd)
+    if result.returncode != 0 and not out_fpath.exists():
+        raise subprocess.CalledProcessError(result.returncode, cmd)
+
+    try:
+        m = _json.loads(out_fpath.read_text())
+        m.setdefault("provenance", provenance_dict())
+        m.setdefault("eval_inputs", {
+            "test_kwcoco": str(test_kwcoco),
+            "score_thresh": float(score_thresh),
+            "candidate_id": str(candidate_id),
+            "category_names": list(category_names),
+            "distractor_classes": sorted(distractor_set),
+        })
+        out_fpath.write_text(_json.dumps(m, indent=2))
+    except Exception as ex:
+        print(f"  warn: failed to stamp provenance into {out_fpath}: {ex}")
+
+    return out_fpath
+
+
 def run_kwcoco_eval(
     *,
     trainer,
@@ -90,6 +178,7 @@ def run_kwcoco_eval(
     category_names: Sequence[str],
     score_thresh: float = 0.001,
     force: bool = False,
+    distractor_classes=None,
 ) -> Path:
     """Score every image in `test_kwcoco` with the trained model; eval.
 
@@ -234,4 +323,37 @@ def run_kwcoco_eval(
         print(f"  warn: failed to stamp provenance into {metrics_fpath}: {ex}")
 
     print(f"  wrote {metrics_fpath}")
+
+    # Distractor pass: classes the model learned to discriminate but that
+    # the mission treats as non-targets are pruned from both GT and pred,
+    # the scorer is rerun, and a sidecar metrics file is written.
+    # Eligibility's selection key prefers this sidecar when present, so
+    # model selection runs on the mission metric automatically.
+    if distractor_classes:
+        sidecar_fpath = _distractor_sidecar_fpath(metrics_fpath, distractor_classes)
+        if sidecar_fpath.exists() and not bool(force):
+            print(f"  reusing existing distractor-pruned metrics: {sidecar_fpath}")
+        else:
+            print(
+                f"  running second eval pass with distractor classes pruned: "
+                f"{sorted(distractor_classes)}"
+            )
+            try:
+                _rerun_eval_dropping_distractors(
+                    true_fpath=true_filtered,
+                    pred_fpath=pred_filtered,
+                    distractor_names=distractor_classes,
+                    out_fpath=sidecar_fpath,
+                    score_thresh=score_thresh,
+                    test_kwcoco=test_kwcoco,
+                    candidate_id=candidate_id,
+                    category_names=category_names,
+                )
+                print(f"  wrote {sidecar_fpath}")
+            except Exception as ex:
+                print(
+                    f"  warn: distractor-pruned eval failed: {ex}. "
+                    "Eligibility will fall back to the full metrics."
+                )
+
     return metrics_fpath

@@ -38,28 +38,28 @@
 # the project lives inside the kit at `projects/viame_sealions_2026/`.
 # Scripts/docs/tests are versioned here; the actual sea-lion data
 # (training_ready_v1, unpacked/, ...) lives at $KCD_DATA_DPATH below.
-KCD_REPO_ROOT="${KCD_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+export KCD_REPO_ROOT="${KCD_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 # Per-user work area — same canonical path on every host (via symlink
 # where needed). Read-write: holds kcd_sealion/, pretrained_models/,
 # slurm_logs/.
-KCD_DATA_ROOT="${KCD_DATA_ROOT:-/data/users/jon.crall}"
+export KCD_DATA_ROOT="${KCD_DATA_ROOT:-/data/users/jon.crall}"
 
 # Shared sea-lion data store — READ-ONLY for this project. Holds the
 # official training_ready_v1/, unpacked imagery, scheme bundles. Lives
 # under /data/Public/VIAME/ since 2026-05-22; the prior location at
 # $KCD_DATA_ROOT/dvc-repos/viame_sealions_2026 may still exist as a
 # legacy symlink on some hosts but should not be relied on.
-KCD_DATA_DPATH="${KCD_DATA_DPATH:-/data/Public/VIAME/viame_sealions_2026}"
+export KCD_DATA_DPATH="${KCD_DATA_DPATH:-/data/Public/VIAME/viame_sealions_2026}"
 
 # Where trained-model workspaces (per-experiment kcd_root) live. The
 # kit's `--kcd_root` writes train/eval/manifest artifacts here. Stays
 # under jon.crall even after the public-data-store migration.
-KCD_TRAINING_ROOT="${KCD_TRAINING_ROOT:-$KCD_DATA_ROOT/kcd_sealion}"
+export KCD_TRAINING_ROOT="${KCD_TRAINING_ROOT:-$KCD_DATA_ROOT/kcd_sealion}"
 
 # Where downloaded pretrained checkpoints live, regardless of source
 # (HuggingFace, Drive, etc.). Stays under jon.crall after the migration.
-KCD_PRETRAINED_ROOT="${KCD_PRETRAINED_ROOT:-$KCD_DATA_ROOT/pretrained_models}"
+export KCD_PRETRAINED_ROOT="${KCD_PRETRAINED_ROOT:-$KCD_DATA_ROOT/pretrained_models}"
 
 # Where slurm stdout/stderr land. Lives on the data drive (NOT inside
 # the kit checkout, which is on the SSD on workstations) so log volume
@@ -67,32 +67,32 @@ KCD_PRETRAINED_ROOT="${KCD_PRETRAINED_ROOT:-$KCD_DATA_ROOT/pretrained_models}"
 # $KCD_DATA_ROOT (user-owned) rather than $KCD_TRAINING_ROOT (which
 # may be root-owned because docker writes into it) so the submit-side
 # `mkdir -p` succeeds without elevated permissions.
-KCD_SLURM_LOG_DPATH="${KCD_SLURM_LOG_DPATH:-$KCD_DATA_ROOT/slurm_logs}"
+export KCD_SLURM_LOG_DPATH="${KCD_SLURM_LOG_DPATH:-$KCD_DATA_ROOT/slurm_logs}"
 
 # kwcoco_detector_kit checkout on the host. Used by submit_*.sh to find
 # follow_job.py outside the docker container. Default is $HOME-relative
 # because the kit checkout is per-user; it doesn't live on $KCD_DATA_ROOT.
-KCD_KIT_DPATH="${KCD_KIT_DPATH:-$HOME/code/kwcoco_detector_kit}"
+export KCD_KIT_DPATH="${KCD_KIT_DPATH:-$HOME/code/kwcoco_detector_kit}"
 
 # -- Dataset paths -------------------------------------------------------
 
-KCD_TRAINING_READY_DIR="${KCD_TRAINING_READY_DIR:-$KCD_DATA_DPATH/training_ready_v1}"
-KCD_SCHEMES_DIR="${KCD_SCHEMES_DIR:-$KCD_TRAINING_READY_DIR/by_scheme}"
+export KCD_TRAINING_READY_DIR="${KCD_TRAINING_READY_DIR:-$KCD_DATA_DPATH/training_ready_v1}"
+export KCD_SCHEMES_DIR="${KCD_SCHEMES_DIR:-$KCD_TRAINING_READY_DIR/by_scheme}"
 
 # -- Pretrained checkpoints ----------------------------------------------
 
 # DEIMv2-DINOv3-S COCO-finetuned (50.9 AP on COCO). Foundation backbone
 # (DINOv3, self-supervised on ~1.7B images) + full DEIM head trained on
 # COCO. The strongest publicly-available init for `deimv2_dinov3_s`.
-KCD_DEIMV2_DINOV3_S_COCO_DIR="${KCD_DEIMV2_DINOV3_S_COCO_DIR:-$KCD_PRETRAINED_ROOT/deimv2_dinov3_s_coco}"
-KCD_DEIMV2_DINOV3_S_COCO_PTH="${KCD_DEIMV2_DINOV3_S_COCO_PTH:-$KCD_DEIMV2_DINOV3_S_COCO_DIR/deimv2_dinov3_s_coco.pth}"
+export KCD_DEIMV2_DINOV3_S_COCO_DIR="${KCD_DEIMV2_DINOV3_S_COCO_DIR:-$KCD_PRETRAINED_ROOT/deimv2_dinov3_s_coco}"
+export KCD_DEIMV2_DINOV3_S_COCO_PTH="${KCD_DEIMV2_DINOV3_S_COCO_PTH:-$KCD_DEIMV2_DINOV3_S_COCO_DIR/deimv2_dinov3_s_coco.pth}"
 
 # DEIMv2-HGNetv2-N COCO (43.0 AP, 3.6M params, native 320x320). Mobile-
 # class HGNetv2 B0 backbone + DEIM head, COCO-pretrained. The fastest
 # tier that's still useful as a real baseline (atto/femto/pico are
 # floor models). Native input is 320; doesn't support dynamic input.
-KCD_DEIMV2_HGNETV2_N_COCO_DIR="${KCD_DEIMV2_HGNETV2_N_COCO_DIR:-$KCD_PRETRAINED_ROOT/deimv2_hgnetv2_n_coco}"
-KCD_DEIMV2_HGNETV2_N_COCO_PTH="${KCD_DEIMV2_HGNETV2_N_COCO_PTH:-$KCD_DEIMV2_HGNETV2_N_COCO_DIR/deimv2_hgnetv2_n_coco.pth}"
+export KCD_DEIMV2_HGNETV2_N_COCO_DIR="${KCD_DEIMV2_HGNETV2_N_COCO_DIR:-$KCD_PRETRAINED_ROOT/deimv2_hgnetv2_n_coco}"
+export KCD_DEIMV2_HGNETV2_N_COCO_PTH="${KCD_DEIMV2_HGNETV2_N_COCO_PTH:-$KCD_DEIMV2_HGNETV2_N_COCO_DIR/deimv2_hgnetv2_n_coco.pth}"
 
 # -- Per-experiment workspaces -------------------------------------------
 #
@@ -105,8 +105,8 @@ KCD_DEIMV2_HGNETV2_N_COCO_PTH="${KCD_DEIMV2_HGNETV2_N_COCO_PTH:-$KCD_DEIMV2_HGNE
 #
 # Tile bundles are shared per-scheme (independent of variant), so each
 # scheme tiles once and every variant reuses the result.
-KCD_RUNS_DPATH="${KCD_RUNS_DPATH:-$KCD_TRAINING_ROOT/runs}"
-KCD_TILE_CACHE_DPATH="${KCD_TILE_CACHE_DPATH:-$KCD_TRAINING_ROOT/tile_cache}"
+export KCD_RUNS_DPATH="${KCD_RUNS_DPATH:-$KCD_TRAINING_ROOT/runs}"
+export KCD_TILE_CACHE_DPATH="${KCD_TILE_CACHE_DPATH:-$KCD_TRAINING_ROOT/tile_cache}"
 
 # Sanity helper: callers can use `kcd_require_path foo /some/path` to fail
 # fast with a useful message when a required file/dir is missing.

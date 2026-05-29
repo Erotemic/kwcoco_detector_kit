@@ -5,6 +5,23 @@
 # excluded entirely from the training/val/test kwcoco. `dropped_reason`
 # documents why.
 #
+# Per-scheme fields:
+#   target_order        ordered list defining class-index assignment for
+#                       the trained model (i-th name -> class index i).
+#                       Reordering is a breaking change for any trained
+#                       checkpoint.
+#   mapping             raw VIAME code -> target class name.
+#   drop                raw VIAME codes excluded from the training data
+#                       entirely (no annotation written).
+#   distractor_classes  OPTIONAL list of target class names that are kept
+#                       in the model's class set (so it learns to
+#                       discriminate them) but excluded from class-
+#                       agnostic detection AP at eval time. Per-class AP
+#                       on these classes is still reported as a
+#                       diagnostic. The kit's eval step reads this field
+#                       and runs an extra scoring pass with these classes
+#                       pruned from both GT and predictions.
+#
 # Source distribution (89,955 annotations total across 2021-2024 redacted
 # imagery on namek):
 #   F=20500, J=19478, P=18634, NFS=15965, B=5947, O=5909, S=3202, DP=301, DN=19
@@ -29,12 +46,16 @@ schemes:
       F:   sealion
       J:   sealion
       P:   sealion
-      NFS: sealion
       DP:  sealion
-    drop: [O, DN]
+    drop: [NFS, O, DN]
     drop_reasons:
-      O:  background-only annotations; not a positive target
-      DN: only 19 instances, too few to be useful
+      NFS: different species; not a target. This scheme has no slot
+           for NFS as a separate class, so we drop the annotations
+           entirely. A future variant could carry NFS as a distractor
+           class (cf. lifestage_6cls.distractor_classes) — but that's
+           the 2-class scheme, not this one.
+      O:   background-only annotations; not a positive target
+      DN:  only 19 instances, too few to be useful
     notes: |
       Current training_ready_v1/all_collapsed.kwcoco.zip implements this
       scheme. Localization-only baseline.
@@ -63,6 +84,13 @@ schemes:
     description: Full operational age-sex classifier plus species distractor.
     num_classes: 6
     target_order: [bull, subadult_male, female, juvenile, pup, northern_fur_seal]
+    # Distractor classes: classes the model *learns to detect* (so it can
+    # discriminate them from the operational targets) but which the mission
+    # treats as non-targets. They are excluded from class-agnostic detection
+    # AP at eval time. Per-class AP for these classes is still reported as
+    # a diagnostic so we can see how well the discrimination is being
+    # learned.
+    distractor_classes: [northern_fur_seal]
     mapping:
       B:   bull
       S:   subadult_male

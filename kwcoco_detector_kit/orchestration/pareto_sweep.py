@@ -56,6 +56,8 @@ class SweepConfig(scfg.DataConfig):
     num_epochs = scfg.Value(2)
     batch_size = scfg.Value(2)
     val_batch_size = scfg.Value(2)
+    train_num_workers = scfg.Value(4, help="DataLoader workers for the train loop")
+    val_num_workers = scfg.Value(2, help="DataLoader workers for the val loop")
     category_names = scfg.Value(
         "widget",
         help=(
@@ -80,6 +82,32 @@ class SweepConfig(scfg.DataConfig):
             "DEIMv2 cells, this should be the variant-matched "
             "deimv2_<variant>_coco.pth file -- training from scratch on small "
             "data typically loses 5-10 AP vs. fine-tuning from a COCO init."
+        ),
+    )
+    resume = scfg.Value(
+        None,
+        help=(
+            "Optional path to a *.pth checkpoint produced by a prior incomplete "
+            "training run (typically last.pth). Resumes the full training state "
+            "-- optimizer, epoch counter, LR scheduler, EMA -- as opposed to "
+            "init_checkpoint which only loads model weights and restarts at "
+            "epoch 0. Use this after a slurm walltime kill."
+        ),
+    )
+    distractor_classes = scfg.Value(
+        None,
+        help=(
+            "Comma-separated list of CATEGORY NAMES that the model learns to "
+            "detect (so it can discriminate them) but that the mission treats "
+            "as non-targets. Classes in this list are pruned from both GT and "
+            "predictions before computing detection AP, in a second eval pass "
+            "that writes a sidecar detect_metrics.<distractors>.json next to "
+            "the standard metrics. Eligibility selects on the sidecar when "
+            "present (so model selection runs on the mission metric, not the "
+            "with-distractors metric). Per-class AP on distractors is still "
+            "reported in the original metrics file as a diagnostic. "
+            "Use case (sea-lion project): pass northern_fur_seal so NFS "
+            "predictions don't count as positive sea-lion detections."
         ),
     )
     keep_going = scfg.Value(True, isflag=True, help="continue past failed cells")
@@ -280,12 +308,34 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
         data_format="kwcoco",
         extra={"category_names": category_names,
                "candidate_id": candidate_id,
-               "init_checkpoint": init_ckpt or ""},
+               "init_checkpoint": init_ckpt or "",
+               "train_num_workers": int(config.train_num_workers),
+               "val_num_workers": int(config.val_num_workers)},
     )
     # init_ckpt was already resolved + validated above.
+    resume_ckpt = config.resume
+    if resume_ckpt is not None:
+        resume_ckpt = str(resume_ckpt)
+        if not Path(resume_ckpt).exists():
+            raise FileNotFoundError(
+                f"--resume points at {resume_ckpt!r} which does not exist."
+            )
+        # Resume and init_checkpoint are mutually exclusive at the
+        # DEIMv2 layer (its train.py asserts not all([tuning, resume]):
+        # the resume ckpt already carries the fine-tuned weights that
+        # were originally produced from the init_checkpoint). When both
+        # are set, resume wins. Don't pass the init_checkpoint downstream.
+        if init_ckpt:
+            print(
+                f"[pareto_sweep] --resume set; ignoring init_checkpoint "
+                f"({init_ckpt}). The resume checkpoint already carries "
+                "the fine-tuned weights."
+            )
+            init_ckpt = None
     trainer.launch(
         cfg_fpath,
         init_checkpoint=init_ckpt,
+        resume=resume_ckpt,
         num_gpus=int(config.num_gpus),
         distributed=bool(config.distributed),
     )
@@ -304,7 +354,7 @@ def _run_export(trainer, *, workdir: Path, cell, force: bool = False) -> Path:
 
 def _run_eval(trainer, *, workdir: Path, test_kwcoco: str, kcd_root: Path,
               candidate_id: str, category_names, score_thresh: float = 0.001,
-              force: bool = False) -> Path:
+              force: bool = False, distractor_classes=None) -> Path:
     from kwcoco_detector_kit.eval.kwcoco_eval import run_kwcoco_eval
     return run_kwcoco_eval(
         trainer=trainer,
@@ -315,6 +365,7 @@ def _run_eval(trainer, *, workdir: Path, test_kwcoco: str, kcd_root: Path,
         category_names=category_names,
         score_thresh=score_thresh,
         force=force,
+        distractor_classes=distractor_classes,
     )
 
 
@@ -419,11 +470,18 @@ def run(config):
             else:
                 did_any_stage = True
                 try:
+                    distractors = None
+                    if config.distractor_classes:
+                        distractors = [
+                            s.strip() for s in str(config.distractor_classes).split(",")
+                            if s.strip()
+                        ]
                     _run_eval(
                         trainer, workdir=workdir, test_kwcoco=str(config.test_kwcoco),
                         kcd_root=kcd_root, candidate_id=candidate_id,
                         category_names=_parse_category_names(config.category_names),
                         force=bool(config.force_eval),
+                        distractor_classes=distractors,
                     )
                 except Exception as ex:
                     row["status"] = "fail_eval"

@@ -90,19 +90,20 @@ fi
 # Shared shm size scales with gpu count: DataLoader workers' ipc.
 shm_gb=$(( 16 + 8 * KCD_NUM_GPUS ))
 
-# Pass through every KCD_* env the launcher needs. Listed explicitly
-# so missing forwards fail loud at submit-time, not silently.
+# Forward every KCD_* var into the docker container. Wildcard (vs an
+# explicit list) mirrors _submit_train.sh's env-file write: adding a
+# new KCD_* knob in the launcher never requires also remembering to
+# update this list. The KCD_ namespace is reserved for our config so
+# this won't sweep in unrelated state. `compgen -v` (vs `-e`) catches
+# vars set without `export` too.
 KCD_ENV_FLAGS=()
-for v in KCD_RUN_NAME KCD_SCHEME KCD_VARIANT KCD_NUM_GPUS KCD_PER_GPU_BATCH \
-         KCD_NUM_EPOCHS KCD_INPUT_HW KCD_TRAIN_POLICY KCD_LR KCD_BACKBONE_LR \
-         KCD_USE_AMP KCD_INIT_CHECKPOINT KCD_TRAIN_FROM_SCRATCH \
-         KCD_CATEGORY_NAMES KCD_TILE_SIZE KCD_TILE_SOURCE_SCALES \
-         KCD_TILE_STRIDE_FRAC KCD_TILE_MIN_GT_AREA_FRAC \
-         KCD_TILE_MIN_KEEP_FRACTION KCD_TILE_OVERSIZE_FACTOR \
-         KCD_TILE_KEEP_NEGATIVE KCD_SCALE_TIER; do
+while IFS= read -r v; do
     val="${!v:-}"
-    KCD_ENV_FLAGS+=(-e "$v=$val")
-done
+    if [ -n "$val" ]; then
+        KCD_ENV_FLAGS+=(-e "$v=$val")
+    fi
+done < <(compgen -v | grep -E '^KCD_' | sort -u)
+echo "[_sbatch_train.sh] forwarding ${#KCD_ENV_FLAGS[@]} KCD_* values to docker run (${#KCD_ENV_FLAGS[@]} = 2 * n_vars)"
 
 docker run --rm \
     --gpus all \

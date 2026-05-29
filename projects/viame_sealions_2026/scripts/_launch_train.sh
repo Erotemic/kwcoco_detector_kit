@@ -6,6 +6,10 @@
 # -> manifest. Don't invoke directly; called by _sbatch_train.sh.
 set -euo pipefail
 
+# Group-writable outputs so the user (host UID) can clean / mutate
+# anything this container (root inside) writes. Files 0664, dirs 0775.
+umask 002
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/paths.sh"
 
@@ -77,6 +81,27 @@ fi
     exit 1
 }
 
+# Auto-resolve distractor_classes from the scheme YAML when the env var
+# wasn't set explicitly. Distractor classes are kept in the trained
+# model's class set (so it learns to discriminate them) but excluded
+# from the class-agnostic detection AP at eval time. The submit script
+# CAN override by setting KCD_DISTRACTOR_CLASSES directly.
+if [ -z "${KCD_DISTRACTOR_CLASSES:-}" ]; then
+    KCD_DISTRACTOR_CLASSES="$("$PYTHON_BIN" -c "
+import pathlib, yaml
+fp = pathlib.Path('$KCD_REPO_ROOT/docs/class_schemes.yaml')
+data = yaml.safe_load(fp.read_text()) or {}
+scheme = (data.get('schemes') or {}).get('$KCD_SCHEME') or {}
+names = scheme.get('distractor_classes') or []
+print(','.join(names))
+")"
+    if [ -n "$KCD_DISTRACTOR_CLASSES" ]; then
+        export KCD_DISTRACTOR_CLASSES
+        echo "  scheme $KCD_SCHEME declares distractor_classes=$KCD_DISTRACTOR_CLASSES"
+        echo "  -> eval will write a sidecar metrics file with those classes pruned"
+    fi
+fi
+
 # Variant -> init checkpoint (when not explicitly set).
 if [ -z "${KCD_INIT_CHECKPOINT:-}" ] && [ "${KCD_TRAIN_FROM_SCRATCH:-0}" != "1" ]; then
     case "$KCD_VARIANT" in
@@ -115,13 +140,26 @@ if [ -z "${KCD_SCALE_TIER:-}" ]; then
 fi
 
 TOTAL_BATCH=$(( KCD_PER_GPU_BATCH * KCD_NUM_GPUS ))
-TOTAL_VAL_BATCH=$(( 2 * KCD_PER_GPU_BATCH * KCD_NUM_GPUS ))
+# Val batch ratio: 2x train was too aggressive when training memory is
+# already tight (v4 OOM cycle). Allow override via env; default keeps
+# val == train so a denser-than-average val batch can't kill the run.
+KCD_VAL_BATCH_MULT="${KCD_VAL_BATCH_MULT:-1}"
+TOTAL_VAL_BATCH=$(( KCD_VAL_BATCH_MULT * KCD_PER_GPU_BATCH * KCD_NUM_GPUS ))
 
-# Tile-cache key — scheme-AGNOSTIC. Hash only tile geometry params:
-# the universal tile bundle is built once with category_names=sealion
-# and reused across every scheme via the apply-scheme post-step.
-# Different geometry → different sub-dir so we never silently reuse
-# mismatched tiles. sha1 truncated to 8 hex chars is plenty here.
+# Tile-cache key — scheme-AGNOSTIC. Hash tile geometry params PLUS a
+# fingerprint of the tile writer's passthrough-field whitelist (so a
+# kit code change that adds/removes preserved annotation fields auto-
+# invalidates older caches). Different geometry or whitelist → different
+# sub-dir; we never silently reuse mismatched tiles. The May-24 episode
+# (48h * 3 jobs trained on empty targets because the cache predated the
+# source_category passthrough) is the cost of NOT having this.
+WRITER_FINGERPRINT=$("$PYTHON_BIN" -c "
+from kwcoco_detector_kit.data import tile
+print('v{}:{}'.format(
+    getattr(tile, '_TILE_WRITER_VERSION', 1),
+    ','.join(sorted(tile._PASSTHROUGH_ANN_FIELDS)),
+))
+" 2>/dev/null || echo 'unknown')
 TILE_PARAMS_BODY=$(printf '%s\n' \
     "tile_size=$KCD_TILE_SIZE" \
     "source_scales=$KCD_TILE_SOURCE_SCALES" \
@@ -129,7 +167,8 @@ TILE_PARAMS_BODY=$(printf '%s\n' \
     "min_gt_area_frac=$KCD_TILE_MIN_GT_AREA_FRAC" \
     "min_keep_fraction=$KCD_TILE_MIN_KEEP_FRACTION" \
     "oversize_factor=$KCD_TILE_OVERSIZE_FACTOR" \
-    "keep_negative=$KCD_TILE_KEEP_NEGATIVE")
+    "keep_negative=$KCD_TILE_KEEP_NEGATIVE" \
+    "writer_passthrough=$WRITER_FINGERPRINT")
 TILE_HASH=$(printf '%s' "$TILE_PARAMS_BODY" | sha1sum | cut -c1-8)
 TILE_DIR="$KCD_TILE_CACHE_DPATH/_universal/$TILE_HASH"
 UNIVERSAL_TILES="$TILE_DIR/tiles.kwcoco.zip"
@@ -226,10 +265,55 @@ for split in "train:$UNIVERSAL_TILES:$TRAIN_KWCOCO" \
         --src "$src" --dst "$dst" --scheme "$KCD_SCHEME"
 done
 
+# Fail-fast guard: empty annotations in scheme_applied/train.kwcoco.zip
+# is the silent-killer that burned 48h * 3 jobs on May 24. Either the
+# tile cache was built before tile.py's source_category passthrough
+# landed, or the scheme's mapping/drop rules wiped every label. Bail
+# now instead of training 48h on empty targets.
+echo
+echo "=== 2b. Sanity check: nonzero annotations after apply_scheme ==="
+N_TRAIN_ANNS=$("$PYTHON_BIN" -c "
+import kwcoco
+print(kwcoco.CocoDataset.coerce('$TRAIN_KWCOCO').n_annots)
+" 2>/dev/null || echo 0)
+N_VALI_ANNS=$("$PYTHON_BIN" -c "
+import kwcoco
+print(kwcoco.CocoDataset.coerce('$VALI_KWCOCO').n_annots)
+" 2>/dev/null || echo 0)
+echo "  scheme_applied/train.kwcoco.zip: $N_TRAIN_ANNS annotations"
+echo "  scheme_applied/vali.kwcoco.zip:  $N_VALI_ANNS annotations"
+if [ "$N_TRAIN_ANNS" -eq 0 ]; then
+    echo "ERROR: scheme_applied/train.kwcoco.zip has 0 annotations." >&2
+    echo "  Most likely cause: the universal tile cache was built before" >&2
+    echo "  tile.py's source_category passthrough was added (kit commit 5d99545)." >&2
+    echo "  Fix:" >&2
+    echo "    rm -rf $KCD_TILE_CACHE_DPATH/_universal" >&2
+    echo "    rm -rf $SCHEME_APPLIED_DIR" >&2
+    echo "    # then resubmit. The tile step will re-build from the patched code." >&2
+    echo "  Refusing to start a 48h training run with empty targets." >&2
+    exit 1
+fi
+if [ "$N_VALI_ANNS" -eq 0 ]; then
+    echo "WARNING: scheme_applied/vali.kwcoco.zip has 0 annotations." >&2
+    echo "  Eval mAP will be meaningless. Continuing anyway." >&2
+fi
+
 echo
 echo "=== 3. Sweep (train + export + eval + bench) ==="
 DIST_FLAG=(--num_gpus "$KCD_NUM_GPUS")
 [ "$KCD_NUM_GPUS" -gt 1 ] && DIST_FLAG+=(--distributed true)
+
+# Debug echo: show whether the force/resume vars actually reached the
+# container. Catches the env-passthrough bug that produced job 2510's
+# instant ok_resumed (the env file was missing these vars, so the
+# launcher's ${VAR:+--flag} expansions all collapsed to nothing).
+echo "[_launch_train.sh] resume/force state:"
+echo "  KCD_RESUME_CKPT     = ${KCD_RESUME_CKPT:-<unset>}"
+echo "  KCD_FORCE_TRAIN     = ${KCD_FORCE_TRAIN:-<unset>}"
+echo "  KCD_FORCE_EXPORT    = ${KCD_FORCE_EXPORT:-<unset>}"
+echo "  KCD_FORCE_EVAL      = ${KCD_FORCE_EVAL:-<unset>}"
+echo "  KCD_FORCE_BENCH     = ${KCD_FORCE_BENCH:-<unset>}"
+echo "  KCD_DISTRACTOR_CLASSES = ${KCD_DISTRACTOR_CLASSES:-<unset>}"
 
 "$PYTHON_BIN" -m kwcoco_detector_kit sweep \
     --train_kwcoco "$TRAIN_KWCOCO" \
@@ -243,6 +327,14 @@ DIST_FLAG=(--num_gpus "$KCD_NUM_GPUS")
     --num_epochs "$KCD_NUM_EPOCHS" \
     --batch_size "$TOTAL_BATCH" \
     --val_batch_size "$TOTAL_VAL_BATCH" \
+    ${KCD_RESUME_CKPT:+--resume "$KCD_RESUME_CKPT"} \
+    ${KCD_FORCE_TRAIN:+--force_train "$KCD_FORCE_TRAIN"} \
+    ${KCD_FORCE_EXPORT:+--force_export "$KCD_FORCE_EXPORT"} \
+    ${KCD_FORCE_EVAL:+--force_eval "$KCD_FORCE_EVAL"} \
+    ${KCD_FORCE_BENCH:+--force_bench "$KCD_FORCE_BENCH"} \
+    ${KCD_DISTRACTOR_CLASSES:+--distractor_classes "$KCD_DISTRACTOR_CLASSES"} \
+    --train_num_workers "${KCD_TRAIN_NUM_WORKERS:-4}" \
+    --val_num_workers "${KCD_VAL_NUM_WORKERS:-2}" \
     --category_names "$KCD_CATEGORY_NAMES" \
     --lr "$KCD_LR" \
     --backbone_lr "$KCD_BACKBONE_LR" \

@@ -907,7 +907,26 @@ class DEIMv2Trainer:
             "--nproc_per_node", str(int(num_gpus)),
             str(train_py), "-c", str(cfg_fpath),
         ]
-        if init_checkpoint:
+        if resume:
+            # DEIMv2's train.py asserts that tuning (-t) and resume (-r)
+            # are mutually exclusive: the resume checkpoint already
+            # carries the fine-tuned weights that originally came from
+            # init_checkpoint. Drop init_checkpoint silently when both
+            # are passed (the upstream caller should have already done
+            # this; this is a defensive backstop).
+            if init_checkpoint:
+                print(
+                    f"[deimv2.launch] resume is set; ignoring "
+                    f"init_checkpoint={init_checkpoint}",
+                    flush=True,
+                )
+            args += ["-r", str(resume)]
+            print(
+                f"[deimv2.launch] resuming full training state from "
+                f"{resume}",
+                flush=True,
+            )
+        elif init_checkpoint:
             args += ["-t", str(init_checkpoint)]
             print(
                 f"[deimv2.launch] fine-tuning from init_checkpoint="
@@ -921,8 +940,6 @@ class DEIMv2Trainer:
                 "~5-10 AP vs. fine-tuning from deimv2_<variant>_coco.pth.",
                 flush=True,
             )
-        if resume:
-            args += ["-r", str(resume)]
 
         subprocess.run(args, check=True, env=env, cwd=str(repo))
         return workdir

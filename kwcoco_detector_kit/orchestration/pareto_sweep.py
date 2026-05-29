@@ -320,6 +320,18 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
             raise FileNotFoundError(
                 f"--resume points at {resume_ckpt!r} which does not exist."
             )
+        # Resume and init_checkpoint are mutually exclusive at the
+        # DEIMv2 layer (its train.py asserts not all([tuning, resume]):
+        # the resume ckpt already carries the fine-tuned weights that
+        # were originally produced from the init_checkpoint). When both
+        # are set, resume wins. Don't pass the init_checkpoint downstream.
+        if init_ckpt:
+            print(
+                f"[pareto_sweep] --resume set; ignoring init_checkpoint "
+                f"({init_ckpt}). The resume checkpoint already carries "
+                "the fine-tuned weights."
+            )
+            init_ckpt = None
     trainer.launch(
         cfg_fpath,
         init_checkpoint=init_ckpt,

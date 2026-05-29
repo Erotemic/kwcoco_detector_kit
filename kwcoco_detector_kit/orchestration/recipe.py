@@ -26,6 +26,17 @@ Schema (``schema: recipe.v1``)
         train_kwcoco: <path>                # required
         vali_kwcoco:  <path>                # required
         test_kwcoco:  <path>                # required
+        tile_store: kwcoco_jpeg | webdataset   # default: kwcoco_jpeg
+        train_wds_shards: <path>            # required when tile_store: webdataset
+                                            #   output of kwcoco_dataloader's
+                                            #   build_detection_webdataset CLI
+        train_wds_epoch_length: <int>       # optional; 0 = drain shards once
+        train_wds_source_to_target:         # optional mapping {raw: target}
+            <raw_category>: <target_category>
+                                            #   default: identity map over
+                                            #   sweep.category_names
+                                            # Vali always reads the kwcoco
+                                            # path; see ADR-0001.
     workspace:
         kcd_root: <path>                    # required, becomes $KCD_ROOT
     sweep:
@@ -107,6 +118,9 @@ def _load_recipe(fpath: Path) -> Dict[str, Any]:
     return parsed
 
 
+_VALID_TILE_STORES = ("kwcoco_jpeg", "webdataset")
+
+
 def _validate_required(recipe: Dict[str, Any]) -> None:
     """Fail fast with a clear message if required keys are missing."""
     if not recipe.get("name"):
@@ -119,6 +133,19 @@ def _validate_required(recipe: Dict[str, Any]) -> None:
         # Don't require the file to *exist* in dry_run mode; we validate
         # existence in the live path so containerized runs that mount
         # paths late still get a clear error.
+
+    tile_store = str(data.get("tile_store") or "kwcoco_jpeg")
+    if tile_store not in _VALID_TILE_STORES:
+        raise ValueError(
+            f"recipe.data.tile_store must be one of {_VALID_TILE_STORES}; "
+            f"got {tile_store!r}"
+        )
+    if tile_store == "webdataset" and not data.get("train_wds_shards"):
+        raise ValueError(
+            "recipe.data.train_wds_shards is required when "
+            "tile_store: webdataset. Build the shards with "
+            "`kwcoco_dataloader build_detection_webdataset` first."
+        )
 
     workspace = recipe.get("workspace") or {}
     if not workspace.get("kcd_root"):
@@ -192,6 +219,31 @@ def _build_sweep_data(recipe: Dict[str, Any], cli_overrides: Dict[str, Any]) -> 
         if k in sweep:
             sweep_data[k] = sweep[k]
 
+    # Webdataset training-input plumbing. Recipe authors set the
+    # storage backend declaratively under data.tile_store; the
+    # SweepConfig consumer (and DEIMv2 trainer plugin) cares about the
+    # concrete paths/params. SweepConfig expects source_to_target as a
+    # JSON string, so encode if a YAML mapping was provided. If absent,
+    # auto-derive an identity mapping over the recipe's category_names
+    # so authors don't have to type it for the typical case where
+    # source == target.
+    if str(data.get("tile_store") or "kwcoco_jpeg") == "webdataset":
+        import json
+        sweep_data["train_wds_shards_dpath"] = str(data["train_wds_shards"])
+        if "train_wds_epoch_length" in data:
+            sweep_data["train_wds_epoch_length"] = int(
+                data["train_wds_epoch_length"]
+            )
+        src_to_tgt = data.get("train_wds_source_to_target")
+        if src_to_tgt is None:
+            cats_field = sweep.get("category_names", "")
+            cats = (
+                [c.strip() for c in cats_field.split(",") if c.strip()]
+                if isinstance(cats_field, str) else list(cats_field)
+            )
+            src_to_tgt = {c: c for c in cats}
+        sweep_data["train_wds_source_to_target"] = json.dumps(src_to_tgt)
+
     # CLI force flags override recipe-level booleans.
     for k in ("force_train", "force_export", "force_eval", "force_bench"):
         if cli_overrides.get(k):
@@ -230,6 +282,23 @@ def _check_input_paths(recipe: Dict[str, Any]) -> None:
             raise FileNotFoundError(
                 f"recipe.data.{key} = {p} does not exist. "
                 f"Check the bind-mount or dataset path."
+            )
+    if str(data.get("tile_store") or "kwcoco_jpeg") == "webdataset":
+        shards = Path(str(data["train_wds_shards"])).expanduser()
+        if not shards.exists():
+            raise FileNotFoundError(
+                f"recipe.data.train_wds_shards = {shards} does not exist. "
+                "Run `kwcoco_dataloader build_detection_webdataset` to "
+                "produce the shards bundle first."
+            )
+        # Footer files are how kwcoco_dataloader.readers.detection
+        # discovers shards; if none are present the bundle is missing
+        # or the writer crashed before close.
+        if not any(shards.rglob("__footer__.json")):
+            raise FileNotFoundError(
+                f"recipe.data.train_wds_shards = {shards} contains no "
+                "__footer__.json files. Re-run build_detection_webdataset; "
+                "an earlier run likely crashed before closing the writer."
             )
 
 

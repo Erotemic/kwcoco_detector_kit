@@ -93,12 +93,29 @@ Neither is deprecated in favor of the other.
 
 ## Operational notes
 
-- The `tile_store:` field belongs on the `data:` block of `recipe.v1`
-  (see [`docs/configs.md`](../configs.md) for the schema). Allowed
-  values: `kwcoco_jpeg` (default), `webdataset`.
-- The `convert-store` CLI builds a WDS bundle from any
-  `TileStore`-readable source; idempotent.
-- The kit's `kwcoco_dataloader` extras pin a recent enough
-  `kwcoco-dataloader` release for the WDS path. If the install layer
-  omits that extra, the kit falls back to `KwcocoJpegStore` with a
-  one-line warning.
+Schema (`recipe.v1`, in `data:`):
+
+- `tile_store: kwcoco_jpeg | webdataset` — default `kwcoco_jpeg`.
+- `train_wds_shards: <path>` — required when `tile_store: webdataset`.
+  Must point at the output of `kwcoco_dataloader build_detection_webdataset`
+  (directory containing `__footer__.json` files under bucket sub-dirs).
+- `train_wds_epoch_length: <int>` — optional; `0` (default) drains
+  shards once per epoch.
+- `train_wds_source_to_target: <mapping>` — optional; defaults to the
+  identity over `sweep.category_names`. JSON-encoded into the
+  `SweepConfig.train_wds_source_to_target` field.
+
+Plumbing (already landed by the sealion gen002 commit):
+
+- `SweepConfig` exposes `train_wds_shards_dpath`,
+  `train_wds_epoch_length`, `train_wds_source_to_target` fields.
+- `DEIMv2Trainer.supports_webdataset_input() -> True`. The trainer's
+  `_build_train_yml` toggles `train_dataloader.dataset.type` to
+  `WebDatasetCocoDetection` (the vendored
+  `tpl/DEIMv2/engine/data/dataset/wds_coco_dataset.py` adapter) when
+  the shards path is set. Vali always stays on MSCOCO (random-access
+  kwcoco JPEGs), per the smallest-surface integration plan.
+- Shards must be pre-built. The recipe runner validates that
+  `train_wds_shards` exists and contains at least one
+  `__footer__.json` before the first GPU minute; an auto-build step
+  is deliberately deferred to keep the recipe path side-effect-free.

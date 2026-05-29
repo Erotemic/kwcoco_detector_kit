@@ -988,7 +988,12 @@ class DEIMv2Trainer:
         return _batch_for(variant, tuple(input_hw), float(total_vram_gb))
 
     def supports_webdataset_input(self) -> bool:
-        return False  # Phase 1 — kwcoco only
+        # Phase 3: yes, via the vendored
+        # tpl/DEIMv2/engine/data/dataset/wds_coco_dataset.py
+        # adapter (WebDatasetCocoDetection IterableDataset). The
+        # train_dataloader's dataset block toggles to that type when
+        # SweepConfig.train_wds_shards_dpath is set.
+        return True
 
     def build_predictor(self, workdir, *, device: str = "cpu"):
         workdir = Path(workdir)

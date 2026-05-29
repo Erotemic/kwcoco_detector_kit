@@ -84,6 +84,16 @@ class SweepConfig(scfg.DataConfig):
             "data typically loses 5-10 AP vs. fine-tuning from a COCO init."
         ),
     )
+    resume = scfg.Value(
+        None,
+        help=(
+            "Optional path to a *.pth checkpoint produced by a prior incomplete "
+            "training run (typically last.pth). Resumes the full training state "
+            "-- optimizer, epoch counter, LR scheduler, EMA -- as opposed to "
+            "init_checkpoint which only loads model weights and restarts at "
+            "epoch 0. Use this after a slurm walltime kill."
+        ),
+    )
     keep_going = scfg.Value(True, isflag=True, help="continue past failed cells")
     do_export = scfg.Value(True, isflag=True, help="run ONNX export per cell")
     do_eval = scfg.Value(True, isflag=True, help="run kwcoco eval per cell")
@@ -287,9 +297,17 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
                "val_num_workers": int(config.val_num_workers)},
     )
     # init_ckpt was already resolved + validated above.
+    resume_ckpt = config.resume
+    if resume_ckpt is not None:
+        resume_ckpt = str(resume_ckpt)
+        if not Path(resume_ckpt).exists():
+            raise FileNotFoundError(
+                f"--resume points at {resume_ckpt!r} which does not exist."
+            )
     trainer.launch(
         cfg_fpath,
         init_checkpoint=init_ckpt,
+        resume=resume_ckpt,
         num_gpus=int(config.num_gpus),
         distributed=bool(config.distributed),
     )

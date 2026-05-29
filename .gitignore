@@ -95,3 +95,6 @@ shards/
 
 # Tmux pane dump logs
 [0-9]*_bash_*.log
+
+# Local benchmark artifacts (large; not part of the repo)
+/tmp/

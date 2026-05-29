@@ -431,6 +431,10 @@ def _build_train_yml(
     policy: _PolicyResolution,
     train_num_workers: int = 4,
     val_num_workers: int = 2,
+    train_wds_shards_dpath: Optional[str] = None,
+    train_wds_category_names: Optional[Sequence[str]] = None,
+    train_wds_source_to_target: Optional[Dict[str, str]] = None,
+    train_wds_epoch_length: int = 0,
 ) -> Dict[str, Any]:
     H, W = int(input_hw[0]), int(input_hw[1])
     if family == "hgnetv2":
@@ -467,12 +471,24 @@ def _build_train_yml(
         "train_dataloader": {
             "total_batch_size": int(batch_size),
             "num_workers": int(train_num_workers),
-            "dataset": {
-                "img_folder": "/",
-                "ann_file": str(train_mscoco_fpath),
-                "return_masks": False,
-                "transforms": _train_transforms_block(input_hw),
-            },
+            "dataset": (
+                {
+                    "type": "WebDatasetCocoDetection",
+                    "shards_dpath": str(train_wds_shards_dpath),
+                    "category_names": list(train_wds_category_names or []),
+                    "source_to_target": dict(train_wds_source_to_target or {}),
+                    "epoch_length": int(train_wds_epoch_length),
+                    "return_masks": False,
+                    "transforms": _train_transforms_block(input_hw),
+                }
+                if train_wds_shards_dpath
+                else {
+                    "img_folder": "/",
+                    "ann_file": str(train_mscoco_fpath),
+                    "return_masks": False,
+                    "transforms": _train_transforms_block(input_hw),
+                }
+            ),
             "collate_fn": {
                 "type": "BatchImageCollateFunction",
                 "base_size": int(policy.base_size),
@@ -812,6 +828,10 @@ class DEIMv2Trainer:
             policy=policy,
             train_num_workers=int((extra or {}).get("train_num_workers", 4)),
             val_num_workers=int((extra or {}).get("val_num_workers", 2)),
+            train_wds_shards_dpath=(extra or {}).get("train_wds_shards_dpath"),
+            train_wds_category_names=(extra or {}).get("train_wds_category_names"),
+            train_wds_source_to_target=(extra or {}).get("train_wds_source_to_target"),
+            train_wds_epoch_length=int((extra or {}).get("train_wds_epoch_length", 0) or 0),
         )
 
         cfg_fpath.write_text(yaml.safe_dump(yml, sort_keys=False))

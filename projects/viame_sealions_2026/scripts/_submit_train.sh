@@ -66,16 +66,18 @@ job_name="$KCD_RUN_NAME"
 # then source it in the sbatch script.
 ENV_FPATH="$LOG_DPATH/${job_name}.env"
 : > "$ENV_FPATH"
-# Snapshot every exported KCD_* env var. Wildcard (vs the old
+# Snapshot every KCD_* var (exported or not). Wildcard (vs the old
 # explicit whitelist) means: adding a new KCD_* knob in the launcher
 # never requires also remembering to add it here. The KCD_ namespace
 # is reserved for our config so this won't sweep in unrelated state.
+# `compgen -v` (vs `-e`) covers vars that paths.sh set without an
+# explicit `export` — defense against future regressions of that kind.
 while IFS= read -r v; do
     val="${!v:-}"
     if [ -n "$val" ]; then
         printf 'export %s=%q\n' "$v" "$val" >> "$ENV_FPATH"
     fi
-done < <(compgen -e | grep -E '^KCD_' | sort)
+done < <(compgen -v | grep -E '^KCD_' | sort -u)
 echo "[_submit_train.sh] wrote env to $ENV_FPATH ($(wc -l < "$ENV_FPATH") vars)"
 
 sbatch_args=(

@@ -90,8 +90,9 @@ docker run --rm \
 echo "  job:  $job_id"
 echo "  log:  $LOG_DPATH/${JOB_NAME}-${job_id}.out"
 
-# Optional: tail follow
+# Optional: tail follow. follow_job.py takes (positional jobid,
+# --stdout <path>, --poll <interval>).
 FOLLOW="$KCD_KIT_DPATH/smoketests/dino_v2_4x/slurm/follow_job.py"
-if [ -x "$FOLLOW" ] || [ -f "$FOLLOW" ]; then
-    python3 "$FOLLOW" --job-id "$job_id" --log-path "$LOG_DPATH/${JOB_NAME}-${job_id}.out" --tail-seconds 1.0 || true
+if [ -f "$FOLLOW" ]; then
+    python3 "$FOLLOW" "$job_id" --stdout "$LOG_DPATH/${JOB_NAME}-${job_id}.out" --poll 1.0 || true
 fi

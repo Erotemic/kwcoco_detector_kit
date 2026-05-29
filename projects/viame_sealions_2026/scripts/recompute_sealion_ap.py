@@ -1,25 +1,28 @@
 #!/usr/bin/env python3
 """
 Recompute sea-lion detection AP from an existing eval output dir, with
-NFS (northern_fur_seal) excluded from both ground-truth and predictions.
+distractor classes pruned from both ground-truth and predictions.
 
-Use case: the kit's eval step writes pred_boxes.kwcoco.zip +
-true_bbox_only.kwcoco.zip and a detect_metrics.json built by kwcoco's
-CocoEvaluator. The class-agnostic AP in that json counts NFS as a
-positive — which contradicts the operational rule "NFS is a negative
-when scoring sea-lion detection ability." This script reads the same
-two kwcoco bundles, filters NFS, reruns CocoEvaluator, and prints the
-corrected AP.
+For the sea-lion project, distractor = northern_fur_seal — the model
+learns it as its own class so it can discriminate, but the mission
+treats it as a non-target. The kit's eval step now does this
+automatically (see kwcoco_detector_kit/eval/kwcoco_eval.py +
+docs/class_schemes.yaml::*.distractor_classes); this script exists to
+backfill the metric on runs that finished before that plumbing landed.
 
-It does NOT modify the on-disk detect_metrics.json. Use --write-json to
-write a sibling `detect_metrics.sealion.json` alongside the original.
+Reads pred_boxes.kwcoco.zip + true_bbox_only.kwcoco.zip from the eval
+dir, prunes the named distractor classes from both, reruns the kwcoco
+CocoEvaluator, and prints the corrected AP. The original
+detect_metrics.json on disk is NOT modified; use --write-json to write
+a sibling detect_metrics.<distractors>.json sidecar (matching the
+filename convention that eligibility's selection function prefers).
 
 Usage:
     python3 projects/viame_sealions_2026/scripts/recompute_sealion_ap.py \\
         --eval-dir /data/users/jon.crall/kcd_sealion/runs/lifestage_6cls_.../eval/<candidate>/
 
-    # Pass an extra --exclude-cat for any non-target class you also
-    # want pruned (default: northern_fur_seal).
+    # Override the distractor list (default: northern_fur_seal):
+    #   --distractor-class some_class --distractor-class another
 """
 from __future__ import annotations
 
@@ -30,18 +33,18 @@ from pathlib import Path
 import kwcoco
 
 
-DEFAULT_EXCLUDE = ("northern_fur_seal",)
+DEFAULT_DISTRACTORS = ("northern_fur_seal",)
 
 
-def _prune_classes(dset: kwcoco.CocoDataset, exclude_names) -> kwcoco.CocoDataset:
+def _prune_classes(dset: kwcoco.CocoDataset, distractor_names) -> kwcoco.CocoDataset:
     """Return a copy of `dset` with annotations whose category name is in
-    `exclude_names` removed. Categories themselves stay so the eval doesn't
+    `distractor_names` removed. Categories themselves stay so the eval doesn't
     complain about class-id remapping; only annotations are dropped.
     """
-    exclude_names = set(exclude_names)
+    distractor_names = set(distractor_names)
     out = dset.copy()
     cat_ids_to_drop = {c["id"] for c in out.dataset["categories"]
-                       if c["name"] in exclude_names}
+                       if c["name"] in distractor_names}
     if not cat_ids_to_drop:
         return out
     keep = [a for a in out.dataset["annotations"]
@@ -50,7 +53,7 @@ def _prune_classes(dset: kwcoco.CocoDataset, exclude_names) -> kwcoco.CocoDatase
     out.dataset["annotations"] = keep
     out._build_index()
     print(f"  dropped {n_before - len(keep)} / {n_before} annotations "
-          f"(classes: {sorted(exclude_names)})")
+          f"(classes: {sorted(distractor_names)})")
     return out
 
 
@@ -67,7 +70,7 @@ def _find_bundles(eval_dir: Path):
     return true_fpath, pred_fpath
 
 
-def recompute(eval_dir: Path, exclude_names, write_json: bool = False):
+def recompute(eval_dir: Path, distractor_names, write_json: bool = False):
     from kwcoco.coco_evaluator import CocoEvaluator
 
     true_fpath, pred_fpath = _find_bundles(eval_dir)
@@ -78,10 +81,10 @@ def recompute(eval_dir: Path, exclude_names, write_json: bool = False):
     pred = kwcoco.CocoDataset.coerce(pred_fpath)
     print(f"before prune: GT n_ann={true.n_annots}, pred n_ann={pred.n_annots}")
 
-    print(f"pruning classes from GT: {sorted(exclude_names)}")
-    true_pruned = _prune_classes(true, exclude_names)
-    print(f"pruning classes from pred: {sorted(exclude_names)}")
-    pred_pruned = _prune_classes(pred, exclude_names)
+    print(f"pruning classes from GT: {sorted(distractor_names)}")
+    true_pruned = _prune_classes(true, distractor_names)
+    print(f"pruning classes from pred: {sorted(distractor_names)}")
+    pred_pruned = _prune_classes(pred, distractor_names)
 
     config = {
         "true_dataset": true_pruned,
@@ -101,7 +104,7 @@ def recompute(eval_dir: Path, exclude_names, write_json: bool = False):
         items = [(getattr(results, "reskey", "result"), results)]
 
     print()
-    print("=== recomputed (NFS excluded) ===")
+    print(f"=== recomputed (distractors pruned: {sorted(distractor_names)}) ===")
     summary = {}
     for reskey, single in items:
         nocls = getattr(single, "nocls_measures", None)
@@ -127,11 +130,15 @@ def recompute(eval_dir: Path, exclude_names, write_json: bool = False):
             "nocls_ap": nocls_ap,
             "nocls_auc": nocls_auc,
             "per_class": per_class,
-            "excluded_classes": sorted(exclude_names),
+            "distractor_classes": sorted(distractor_names),
         }
 
     if write_json:
-        dst = eval_dir / "eval" / "detect_metrics.sealion.json"
+        # Match the kit's sidecar filename convention so eligibility's
+        # selection function (kwcoco_detector_kit/orchestration/
+        # eligibility.py::_find_eval_ap) picks this up automatically.
+        suffix = "_".join(sorted(distractor_names))
+        dst = eval_dir / "eval" / f"detect_metrics.{suffix}.json"
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_text(json.dumps(summary, indent=2, default=str))
         print(f"\nwrote {dst}")
@@ -142,15 +149,21 @@ def main():
     p.add_argument("--eval-dir", type=Path, required=True,
                    help="eval output dir containing true_bbox_only.kwcoco.zip "
                         "+ pred_boxes.kwcoco.zip")
-    p.add_argument("--exclude-cat", action="append", default=None,
-                   help="category name to drop from both GT+pred before "
-                        "scoring; repeatable (default: northern_fur_seal)")
+    p.add_argument("--distractor-class", action="append", default=None,
+                   help="category name to treat as a distractor and prune "
+                        "from both GT+pred before scoring; repeatable "
+                        "(default: northern_fur_seal). These are classes "
+                        "the model learns but the mission treats as "
+                        "non-targets.")
     p.add_argument("--write-json", action="store_true",
                    help="write the recomputed metrics to "
-                        "<eval-dir>/eval/detect_metrics.sealion.json")
+                        "<eval-dir>/eval/detect_metrics.<distractors>.json "
+                        "(filename convention eligibility's selection logic "
+                        "looks for, so the corrected AP picks up automatically)")
     args = p.parse_args()
-    exclude = tuple(args.exclude_cat) if args.exclude_cat else DEFAULT_EXCLUDE
-    recompute(args.eval_dir, exclude, write_json=args.write_json)
+    distractors = (tuple(args.distractor_class)
+                   if args.distractor_class else DEFAULT_DISTRACTORS)
+    recompute(args.eval_dir, distractors, write_json=args.write_json)
 
 
 if __name__ == "__main__":

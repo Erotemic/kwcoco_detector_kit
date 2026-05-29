@@ -94,13 +94,18 @@ class SweepConfig(scfg.DataConfig):
             "epoch 0. Use this after a slurm walltime kill."
         ),
     )
-    exclude_eval_classes = scfg.Value(
+    distractor_classes = scfg.Value(
         None,
         help=(
-            "Comma-separated list of category names to exclude from the GT + "
-            "predictions before scoring AP. Triggers a second eval pass that "
-            "writes detect_metrics.<excluded>.json next to the standard "
-            "metrics; eligibility selects on the excluded-version when present. "
+            "Comma-separated list of CATEGORY NAMES that the model learns to "
+            "detect (so it can discriminate them) but that the mission treats "
+            "as non-targets. Classes in this list are pruned from both GT and "
+            "predictions before computing detection AP, in a second eval pass "
+            "that writes a sidecar detect_metrics.<distractors>.json next to "
+            "the standard metrics. Eligibility selects on the sidecar when "
+            "present (so model selection runs on the mission metric, not the "
+            "with-distractors metric). Per-class AP on distractors is still "
+            "reported in the original metrics file as a diagnostic. "
             "Use case (sea-lion project): pass northern_fur_seal so NFS "
             "predictions don't count as positive sea-lion detections."
         ),
@@ -337,7 +342,7 @@ def _run_export(trainer, *, workdir: Path, cell, force: bool = False) -> Path:
 
 def _run_eval(trainer, *, workdir: Path, test_kwcoco: str, kcd_root: Path,
               candidate_id: str, category_names, score_thresh: float = 0.001,
-              force: bool = False, exclude_eval_classes=None) -> Path:
+              force: bool = False, distractor_classes=None) -> Path:
     from kwcoco_detector_kit.eval.kwcoco_eval import run_kwcoco_eval
     return run_kwcoco_eval(
         trainer=trainer,
@@ -348,7 +353,7 @@ def _run_eval(trainer, *, workdir: Path, test_kwcoco: str, kcd_root: Path,
         category_names=category_names,
         score_thresh=score_thresh,
         force=force,
-        exclude_eval_classes=exclude_eval_classes,
+        distractor_classes=distractor_classes,
     )
 
 
@@ -453,10 +458,10 @@ def run(config):
             else:
                 did_any_stage = True
                 try:
-                    exclude_eval = None
-                    if config.exclude_eval_classes:
-                        exclude_eval = [
-                            s.strip() for s in str(config.exclude_eval_classes).split(",")
+                    distractors = None
+                    if config.distractor_classes:
+                        distractors = [
+                            s.strip() for s in str(config.distractor_classes).split(",")
                             if s.strip()
                         ]
                     _run_eval(
@@ -464,7 +469,7 @@ def run(config):
                         kcd_root=kcd_root, candidate_id=candidate_id,
                         category_names=_parse_category_names(config.category_names),
                         force=bool(config.force_eval),
-                        exclude_eval_classes=exclude_eval,
+                        distractor_classes=distractors,
                     )
                 except Exception as ex:
                     row["status"] = "fail_eval"

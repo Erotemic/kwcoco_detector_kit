@@ -81,6 +81,27 @@ fi
     exit 1
 }
 
+# Auto-resolve distractor_classes from the scheme YAML when the env var
+# wasn't set explicitly. Distractor classes are kept in the trained
+# model's class set (so it learns to discriminate them) but excluded
+# from the class-agnostic detection AP at eval time. The submit script
+# CAN override by setting KCD_DISTRACTOR_CLASSES directly.
+if [ -z "${KCD_DISTRACTOR_CLASSES:-}" ]; then
+    KCD_DISTRACTOR_CLASSES="$("$PYTHON_BIN" -c "
+import pathlib, yaml
+fp = pathlib.Path('$KCD_REPO_ROOT/docs/class_schemes.yaml')
+data = yaml.safe_load(fp.read_text()) or {}
+scheme = (data.get('schemes') or {}).get('$KCD_SCHEME') or {}
+names = scheme.get('distractor_classes') or []
+print(','.join(names))
+")"
+    if [ -n "$KCD_DISTRACTOR_CLASSES" ]; then
+        export KCD_DISTRACTOR_CLASSES
+        echo "  scheme $KCD_SCHEME declares distractor_classes=$KCD_DISTRACTOR_CLASSES"
+        echo "  -> eval will write a sidecar metrics file with those classes pruned"
+    fi
+fi
+
 # Variant -> init checkpoint (when not explicitly set).
 if [ -z "${KCD_INIT_CHECKPOINT:-}" ] && [ "${KCD_TRAIN_FROM_SCRATCH:-0}" != "1" ]; then
     case "$KCD_VARIANT" in
@@ -296,7 +317,7 @@ DIST_FLAG=(--num_gpus "$KCD_NUM_GPUS")
     --val_batch_size "$TOTAL_VAL_BATCH" \
     ${KCD_RESUME_CKPT:+--resume "$KCD_RESUME_CKPT"} \
     ${KCD_FORCE_TRAIN:+--force_train "$KCD_FORCE_TRAIN"} \
-    ${KCD_EXCLUDE_EVAL_CLASSES:+--exclude_eval_classes "$KCD_EXCLUDE_EVAL_CLASSES"} \
+    ${KCD_DISTRACTOR_CLASSES:+--distractor_classes "$KCD_DISTRACTOR_CLASSES"} \
     `# TODO: re-enable --train_num_workers / --val_num_workers once` \
     `# the docker image is rebuilt with pareto_sweep that accepts them` \
     `# (commit 3bca71e). KCD_TRAIN_NUM_WORKERS / KCD_VAL_NUM_WORKERS env vars` \

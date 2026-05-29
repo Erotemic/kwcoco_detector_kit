@@ -238,10 +238,11 @@ def _find_eval_ap(kcd_root: Path, candidate_id: str,
     Falls back to inferring the root from <workdir>/../../eval/<candidate_id>/
     if <kcd_root> was wrong (e.g. KCD_ROOT unset when invoked).
 
-    Selection precedence: prefer the most-pruned sidecar metrics file when
-    present (e.g. ``detect_metrics.northern_fur_seal.json``) so model
-    selection runs on the corrected AP rather than the with-NFS AP.
-    The original ``detect_metrics.json`` stays on disk as a diagnostic.
+    Selection precedence: prefer the distractor-pruned sidecar metrics
+    file when present (e.g. ``detect_metrics.northern_fur_seal.json``)
+    so model selection runs on the mission metric (with distractors
+    excluded) rather than the with-distractors metric. The original
+    ``detect_metrics.json`` stays on disk as a diagnostic.
     """
     eval_dir = kcd_root / "eval" / candidate_id / "eval"
     if not eval_dir.exists() and workdir is not None:

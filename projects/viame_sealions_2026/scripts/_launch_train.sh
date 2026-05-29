@@ -303,6 +303,18 @@ echo "=== 3. Sweep (train + export + eval + bench) ==="
 DIST_FLAG=(--num_gpus "$KCD_NUM_GPUS")
 [ "$KCD_NUM_GPUS" -gt 1 ] && DIST_FLAG+=(--distributed true)
 
+# Debug echo: show whether the force/resume vars actually reached the
+# container. Catches the env-passthrough bug that produced job 2510's
+# instant ok_resumed (the env file was missing these vars, so the
+# launcher's ${VAR:+--flag} expansions all collapsed to nothing).
+echo "[_launch_train.sh] resume/force state:"
+echo "  KCD_RESUME_CKPT     = ${KCD_RESUME_CKPT:-<unset>}"
+echo "  KCD_FORCE_TRAIN     = ${KCD_FORCE_TRAIN:-<unset>}"
+echo "  KCD_FORCE_EXPORT    = ${KCD_FORCE_EXPORT:-<unset>}"
+echo "  KCD_FORCE_EVAL      = ${KCD_FORCE_EVAL:-<unset>}"
+echo "  KCD_FORCE_BENCH     = ${KCD_FORCE_BENCH:-<unset>}"
+echo "  KCD_DISTRACTOR_CLASSES = ${KCD_DISTRACTOR_CLASSES:-<unset>}"
+
 "$PYTHON_BIN" -m kwcoco_detector_kit sweep \
     --train_kwcoco "$TRAIN_KWCOCO" \
     --vali_kwcoco  "$VALI_KWCOCO" \

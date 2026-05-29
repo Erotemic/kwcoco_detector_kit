@@ -66,25 +66,17 @@ job_name="$KCD_RUN_NAME"
 # then source it in the sbatch script.
 ENV_FPATH="$LOG_DPATH/${job_name}.env"
 : > "$ENV_FPATH"
-for v in KCD_REPO_ROOT KCD_KIT_DPATH KCD_RUN_NAME KCD_SCHEME KCD_VARIANT \
-         KCD_NUM_GPUS KCD_PER_GPU_BATCH KCD_NUM_EPOCHS KCD_INPUT_HW \
-         KCD_TRAIN_POLICY KCD_LR KCD_BACKBONE_LR KCD_USE_AMP \
-         KCD_INIT_CHECKPOINT KCD_TRAIN_FROM_SCRATCH \
-         KCD_CATEGORY_NAMES KCD_NCCL_DEBUG \
-         KCD_DEV_MOUNT_DEIMV2 KCD_DEV_MOUNT_KIT KCD_IMAGE \
-         KCD_TILE_SIZE KCD_TILE_SOURCE_SCALES KCD_TILE_STRIDE_FRAC \
-         KCD_TILE_MIN_GT_AREA_FRAC KCD_TILE_MIN_KEEP_FRACTION \
-         KCD_TILE_OVERSIZE_FACTOR KCD_TILE_KEEP_NEGATIVE \
-         KCD_SCALE_TIER \
-         KCD_RESUME_CKPT KCD_FORCE_TRAIN KCD_FORCE_EXPORT \
-         KCD_FORCE_EVAL KCD_FORCE_BENCH KCD_VAL_BATCH_MULT \
-         KCD_DISTRACTOR_CLASSES \
-         KCD_TRAIN_NUM_WORKERS KCD_VAL_NUM_WORKERS; do
+# Snapshot every exported KCD_* env var. Wildcard (vs the old
+# explicit whitelist) means: adding a new KCD_* knob in the launcher
+# never requires also remembering to add it here. The KCD_ namespace
+# is reserved for our config so this won't sweep in unrelated state.
+while IFS= read -r v; do
     val="${!v:-}"
     if [ -n "$val" ]; then
         printf 'export %s=%q\n' "$v" "$val" >> "$ENV_FPATH"
     fi
-done
+done < <(compgen -e | grep -E '^KCD_' | sort)
+echo "[_submit_train.sh] wrote env to $ENV_FPATH ($(wc -l < "$ENV_FPATH") vars)"
 
 sbatch_args=(
     --parsable

@@ -29,9 +29,15 @@ if [ ! -f "$RESUME_FROM" ]; then
     exit 1
 fi
 export KCD_RESUME_CKPT="$RESUME_FROM"
-# best_stg2.pth already exists from the killed run, so sweep would
-# otherwise skip training; force a re-entry to consume the resume ckpt.
+# The walltimed v4 run left every stage's artifact on disk
+# (best_stg2.pth, .onnx, eval/detect_metrics.json, .bench.json), so
+# sweep would otherwise skip *all four* stages. Force all of them so
+# the resume actually continues training AND re-runs export+eval+bench
+# off the post-resume checkpoint.
 export KCD_FORCE_TRAIN=true
+export KCD_FORCE_EXPORT=true
+export KCD_FORCE_EVAL=true
+export KCD_FORCE_BENCH=true
 
 # ============================================================
 # Same hyperparameters as the killed v4 run. Keep these in lockstep

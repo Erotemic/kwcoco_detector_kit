@@ -55,23 +55,29 @@ sbatch_args=(
     --chdir="$KCD_REPO_ROOT"
 )
 
+# Slurm runs --wrap content under /bin/sh (dash). Use POSIX syntax
+# only -- no arrays, no `set -o pipefail`. Bash features stay in the
+# login-side submit script above.
 job_id=$(sbatch "${sbatch_args[@]}" --wrap='
-set -euo pipefail
+set -eu
 echo "=== rescore_per_checkpoint context ==="
 echo "SLURM_JOB_ID=$SLURM_JOB_ID  HOSTNAME=$(hostname)"
 echo "RUN_DIR=$RUN_DIR  EVAL_TARGET=$EVAL_TARGET  IMAGE=$KCD_IMAGE"
 nvidia-smi -L || true
 
 # Host-mount the kit package so this works against an image that
-# predates per_checkpoint_eval.py (added today). Once the image is
-# rebuilt this overlay becomes a no-op.
+# predates per_checkpoint_eval.py. Once the image is rebuilt this
+# overlay becomes a no-op.
 KIT_DPATH="${KCD_KIT_DPATH:-$KCD_REPO_ROOT/../..}"
 KIT_PACKAGE="$KIT_DPATH/kwcoco_detector_kit"
-DEV_MOUNT=()
 if [ -d "$KIT_PACKAGE" ]; then
-    DEV_MOUNT+=(-v "$KIT_PACKAGE:/opt/kwcoco_detector_kit/kwcoco_detector_kit:ro")
+    DEV_MOUNT="-v $KIT_PACKAGE:/opt/kwcoco_detector_kit/kwcoco_detector_kit:ro"
+else
+    DEV_MOUNT=""
 fi
 
+# DEV_MOUNT is intentionally unquoted so an empty value collapses to
+# zero arguments (vs. one empty arg).
 docker run --rm \
     --gpus all \
     --ipc=host \
@@ -79,7 +85,7 @@ docker run --rm \
     -v "$KCD_DATA_ROOT:$KCD_DATA_ROOT" \
     -v "$KCD_DATA_DPATH:$KCD_DATA_DPATH" \
     -v "$KCD_REPO_ROOT:$KCD_REPO_ROOT" \
-    "${DEV_MOUNT[@]}" \
+    $DEV_MOUNT \
     -w "$KCD_REPO_ROOT" \
     "$KCD_IMAGE" \
     python3 "$KCD_REPO_ROOT/scripts/rescore_per_checkpoint.py" \

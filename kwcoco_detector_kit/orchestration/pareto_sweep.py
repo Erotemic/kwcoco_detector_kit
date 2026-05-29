@@ -58,6 +58,36 @@ class SweepConfig(scfg.DataConfig):
     val_batch_size = scfg.Value(2)
     train_num_workers = scfg.Value(4, help="DataLoader workers for the train loop")
     val_num_workers = scfg.Value(2, help="DataLoader workers for the val loop")
+    train_wds_shards_dpath = scfg.Value(
+        None,
+        help=(
+            "Optional path to a directory of kwcoco_dataloader WebDataset "
+            "shards (output of `kwcoco_dataloader build_detection_webdataset`). "
+            "When set, the train_dataloader's dataset becomes type "
+            "WebDatasetCocoDetection (streaming from tar shards) instead of "
+            "the MSCOCO CocoDetection (random-access from disk). Vali stays "
+            "MSCOCO either way."
+        ),
+    )
+    train_wds_epoch_length = scfg.Value(
+        0,
+        help=(
+            "Nominal samples per epoch for the WebDataset train loader. 0 = "
+            "drain the shards once per epoch and stop. Only used when "
+            "train_wds_shards_dpath is set."
+        ),
+    )
+    train_wds_source_to_target = scfg.Value(
+        None,
+        help=(
+            "JSON string mapping raw source category names (as written into "
+            "shards by build_detection_webdataset's `source_category` field) "
+            "to target class names (one of --category_names). The shard "
+            "reader uses this to apply the scheme collapse on the fly. "
+            "Source classes absent from the mapping are dropped from each "
+            "sample's annotations."
+        ),
+    )
     category_names = scfg.Value(
         "widget",
         help=(
@@ -310,7 +340,17 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
                "candidate_id": candidate_id,
                "init_checkpoint": init_ckpt or "",
                "train_num_workers": int(config.train_num_workers),
-               "val_num_workers": int(config.val_num_workers)},
+               "val_num_workers": int(config.val_num_workers),
+               "train_wds_shards_dpath": (
+                   str(config.train_wds_shards_dpath)
+                   if config.train_wds_shards_dpath else None
+               ),
+               "train_wds_category_names": category_names,
+               "train_wds_source_to_target": (
+                   json.loads(config.train_wds_source_to_target)
+                   if config.train_wds_source_to_target else None
+               ),
+               "train_wds_epoch_length": int(config.train_wds_epoch_length or 0)},
     )
     # init_ckpt was already resolved + validated above.
     resume_ckpt = config.resume

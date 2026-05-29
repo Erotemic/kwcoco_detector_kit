@@ -102,6 +102,23 @@ print(','.join(names))
     fi
 fi
 
+# Auto-derive KCD_WDS_SOURCE_TO_TARGET from the scheme YAML's mapping.
+# WebDataset shards are scheme-AGNOSTIC (they carry source_category per
+# annotation as written by the writer); the reader applies this
+# raw -> target collapse per sample. Submit scripts CAN override.
+if [ -z "${KCD_WDS_SOURCE_TO_TARGET:-}" ]; then
+    KCD_WDS_SOURCE_TO_TARGET="$("$PYTHON_BIN" -c "
+import json, pathlib, yaml
+fp = pathlib.Path('$KCD_REPO_ROOT/docs/class_schemes.yaml')
+data = yaml.safe_load(fp.read_text()) or {}
+scheme = (data.get('schemes') or {}).get('$KCD_SCHEME') or {}
+mapping = scheme.get('mapping') or {}
+print(json.dumps(mapping))
+" 2>/dev/null)"
+    [ "$KCD_WDS_SOURCE_TO_TARGET" = "{}" ] && KCD_WDS_SOURCE_TO_TARGET=""
+    export KCD_WDS_SOURCE_TO_TARGET
+fi
+
 # Variant -> init checkpoint (when not explicitly set).
 if [ -z "${KCD_INIT_CHECKPOINT:-}" ] && [ "${KCD_TRAIN_FROM_SCRATCH:-0}" != "1" ]; then
     case "$KCD_VARIANT" in
@@ -298,6 +315,35 @@ if [ "$N_VALI_ANNS" -eq 0 ]; then
     echo "  Eval mAP will be meaningless. Continuing anyway." >&2
 fi
 
+# Optional: build WebDataset shards from the universal tile bundle.
+# Scheme-AGNOSTIC -- one shard set serves every scheme. The reader
+# applies source_to_target collapse per sample. Cache lives next to the
+# tile bundle so it's reused across runs with the same tile config.
+if [ "${KCD_USE_WEBDATASET:-0}" = "1" ]; then
+    echo
+    echo "=== 2c. WebDataset shards (scheme-agnostic, built from universal tiles) ==="
+    SHARDS_DPATH="${KCD_WDS_SHARDS_DPATH:-$TILE_DIR/shards}"
+    SHARDS_DONE_MARKER="$SHARDS_DPATH/.build_done"
+    if [ -f "$SHARDS_DONE_MARKER" ] && [ -z "${KCD_FORCE_RESHARD:-}" ]; then
+        echo "  Reusing $SHARDS_DPATH (KCD_FORCE_RESHARD=1 to redo)."
+    else
+        mkdir -p "$SHARDS_DPATH"
+        echo "  Writing $SHARDS_DPATH from $UNIVERSAL_TILES ..."
+        "$PYTHON_BIN" -m kwcoco_dataloader build_detection_webdataset \
+            --in_fpath "$UNIVERSAL_TILES" \
+            --out_dpath "$SHARDS_DPATH" \
+            --bucket_attr dominant_raw_class \
+            --maxcount 5000 \
+            --maxsize_mb 1024 \
+            --jpeg_quality 95 \
+            --drop_provenance false \
+            --progress false
+        touch "$SHARDS_DONE_MARKER"
+    fi
+    export KCD_WDS_SHARDS_DPATH="$SHARDS_DPATH"
+    echo "  -> KCD_WDS_SHARDS_DPATH=$KCD_WDS_SHARDS_DPATH"
+fi
+
 echo
 echo "=== 3. Sweep (train + export + eval + bench) ==="
 DIST_FLAG=(--num_gpus "$KCD_NUM_GPUS")
@@ -333,6 +379,9 @@ echo "  KCD_DISTRACTOR_CLASSES = ${KCD_DISTRACTOR_CLASSES:-<unset>}"
     ${KCD_FORCE_EVAL:+--force_eval "$KCD_FORCE_EVAL"} \
     ${KCD_FORCE_BENCH:+--force_bench "$KCD_FORCE_BENCH"} \
     ${KCD_DISTRACTOR_CLASSES:+--distractor_classes "$KCD_DISTRACTOR_CLASSES"} \
+    ${KCD_WDS_SHARDS_DPATH:+--train_wds_shards_dpath "$KCD_WDS_SHARDS_DPATH"} \
+    ${KCD_WDS_EPOCH_LENGTH:+--train_wds_epoch_length "$KCD_WDS_EPOCH_LENGTH"} \
+    ${KCD_WDS_SOURCE_TO_TARGET:+--train_wds_source_to_target "$KCD_WDS_SOURCE_TO_TARGET"} \
     --train_num_workers "${KCD_TRAIN_NUM_WORKERS:-4}" \
     --val_num_workers "${KCD_VAL_NUM_WORKERS:-2}" \
     --category_names "$KCD_CATEGORY_NAMES" \

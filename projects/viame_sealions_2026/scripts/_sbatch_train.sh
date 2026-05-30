@@ -117,8 +117,23 @@ while IFS= read -r v; do
 done < <(compgen -v | grep -E '^KCD_' | sort -u)
 echo "[_sbatch_train.sh] forwarding ${#KCD_ENV_FLAGS[@]} KCD_* values to docker run (${#KCD_ENV_FLAGS[@]} = 2 * n_vars)"
 
+# Respect slurm's per-job GPU allocation. CUDA_VISIBLE_DEVICES is set
+# by slurm to the host-side indices of the GPUs assigned to this
+# job (e.g. "0" for job A, "1" for job B). `--gpus all` would
+# override slurm's allocation by exposing every physical GPU to
+# every container; concurrent jobs then all default to "GPU 0"
+# inside the container and collide on the same physical device
+# (gen002 OOM 2026-05-30: jobs 2508 + 2537 both landed on UUID
+# ebfc1af1 with 45 GB held by the other). `--gpus device=<idx>`
+# pins docker to exactly the GPUs slurm reserved.
+if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
+    GPU_FLAG="--gpus=device=${CUDA_VISIBLE_DEVICES}"
+else
+    GPU_FLAG="--gpus=all"
+    echo "WARN: CUDA_VISIBLE_DEVICES unset; using --gpus=all (collision risk)" >&2
+fi
 docker run --rm \
-    --gpus all \
+    $GPU_FLAG \
     --ipc=host \
     --shm-size="${shm_gb}g" \
     -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}" \

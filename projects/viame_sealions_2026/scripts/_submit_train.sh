@@ -80,10 +80,18 @@ while IFS= read -r v; do
 done < <(compgen -v | grep -E '^KCD_' | sort -u)
 echo "[_submit_train.sh] wrote env to $ENV_FPATH ($(wc -l < "$ENV_FPATH") vars)"
 
+# GPU vs. CPU-only resource request. Default is gpu:$KCD_NUM_GPUS;
+# CPU-only jobs (e.g. submit_prep_gen002.sh) override with
+# KCD_GRES=none.
+KCD_GRES_VALUE="${KCD_GRES:-gpu:${KCD_NUM_GPUS}}"
 sbatch_args=(
     --parsable
     --job-name="$job_name"
-    --gres="gpu:${KCD_NUM_GPUS}"
+)
+if [ "$KCD_GRES_VALUE" != "none" ]; then
+    sbatch_args+=(--gres="$KCD_GRES_VALUE")
+fi
+sbatch_args+=(
     --cpus-per-task="$KCD_CPUS_PER_TASK"
     --mem="$KCD_MEM"
     --time="$KCD_TIME_LIMIT"
@@ -96,6 +104,22 @@ sbatch_args=(
 )
 [ -n "$SLURM_PARTITION" ] && sbatch_args+=(--partition="$SLURM_PARTITION")
 [ -n "$ACCOUNT" ]         && sbatch_args+=(--account="$ACCOUNT")
+
+# Slurm dependency passthrough. Wrappers can set KCD_DEPENDS_ON to a
+# space-separated list of job ids (or a slurm dependency expression
+# like "afterok:1234:1235") to gate this job's start. Common pattern:
+# a CPU-only data-prep job runs first; the 3 gen002 training jobs
+# all `KCD_DEPENDS_ON=<prep_jobid>` so they start the moment prep
+# completes, in parallel, without re-building the shared shards.
+if [ -n "${KCD_DEPENDS_ON:-}" ]; then
+    if [[ "$KCD_DEPENDS_ON" == *:* ]]; then
+        dep_arg="$KCD_DEPENDS_ON"          # already a dep expression
+    else
+        dep_arg="afterok:$(echo "$KCD_DEPENDS_ON" | tr ' ' ':')"
+    fi
+    sbatch_args+=(--dependency="$dep_arg")
+    echo "  depends-on: $dep_arg" >&2
+fi
 
 echo "Submitting training run $KCD_RUN_NAME ..." >&2
 echo "  scheme=$KCD_SCHEME  variant=$KCD_VARIANT  gpus=$KCD_NUM_GPUS  epochs=${KCD_NUM_EPOCHS:-?}" >&2

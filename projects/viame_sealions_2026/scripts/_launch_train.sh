@@ -260,6 +260,52 @@ else
         --category_names sealion
 fi
 
+# Optional: build WebDataset shards from the universal tile bundle.
+# Scheme-AGNOSTIC — one shard set serves every scheme. The reader
+# applies source_to_target collapse per sample. Cache lives next to
+# the tile bundle so it's reused across runs with the same tile
+# config. Placed BEFORE apply_scheme so a "data-prep only" job (see
+# KCD_DATA_PREP_ONLY below) can produce the shared tile + shard
+# artifacts for many training jobs to fan out from via slurm deps,
+# without needing per-scheme apply_scheme to have run first.
+if [ "${KCD_USE_WEBDATASET:-0}" = "1" ]; then
+    echo
+    echo "=== 1b. WebDataset shards (scheme-agnostic, built from universal tiles) ==="
+    SHARDS_DPATH="${KCD_WDS_SHARDS_DPATH:-$TILE_DIR/shards}"
+    SHARDS_DONE_MARKER="$SHARDS_DPATH/.build_done"
+    if [ -f "$SHARDS_DONE_MARKER" ] && [ -z "${KCD_FORCE_RESHARD:-}" ]; then
+        echo "  Reusing $SHARDS_DPATH (KCD_FORCE_RESHARD=1 to redo)."
+    else
+        mkdir -p "$SHARDS_DPATH"
+        echo "  Writing $SHARDS_DPATH from $UNIVERSAL_TILES ..."
+        "$PYTHON_BIN" -m kwcoco_dataloader build_detection_webdataset \
+            --in_fpath "$UNIVERSAL_TILES" \
+            --out_dpath "$SHARDS_DPATH" \
+            --bucket_attr dominant_raw_class \
+            --maxcount 5000 \
+            --maxsize_mb 1024 \
+            --jpeg_quality 95 \
+            --drop_provenance false \
+            --progress false
+        touch "$SHARDS_DONE_MARKER"
+    fi
+    export KCD_WDS_SHARDS_DPATH="$SHARDS_DPATH"
+    echo "  -> KCD_WDS_SHARDS_DPATH=$KCD_WDS_SHARDS_DPATH"
+fi
+
+# Early-exit when only the shared scheme-agnostic data prep was
+# requested. Training jobs that depend on this prep via slurm
+# --dependency=afterok pick up the tile bundle + shards from cache
+# and skip steps 1/1b on re-entry.
+if [ "${KCD_DATA_PREP_ONLY:-0}" = "1" ]; then
+    echo
+    echo "=== prep complete (KCD_DATA_PREP_ONLY=1) ==="
+    echo "  universal_tiles: $UNIVERSAL_TILES"
+    [ -n "${KCD_WDS_SHARDS_DPATH:-}" ] && echo "  shards:          $KCD_WDS_SHARDS_DPATH"
+    echo "  scheme_applied dir was NOT populated (per-scheme; runs in train jobs)."
+    exit 0
+fi
+
 echo
 echo "=== 2. Apply scheme to tile + vali + test ==="
 # Re-collapses the universal source_category fields into the scheme's
@@ -313,35 +359,6 @@ fi
 if [ "$N_VALI_ANNS" -eq 0 ]; then
     echo "WARNING: scheme_applied/vali.kwcoco.zip has 0 annotations." >&2
     echo "  Eval mAP will be meaningless. Continuing anyway." >&2
-fi
-
-# Optional: build WebDataset shards from the universal tile bundle.
-# Scheme-AGNOSTIC -- one shard set serves every scheme. The reader
-# applies source_to_target collapse per sample. Cache lives next to the
-# tile bundle so it's reused across runs with the same tile config.
-if [ "${KCD_USE_WEBDATASET:-0}" = "1" ]; then
-    echo
-    echo "=== 2c. WebDataset shards (scheme-agnostic, built from universal tiles) ==="
-    SHARDS_DPATH="${KCD_WDS_SHARDS_DPATH:-$TILE_DIR/shards}"
-    SHARDS_DONE_MARKER="$SHARDS_DPATH/.build_done"
-    if [ -f "$SHARDS_DONE_MARKER" ] && [ -z "${KCD_FORCE_RESHARD:-}" ]; then
-        echo "  Reusing $SHARDS_DPATH (KCD_FORCE_RESHARD=1 to redo)."
-    else
-        mkdir -p "$SHARDS_DPATH"
-        echo "  Writing $SHARDS_DPATH from $UNIVERSAL_TILES ..."
-        "$PYTHON_BIN" -m kwcoco_dataloader build_detection_webdataset \
-            --in_fpath "$UNIVERSAL_TILES" \
-            --out_dpath "$SHARDS_DPATH" \
-            --bucket_attr dominant_raw_class \
-            --maxcount 5000 \
-            --maxsize_mb 1024 \
-            --jpeg_quality 95 \
-            --drop_provenance false \
-            --progress false
-        touch "$SHARDS_DONE_MARKER"
-    fi
-    export KCD_WDS_SHARDS_DPATH="$SHARDS_DPATH"
-    echo "  -> KCD_WDS_SHARDS_DPATH=$KCD_WDS_SHARDS_DPATH"
 fi
 
 echo

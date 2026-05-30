@@ -138,6 +138,18 @@ COPY tpl/DEIMv2 /opt/kwcoco_detector_kit/tpl/DEIMv2
 RUN test -f /opt/kwcoco_detector_kit/tpl/DEIMv2/train.py || \
         (echo "DEIMv2 submodule contents are missing from Docker build context. Run: git submodule update --init tpl/DEIMv2" >&2; exit 1)
 
+# kwcoco_dataloader — pinned via submodule so the exact commit is baked
+# into the image (provenance). Soft-imported by the WebDataset training
+# path; the optional `webdataset` + `wids` deps install with it via the
+# package's own pyproject extras. KCD_DEV_MOUNT_DATALOADER=1 at runtime
+# overlays the host checkout the same way KCD_DEV_MOUNT_KIT does.
+COPY tpl/kwcoco_dataloader /opt/kwcoco_detector_kit/tpl/kwcoco_dataloader
+RUN test -f /opt/kwcoco_detector_kit/tpl/kwcoco_dataloader/kwcoco_dataloader/__init__.py || \
+        (echo "kwcoco_dataloader submodule contents are missing. Run: git submodule update --init tpl/kwcoco_dataloader" >&2; exit 1)
+RUN --mount=type=cache,target=/root/.cache/pip \
+    ${PYTHON_BIN} -m pip install -e /opt/kwcoco_detector_kit/tpl/kwcoco_dataloader && \
+    ${PYTHON_BIN} -m pip install "webdataset>=0.2" "wids>=0.1" braceexpand
+
 COPY kwcoco_detector_kit /opt/kwcoco_detector_kit/kwcoco_detector_kit
 COPY docs /opt/kwcoco_detector_kit/docs
 COPY examples /opt/kwcoco_detector_kit/examples

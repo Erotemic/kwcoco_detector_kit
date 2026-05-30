@@ -86,6 +86,18 @@ if [ "${KCD_DEV_MOUNT_KIT:-0}" = "1" ]; then
         echo "WARNING: KCD_DEV_MOUNT_KIT=1 but $KCD_KIT_DPATH/kwcoco_detector_kit not found" >&2
     fi
 fi
+if [ "${KCD_DEV_MOUNT_DATALOADER:-0}" = "1" ]; then
+    # Mirror of KCD_DEV_MOUNT_DEIMV2 for the kwcoco_dataloader submodule.
+    # The image installs the submodule via `pip install -e
+    # /opt/kwcoco_detector_kit/tpl/kwcoco_dataloader`, so overlaying the
+    # source dir lets reader/writer edits take effect without a rebuild.
+    if [ -d "$KCD_KIT_DPATH/tpl/kwcoco_dataloader/kwcoco_dataloader" ]; then
+        DEV_MOUNT_FLAGS+=(-v "$KCD_KIT_DPATH/tpl/kwcoco_dataloader/kwcoco_dataloader:/opt/kwcoco_detector_kit/tpl/kwcoco_dataloader/kwcoco_dataloader")
+        echo "DEV: mounting host tpl/kwcoco_dataloader/kwcoco_dataloader over image's copy" >&2
+    else
+        echo "WARNING: KCD_DEV_MOUNT_DATALOADER=1 but $KCD_KIT_DPATH/tpl/kwcoco_dataloader/kwcoco_dataloader not found" >&2
+    fi
+fi
 
 # Shared shm size scales with gpu count: DataLoader workers' ipc.
 shm_gb=$(( 16 + 8 * KCD_NUM_GPUS ))

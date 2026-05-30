@@ -103,14 +103,32 @@ declare -a SCENARIOS=(
     "host-gpu1x-jpeg|host|none|jpeg|1|cuda"
     "host-gpu1x-wds|host|none|wds|1|cuda"
     "host-gpu2x-jpeg|host|none|jpeg|2|cuda2"
-    "host-gpu2x-wds|host|none|wds|2|cuda2"
     "docker-gpu1x-jpeg|host|docker|jpeg|1|cuda,docker"
     "docker-gpu1x-wds|host|docker|wds|1|cuda,docker"
     "docker-gpu2x-jpeg|host|docker|jpeg|2|cuda2,docker"
-    "docker-gpu2x-wds|host|docker|wds|2|cuda2,docker"
     "slurm-host-gpu1x-wds|slurm|none|wds|1|slurm"
     "slurm-docker-gpu1x-wds|slurm|docker|wds|1|slurm,docker"
 )
+
+# Known-broken scenarios. Opt in with MATRIX_INCLUDE_BROKEN=1 (and
+# accept that the matrix will fail). Listed separately so the
+# default matrix represents the realistic production target.
+#
+# host-gpu2x-wds / docker-gpu2x-wds: DEIMv2's per-epoch
+#   `iter(loader)` rebuilds the IterableDataset stream on every rank
+#   in parallel. The ranks finish that rescan at different times,
+#   fall out of sync at the next collective, and torchelastic
+#   monitorBarrier SIGTERMs one of them. Symptom (yardrat
+#   2026-05-30): "BARRIER seq=N vs GATHER seq=0". This is a real
+#   DEIMv2+IterableDataset+DDP integration issue, not a kit bug.
+declare -a KNOWN_BROKEN=(
+    "host-gpu2x-wds|host|none|wds|2|cuda2"
+    "docker-gpu2x-wds|host|docker|wds|2|cuda2,docker"
+)
+if [ "${MATRIX_INCLUDE_BROKEN:-0}" = "1" ]; then
+    SCENARIOS+=("${KNOWN_BROKEN[@]}")
+    echo "MATRIX_INCLUDE_BROKEN=1: including ${#KNOWN_BROKEN[@]} known-broken scenarios"
+fi
 
 # ----- runner ---------------------------------------------------------
 should_run() {

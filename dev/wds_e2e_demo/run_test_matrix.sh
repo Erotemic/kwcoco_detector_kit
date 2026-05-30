@@ -93,20 +93,23 @@ echo "  epochs:   $MATRIX_EPOCHS"
 echo
 
 # ----- scenario table -------------------------------------------------
+# Naming convention: `gpu<N>x` means "N GPUs total" (a count), not "GPU
+# index N". Earlier `gpu1` / `gpu2` was confusable with CUDA device IDs.
+#
 # name|compute|container|data_path|gpus|requires
 declare -a SCENARIOS=(
     "host-cpu-jpeg|host|none|jpeg|0|"
     "host-cpu-wds|host|none|wds|0|"
-    "host-gpu1-jpeg|host|none|jpeg|1|cuda"
-    "host-gpu1-wds|host|none|wds|1|cuda"
-    "host-gpu2-jpeg|host|none|jpeg|2|cuda2"
-    "host-gpu2-wds|host|none|wds|2|cuda2"
-    "docker-gpu1-jpeg|host|docker|jpeg|1|cuda,docker"
-    "docker-gpu1-wds|host|docker|wds|1|cuda,docker"
-    "docker-gpu2-jpeg|host|docker|jpeg|2|cuda2,docker"
-    "docker-gpu2-wds|host|docker|wds|2|cuda2,docker"
-    "slurm-host-gpu1-wds|slurm|none|wds|1|slurm"
-    "slurm-docker-gpu1-wds|slurm|docker|wds|1|slurm,docker"
+    "host-gpu1x-jpeg|host|none|jpeg|1|cuda"
+    "host-gpu1x-wds|host|none|wds|1|cuda"
+    "host-gpu2x-jpeg|host|none|jpeg|2|cuda2"
+    "host-gpu2x-wds|host|none|wds|2|cuda2"
+    "docker-gpu1x-jpeg|host|docker|jpeg|1|cuda,docker"
+    "docker-gpu1x-wds|host|docker|wds|1|cuda,docker"
+    "docker-gpu2x-jpeg|host|docker|jpeg|2|cuda2,docker"
+    "docker-gpu2x-wds|host|docker|wds|2|cuda2,docker"
+    "slurm-host-gpu1x-wds|slurm|none|wds|1|slurm"
+    "slurm-docker-gpu1x-wds|slurm|docker|wds|1|slurm,docker"
 )
 
 # ----- runner ---------------------------------------------------------
@@ -158,6 +161,17 @@ run_scenario() {
         "DEMO_EPOCHS=$MATRIX_EPOCHS"
         "DEMO_NUM_GPUS=$nproc"
     )
+    # For multi-GPU scenarios, enable NCCL + torch.distributed verbose
+    # logging into the scenario log so we can see WHERE a hang happens
+    # (rendezvous, topology negotiation, first all_reduce, etc.).
+    if [ "$gpus" -gt 1 ]; then
+        env_prefix+=(
+            "NCCL_DEBUG=INFO"
+            "TORCH_DISTRIBUTED_DEBUG=DETAIL"
+            "TORCH_NCCL_BLOCKING_WAIT=1"
+            "TORCH_NCCL_ASYNC_ERROR_HANDLING=1"
+        )
+    fi
     # For multi-GPU on the host with potentially heterogeneous cards
     # (yardrat: RTX 8000 + RTX 5000), let NCCL try anyway — the failure
     # mode tells us whether DDP can handle the heterogeneity, which is
@@ -233,6 +247,25 @@ run_scenario() {
     set -e
     if [ "$rc" = "124" ] || [ "$rc" = "137" ]; then
         status="timeout"
+        # On timeout, dump py-spy stacks of any surviving python
+        # processes (best-effort — needs --privileged or root for cross-
+        # process). The dumps land alongside the log so debugging a
+        # hang doesn't require re-running the scenario.
+        if command -v py-spy >/dev/null 2>&1; then
+            local pyspy_log="$scen_dir/py-spy.txt"
+            : > "$pyspy_log"
+            for pid in $(pgrep -f "tpl/DEIMv2/train.py" 2>/dev/null); do
+                echo "=== py-spy dump pid=$pid ===" >> "$pyspy_log"
+                py-spy dump --pid "$pid" >> "$pyspy_log" 2>&1 || true
+                echo >> "$pyspy_log"
+            done
+            for pid in $(pgrep -f "torch.distributed.run" 2>/dev/null); do
+                echo "=== py-spy dump pid=$pid (launcher) ===" >> "$pyspy_log"
+                py-spy dump --pid "$pid" >> "$pyspy_log" 2>&1 || true
+                echo >> "$pyspy_log"
+            done
+            echo "    [timeout] dumped py-spy stacks -> $pyspy_log"
+        fi
     fi
 
     local t_end

@@ -214,6 +214,14 @@ run_scenario() {
                 --gpus all
                 --ipc=host --shm-size=16g
                 -v "$REPO_ROOT:$REPO_ROOT" -w "$REPO_ROOT"
+                # Bind-mount the host's tpl/DEIMv2 over the image's
+                # baked copy so that DEIMv2 fixes on the host (e.g.
+                # the save_on_master barrier 2026-05-30) are picked
+                # up by the docker scenarios without rebuilding the
+                # image. The kit's trainer uses KCD_DEIMV2_REPO_DPATH
+                # to locate the repo; override it to the host path.
+                -v "$REPO_ROOT/tpl/DEIMv2:/opt/kwcoco_detector_kit/tpl/DEIMv2"
+                -e "KCD_DEIMV2_REPO_DPATH=/opt/kwcoco_detector_kit/tpl/DEIMv2"
                 -e "DEMO_OUT=$demo_out"
                 -e "DEMO_DATA_PATH=$data_path"
                 -e "DEMO_EPOCHS=$MATRIX_EPOCHS"
@@ -259,12 +267,21 @@ run_scenario() {
     timeout --kill-after=30 --signal=TERM "$MATRIX_SCENARIO_TIMEOUT" \
         "${cmd[@]}" >"$log" 2>&1 &
     local cmd_pid=$!
+    # Poll every second so we detect process exit immediately (without
+    # this, the previous version slept MATRIX_HEARTBEAT_INTERVAL=30s
+    # between checks, padding every fast scenario to 30s × N ticks
+    # of wall-clock waste). Print a heartbeat every
+    # MATRIX_HEARTBEAT_INTERVAL seconds based on elapsed wall-time,
+    # not loop iterations.
+    local last_beat=$SECONDS
     while kill -0 "$cmd_pid" 2>/dev/null; do
-        sleep "$MATRIX_HEARTBEAT_INTERVAL"
-        kill -0 "$cmd_pid" 2>/dev/null || break
-        local last
-        last=$(tail -n 1 "$log" 2>/dev/null | tr -d '\r' | cut -c1-100)
-        echo "    [heartbeat $(date +%H:%M:%S) pid=$cmd_pid] ${last:-(no output yet)}"
+        sleep 1
+        if [ $((SECONDS - last_beat)) -ge "$MATRIX_HEARTBEAT_INTERVAL" ]; then
+            last_beat=$SECONDS
+            local last
+            last=$(tail -n 1 "$log" 2>/dev/null | tr -d '\r' | cut -c1-100)
+            echo "    [heartbeat $(date +%H:%M:%S) pid=$cmd_pid] ${last:-(no output yet)}"
+        fi
     done
     wait "$cmd_pid"
     local rc=$?

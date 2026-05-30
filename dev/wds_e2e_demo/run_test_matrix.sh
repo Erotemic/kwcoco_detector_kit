@@ -102,8 +102,16 @@ declare -a SCENARIOS=(
     "host-cpu-wds|host|none|wds|0|"
     "host-gpu1x-jpeg|host|none|jpeg|1|cuda"
     "host-gpu1x-wds|host|none|wds|1|cuda"
+    "host-gpu2x-jpeg|host|none|jpeg|2|cuda2"
+    "host-gpu2x-wds|host|none|wds|2|cuda2"
+    "host-gpu4x-jpeg|host|none|jpeg|4|cuda4"
+    "host-gpu4x-wds|host|none|wds|4|cuda4"
     "docker-gpu1x-jpeg|host|docker|jpeg|1|cuda,docker"
     "docker-gpu1x-wds|host|docker|wds|1|cuda,docker"
+    "docker-gpu2x-jpeg|host|docker|jpeg|2|cuda2,docker"
+    "docker-gpu2x-wds|host|docker|wds|2|cuda2,docker"
+    "docker-gpu4x-jpeg|host|docker|jpeg|4|cuda4,docker"
+    "docker-gpu4x-wds|host|docker|wds|4|cuda4,docker"
     "slurm-host-gpu1x-wds|slurm|none|wds|1|slurm"
     "slurm-docker-gpu1x-wds|slurm|docker|wds|1|slurm,docker"
 )
@@ -111,24 +119,10 @@ declare -a SCENARIOS=(
 # Known-broken scenarios. Opt in with MATRIX_INCLUDE_BROKEN=1 (and
 # accept that the matrix will fail).
 #
-# host-gpu2x-* / docker-gpu2x-* (BOTH jpeg AND wds): the kit's
-#   DEIMv2 trainer can't survive the epoch 0 → epoch 1 transition
-#   under DDP. Symptom (yardrat 2026-05-30, both jpeg and wds
-#   reproduced): epoch 0 runs cleanly, validation runs, EMA
-#   refreshes for epoch 1, then one rank's atexit fires while the
-#   other's still iterating, "BARRIER seq=N vs GATHER seq=0".
-#   Cause is in DEIMv2's solver — the per-epoch loader rebuild
-#   path desynchronizes the ranks. NOT a kit bug; the kit's
-#   IterableDataset adapter cycles correctly under DDP. Realistic
-#   production targets are all single-GPU (kit's gen001 + gen002
-#   pup_vs_nonpup baseline is 1x A6000 anyway); multi-GPU needs
-#   a DEIMv2 fix first.
-declare -a KNOWN_BROKEN=(
-    "host-gpu2x-jpeg|host|none|jpeg|2|cuda2"
-    "host-gpu2x-wds|host|none|wds|2|cuda2"
-    "docker-gpu2x-jpeg|host|docker|jpeg|2|cuda2,docker"
-    "docker-gpu2x-wds|host|docker|wds|2|cuda2,docker"
-)
+# host-gpu2x-* / docker-gpu2x-* were known-broken before the
+# 2026-05-30 fix landed in DEIMv2 (save_on_master + barrier). They
+# should now pass; promote them back to the default SCENARIOS list.
+declare -a KNOWN_BROKEN=()
 if [ "${MATRIX_INCLUDE_BROKEN:-0}" = "1" ]; then
     SCENARIOS+=("${KNOWN_BROKEN[@]}")
     echo "MATRIX_INCLUDE_BROKEN=1: including ${#KNOWN_BROKEN[@]} known-broken scenarios"
@@ -147,6 +141,7 @@ should_run() {
         case "$req" in
             cuda)   [ "$HAVE_NVIDIA" = "1" ] || { echo "SKIP_NO_CUDA"; return; } ;;
             cuda2)  [ "$N_GPUS" -ge 2 ]      || { echo "SKIP_NEED_2GPU"; return; } ;;
+            cuda4)  [ "$N_GPUS" -ge 4 ]      || { echo "SKIP_NEED_4GPU"; return; } ;;
             docker) [ "$HAVE_DOCKER_IMAGE" = "1" ] || { echo "SKIP_NO_DOCKER_IMAGE"; return; } ;;
             slurm)  [ "$HAVE_SLURM" = "1" ]  || { echo "SKIP_NO_SLURM"; return; } ;;
             "")     ;;

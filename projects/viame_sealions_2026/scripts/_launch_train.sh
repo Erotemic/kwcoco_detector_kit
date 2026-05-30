@@ -278,7 +278,9 @@ if [ "${KCD_USE_WEBDATASET:-0}" = "1" ]; then
     else
         mkdir -p "$SHARDS_DPATH"
         echo "  Writing $SHARDS_DPATH from $UNIVERSAL_TILES ..."
-        "$PYTHON_BIN" -m kwcoco_dataloader build_detection_webdataset \
+        # kwcoco_dataloader doesn't ship a top-level __main__.py;
+        # invoke the CLI module path directly.
+        "$PYTHON_BIN" -m kwcoco_dataloader.cli.build_detection_webdataset \
             --in_fpath "$UNIVERSAL_TILES" \
             --out_dpath "$SHARDS_DPATH" \
             --bucket_attr dominant_raw_class \

@@ -227,10 +227,35 @@ def _export_deimv2(
         )
 
     # Move the upstream-derived artifact to the kit's canonical path.
+    # torch >= 2.12 saves model weights as a separate ``<file>.onnx.data``
+    # sidecar by default (even for small models), so a naive shutil.move
+    # of just the .onnx leaves the runtime unable to find the weights:
+    #   ONNXRuntimeError: External data path does not exist: ...
+    # Repack via onnx.load + onnx.save with save_as_external_data=False so
+    # the destination is a single self-contained file — works on any torch
+    # version, sidesteps "where does the .data file go" entirely.
     if derived_onnx.exists() and derived_onnx != out_fpath:
         out_fpath.parent.mkdir(parents=True, exist_ok=True)
-        import shutil
-        shutil.move(str(derived_onnx), str(out_fpath))
+        try:
+            import onnx
+            model = onnx.load(str(derived_onnx),
+                              load_external_data=True)
+            onnx.save(model, str(out_fpath),
+                      save_as_external_data=False)
+            derived_onnx.unlink()
+            # Best-effort cleanup of the sidecar(s) next to derived path.
+            for sidecar in derived_onnx.parent.glob(
+                    f"{derived_onnx.name}*.data"):
+                sidecar.unlink()
+            # Also catch the bare `<name>.onnx.data` case.
+            sidecar = derived_onnx.with_suffix(".onnx.data")
+            if sidecar.exists():
+                sidecar.unlink()
+        except ImportError:
+            # No onnx module — fall back to shutil.move, which works on
+            # torch < 2.12 where the .onnx is self-contained.
+            import shutil
+            shutil.move(str(derived_onnx), str(out_fpath))
     elif not out_fpath.exists():
         raise FileNotFoundError(
             f"DEIMv2 export reported success but neither {derived_onnx} nor "

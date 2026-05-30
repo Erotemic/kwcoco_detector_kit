@@ -100,23 +100,25 @@ if [ "${SETUP_SKIP_PIP:-0}" = "1" ]; then
     echo "=== 2. pip install: skipped (SETUP_SKIP_PIP=1) ==="
 else
     echo
-    echo "=== 2. kit (editable + all extras) ==="
+    echo "=== 2. tpl/kwcoco_dataloader (editable, FIRST) ==="
+    # MUST install this before the kit. The kit's [kwcoco-dataloader]
+    # extra pins kwcoco-dataloader>=0.1.3 — but the highest pypi-published
+    # version is 0.1.2, so resolving the extra against pypi fails with
+    #   ERROR: No matching distribution found for kwcoco-dataloader>=0.1.3
+    # Installing the local 0.1.3 checkout first satisfies the constraint
+    # AND lets you edit reader/writer code with changes picked up live.
+    "$PYTHON_BIN" -m pip install -e tpl/kwcoco_dataloader
+
+    echo
+    echo "=== 3. kit (editable + all extras) ==="
     # The deimv2 extra carries the hidden transitives DEIMv2 imports
     # (calflops → transformers, tensorboard, faster_coco_eval, scipy).
     # The webdataset extra pulls webdataset + braceexpand for the WDS
-    # reader. The dev extra adds pytest. We omit the heavy
-    # opengroundingdino extra by default; install it manually if you
-    # need it.
-    "$PYTHON_BIN" -m pip install -e ".[deimv2,webdataset,kwcoco-dataloader,dev]"
-
-    echo
-    echo "=== 3. tpl/kwcoco_dataloader (editable, override pypi) ==="
-    # The kit's [kwcoco-dataloader] extra installs the pypi build of
-    # kwcoco_dataloader; re-installing the local checkout in editable
-    # mode lets you edit the reader/writer code and have changes show
-    # up immediately. This MUST run AFTER the kit's install so it wins
-    # the import-precedence battle.
-    "$PYTHON_BIN" -m pip install -e tpl/kwcoco_dataloader
+    # reader. The dev extra adds pytest. We OMIT [kwcoco-dataloader]
+    # here on purpose — it would try to redownload from pypi over our
+    # editable install. The opengroundingdino extra is also omitted
+    # (heavy + legacy); install manually if you need it.
+    "$PYTHON_BIN" -m pip install -e ".[deimv2,webdataset,dev]"
 fi
 
 # ---------- 3. verify --------------------------------------------------

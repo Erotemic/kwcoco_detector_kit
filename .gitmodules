@@ -4,3 +4,7 @@
 [submodule "tpl/Open-GroundingDino"]
 	path = tpl/Open-GroundingDino
 	url = https://github.com/Erotemic/Open-GroundingDino.git
+[submodule "tpl/kwcoco_dataloader"]
+	path = tpl/kwcoco_dataloader
+	url = git@gitlab.kitware.com:computer-vision/kwcoco_dataloader.git
+	branch = dev/0.1.3

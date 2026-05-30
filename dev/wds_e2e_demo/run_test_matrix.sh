@@ -320,8 +320,27 @@ with open("$summary", "w") as f:
     json.dump(data, f, indent=2)
 PYEOF
 
-    printf "    %-25s  %-10s  duration=%-6s  ap=%-6s  bench=%-6s\n" \
-        "$name" "$status" "${duration_s}s" "${ap:-—}" "${bench_ms:-—}"
+    # Result line. Visually distinct from the heartbeat noise so the
+    # outcome is obvious even on a long-running matrix.
+    local tag
+    case "$status" in
+        ok)      tag="[OK]      " ;;
+        failed)  tag="[FAIL]    " ;;
+        timeout) tag="[TIMEOUT] " ;;
+        *)       tag="[$status]" ;;
+    esac
+    echo
+    printf "    %s %-25s  duration=%-6s  ap=%-6s  bench=%-6s\n" \
+        "$tag" "$name" "${duration_s}s" "${ap:-—}" "${bench_ms:-—}"
+    if [ "$status" != "ok" ]; then
+        # Surface the actual error so the user doesn't have to dig
+        # into the log file to know what broke. Lead with the
+        # first python-style traceback if present, else the last
+        # 15 non-blank lines.
+        echo "    --- error context (last 15 lines of $log) ---"
+        tail -n 15 "$log" 2>/dev/null | sed 's/^/        /'
+        echo "    --- full log: $log ---"
+    fi
 }
 
 # Resolve PYTHON_BIN if user didn't set it; same auto-detection as the demo.
@@ -376,14 +395,25 @@ echo
 echo "Ran:     ${#RAN[@]} scenario(s)"
 echo "Skipped: ${#SKIPPED[@]} scenario(s)"
 
-# Exit non-zero if any ran scenario failed.
-failures=0
+# Exit non-zero if any ran scenario failed. List the failures explicitly
+# at the end so the matrix verdict is impossible to miss.
+declare -a FAILED=()
 for n in "${RAN[@]}"; do
     s=$(python3 -c "import json; print(json.load(open('$MATRIX_OUT/$n/summary.json'))['status'])")
-    [ "$s" != "ok" ] && failures=$((failures+1))
+    [ "$s" != "ok" ] && FAILED+=("$n:$s")
 done
-if [ "$failures" -gt 0 ]; then
-    echo
-    echo "FAILED scenarios: $failures of ${#RAN[@]}" >&2
+echo
+echo "============================================================"
+if [ ${#FAILED[@]} -eq 0 ]; then
+    echo "  MATRIX PASSED — ${#RAN[@]} scenarios ok, ${#SKIPPED[@]} skipped"
+    echo "============================================================"
+    exit 0
+else
+    echo "  MATRIX FAILED — ${#FAILED[@]} of ${#RAN[@]} scenarios failed"
+    for entry in "${FAILED[@]}"; do
+        echo "    - $entry"
+    done
+    echo "  Logs under: $MATRIX_OUT/<name>/log.txt"
+    echo "============================================================"
     exit 1
 fi

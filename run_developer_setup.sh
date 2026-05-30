@@ -40,10 +40,21 @@ if [ -z "$PYTHON_BIN" ] || [ ! -x "$PYTHON_BIN" ]; then
     exit 1
 fi
 
+# uv is required: faster resolver, better lockfile semantics, and our
+# venvs are already uv-managed. Raw pip resolves slowly and has bitten
+# us on transitive conflicts (e.g. kwcoco-dataloader>=0.1.3 vs pypi
+# only having 0.1.2). Install uv globally if you don't have it:
+#   curl -LsSf https://astral.sh/uv/install.sh | sh
+if ! command -v uv >/dev/null 2>&1; then
+    echo "ERROR: 'uv' not found on PATH. Install it:" >&2
+    echo "  curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
+    exit 1
+fi
+
 echo "=== developer setup for kwcoco_detector_kit ==="
-echo "  repo: $REPO_ROOT"
-echo "  python: $PYTHON_BIN"
-"$PYTHON_BIN" --version
+echo "  repo:   $REPO_ROOT"
+echo "  python: $PYTHON_BIN ($("$PYTHON_BIN" --version 2>&1))"
+echo "  uv:     $(uv --version)"
 echo
 
 # ---------- 1. submodules ----------------------------------------------
@@ -107,7 +118,7 @@ else
     #   ERROR: No matching distribution found for kwcoco-dataloader>=0.1.3
     # Installing the local 0.1.3 checkout first satisfies the constraint
     # AND lets you edit reader/writer code with changes picked up live.
-    "$PYTHON_BIN" -m pip install -e tpl/kwcoco_dataloader
+    uv pip install --python "$PYTHON_BIN" -e tpl/kwcoco_dataloader
 
     echo
     echo "=== 3. kit (editable + all extras) ==="
@@ -118,7 +129,7 @@ else
     # here on purpose — it would try to redownload from pypi over our
     # editable install. The opengroundingdino extra is also omitted
     # (heavy + legacy); install manually if you need it.
-    "$PYTHON_BIN" -m pip install -e ".[deimv2,webdataset,dev]"
+    uv pip install --python "$PYTHON_BIN" -e ".[deimv2,webdataset,dev]"
 fi
 
 # ---------- 3. verify --------------------------------------------------

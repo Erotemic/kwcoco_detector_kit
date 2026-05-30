@@ -210,6 +210,49 @@ def test_webdataset_dataset_end_to_end(tmp_path):
     assert isinstance(one_batch, list) and len(one_batch) == 2
 
 
+def test_dataset_len_matches_total_sample_count(tmp_path):
+    """DEIMv2's det_solver.fit() calls
+        iter_per_epoch = len(self.train_dataloader)
+    which, for IterableDataset, delegates to len(self.dataset).
+    The FlatCosineLRScheduler needs a definite integer.
+
+    Adapter resolution: epoch_length when set, else sum-of-fnames
+    across all <bucket>/*.tar.index.json files. With our 4-image
+    synthetic corpus and writer maxcount=10, all samples fit in
+    one shard per bucket; total should match the source count.
+    """
+    pytest.importorskip("torch")
+    pytest.importorskip("torchvision")
+    pytest.importorskip("webdataset")
+    pytest.importorskip("wids")
+    pytest.importorskip("kwcoco_dataloader")
+
+    WebDatasetCocoDetection = _import_adapter()
+
+    bundle_dpath = tmp_path / "src"
+    bundle_dpath.mkdir()
+    src = _build_tiny_synth_kwcoco(bundle_dpath)
+    shards_dpath = tmp_path / "shards"
+    _make_shards(Path(src.fpath), shards_dpath)
+
+    ds = WebDatasetCocoDetection(
+        shards_dpath=str(shards_dpath),
+        category_names=["widget"],
+        source_to_target={"W": "widget"},
+    )
+    n = len(ds)
+    assert n == 4, f"expected 4 samples from index files; got {n}"
+
+    # epoch_length kwarg takes precedence:
+    ds2 = WebDatasetCocoDetection(
+        shards_dpath=str(shards_dpath),
+        category_names=["widget"],
+        source_to_target={"W": "widget"},
+        epoch_length=12345,
+    )
+    assert len(ds2) == 12345
+
+
 def test_warp_loader_passes_iterable_dataset_through(tmp_path, monkeypatch):
     """DEIMv2's dist_utils.warp_loader() wraps every dataset in a
     DistributedSampler when torch.distributed is initialised. The

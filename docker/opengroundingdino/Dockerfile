@@ -1,4 +1,16 @@
 # syntax=docker/dockerfile:1.7
+#
+# Cache layout (BuildKit-managed, NOT host bind mounts):
+#   /root/.cache/uv               — uv's resolver + wheel cache (shared across
+#                                   all install steps below).
+#   /root/.cache/torch_extensions — torch CUDA extension build cache (used by
+#                                   the OpenGroundingDino MultiScaleDeformableAttention
+#                                   compile step only).
+# Both are declared via `--mount=type=cache,target=...` which BuildKit stores
+# in its own volume. The host's `~/.cache/uv` / `~/.cache/pip` are never
+# touched by `docker build`, so host file ownership is never modified.
+# (Don't bind-mount the host cache in build scripts either — see
+# build_auto.sh.)
 ARG BASE_IMAGE=nvidia/cuda:13.0.1-devel-ubuntu24.04
 FROM ${BASE_IMAGE}
 
@@ -6,7 +18,6 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG PYTHON_VERSION=3.11
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130
 ARG TORCH_PRE=0
-ARG PIP_CACHE_DIR=/root/.cache/pip
 ARG UV_CACHE_DIR=/root/.cache/uv
 ARG TORCH_CUDA_ARCH_LIST="8.6"
 
@@ -18,8 +29,15 @@ ENV KCD_OPENGROUNDINGDINO_REPO_DPATH=/opt/kwcoco_detector_kit/tpl/Open-Grounding
 ENV KCD_DEIMV2_REPO_DPATH=/opt/kwcoco_detector_kit/tpl/DEIMv2
 ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 ENV TORCH_NCCL_ASYNC_ERROR_HANDLING=1
-ENV PIP_CACHE_DIR=${PIP_CACHE_DIR}
 ENV UV_CACHE_DIR=${UV_CACHE_DIR}
+# BuildKit cache mounts live on overlayfs; uv's default hardlink mode
+# fails across filesystems, so force copy mode. (Slower than hardlink
+# on a real workstation but invisible inside the cache-mounted layer.)
+ENV UV_LINK_MODE=copy
+# Always install for the venv's python and precompile .pyc to drop
+# first-import latency.
+ENV UV_PYTHON=${PYTHON_BIN}
+ENV UV_COMPILE_BYTECODE=1
 ENV FORCE_CUDA=1
 ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}
 
@@ -41,14 +59,14 @@ ENV PATH=/root/.local/bin:${PATH}
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv venv --seed --python ${PYTHON_VERSION} ${VIRTUAL_ENV} && \
-    ${PYTHON_BIN} -m pip --version
+    uv --version
 
-RUN --mount=type=cache,target=/root/.cache/pip \
-    ${PYTHON_BIN} -m pip install -U pip wheel setuptools && \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install -U pip wheel setuptools && \
     if [ "${TORCH_PRE}" = "1" ]; then \
-        ${PYTHON_BIN} -m pip install --pre torch torchvision torchaudio --index-url ${TORCH_INDEX_URL}; \
+        uv pip install --prerelease=allow --index-url ${TORCH_INDEX_URL} torch torchvision torchaudio; \
     else \
-        ${PYTHON_BIN} -m pip install torch torchvision torchaudio --index-url ${TORCH_INDEX_URL}; \
+        uv pip install --index-url ${TORCH_INDEX_URL} torch torchvision torchaudio; \
     fi && \
     ${PYTHON_BIN} - <<'PY'
 import re
@@ -80,8 +98,8 @@ WORKDIR /opt/kwcoco_detector_kit
 # Install third-party deps before copying fast-changing source. This keeps the
 # expensive dependency layers cached across ordinary toolkit code edits.
 COPY pyproject.toml README.md LICENSE /opt/kwcoco_detector_kit/
-RUN --mount=type=cache,target=/root/.cache/pip \
-    ${PYTHON_BIN} -m pip install \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install \
         "kwcoco>=0.8" \
         "kwimage>=0.11" \
         "kwutil>=0.3" \
@@ -118,7 +136,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # pinned version + finds it on Kitware's wheel index.
 # The kit's _preimport scaffold then loads osgeo.gdal before torch,
 # which is what delayed_image needs to take its fast path.
-RUN --mount=type=cache,target=/root/.cache/pip \
+RUN --mount=type=cache,target=/root/.cache/uv \
     ${PYTHON_BIN} -m kwcoco finish_install --with_gdal=True --strict=False
 
 # Copy and build the upstream trainer before copying the rest of the kit. The
@@ -146,9 +164,9 @@ RUN test -f /opt/kwcoco_detector_kit/tpl/DEIMv2/train.py || \
 COPY tpl/kwcoco_dataloader /opt/kwcoco_detector_kit/tpl/kwcoco_dataloader
 RUN test -f /opt/kwcoco_detector_kit/tpl/kwcoco_dataloader/kwcoco_dataloader/__init__.py || \
         (echo "kwcoco_dataloader submodule contents are missing. Run: git submodule update --init tpl/kwcoco_dataloader" >&2; exit 1)
-RUN --mount=type=cache,target=/root/.cache/pip \
-    ${PYTHON_BIN} -m pip install -e /opt/kwcoco_detector_kit/tpl/kwcoco_dataloader && \
-    ${PYTHON_BIN} -m pip install "webdataset>=0.2" "wids>=0.1" braceexpand "line_profiler>=4.0"
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install -e /opt/kwcoco_detector_kit/tpl/kwcoco_dataloader && \
+    uv pip install "webdataset>=0.2" "wids>=0.1" braceexpand "line_profiler>=4.0"
 
 COPY kwcoco_detector_kit /opt/kwcoco_detector_kit/kwcoco_detector_kit
 COPY docs /opt/kwcoco_detector_kit/docs
@@ -158,8 +176,8 @@ COPY dev /opt/kwcoco_detector_kit/dev
 COPY smoketests /opt/kwcoco_detector_kit/smoketests
 COPY tests /opt/kwcoco_detector_kit/tests
 
-RUN --mount=type=cache,target=/root/.cache/pip \
-    ${PYTHON_BIN} -m pip install --no-deps -e "." && \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --no-deps -e "." && \
     ${PYTHON_BIN} -m kwcoco_detector_kit check-env \
         --groups core,opengroundingdino \
         --strict_import

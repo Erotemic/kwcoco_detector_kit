@@ -25,13 +25,16 @@ if [ ! -d .git ] && [ ! -f .git ]; then
     exit 1
 fi
 
-# 1. `git push` from the parent auto-pushes submodules whose pinned
-#    commits aren't on their remote yet. The push fails BEFORE
-#    touching the parent's remote if any submodule push fails -- the
-#    parent never references a commit a clone wouldn't be able to
-#    fetch.
-git config --local push.recurseSubmodules on-demand
-echo "  push.recurseSubmodules = on-demand"
+# 1. `git push` from the parent verifies (via the built-in `check`
+#    mode) that every referenced submodule commit is already on its
+#    remote, BUT does not attempt to push the submodules itself —
+#    git's built-in `on-demand` mode pushes to the submodule's
+#    UPSTREAM (typically `main`), ignoring the `branch = ...` hint
+#    in .gitmodules. The actual submodule push is done by our
+#    `scripts/push_submodules.sh` via the pre-push hook installed
+#    below, which DOES respect the `branch` field.
+git config --local push.recurseSubmodules check
+echo "  push.recurseSubmodules = check"
 
 # 2. `git fetch` from the parent also fetches submodules.
 git config --local fetch.recurseSubmodules on-demand
@@ -52,13 +55,41 @@ echo "  diff.submodule = log"
 git config --local submodule.recurse true
 echo "  submodule.recurse = true"
 
+# 5. Install a pre-push hook that calls scripts/push_submodules.sh
+#    BEFORE the parent push runs. Hook reads .gitmodules per-submodule
+#    `branch` and pushes HEAD:refs/heads/<branch>, which handles the
+#    common detached-HEAD-after-submodule-update case.
+HOOK_FPATH="$(git rev-parse --git-dir)/hooks/pre-push"
+mkdir -p "$(dirname "$HOOK_FPATH")"
+cat > "$HOOK_FPATH" <<'HOOK'
+#!/usr/bin/env bash
+# Pre-push hook installed by scripts/setup_git.sh.
+#
+# Pushes every submodule (per scripts/push_submodules.sh: respects
+# .gitmodules `branch =` hints) before the parent push runs. The
+# parent push only proceeds if every submodule push succeeds.
+set -e
+PUSH_SUBMODULES_SH="$(git rev-parse --show-toplevel)/scripts/push_submodules.sh"
+if [ -x "$PUSH_SUBMODULES_SH" ]; then
+    echo "[pre-push] Pushing submodules first..."
+    bash "$PUSH_SUBMODULES_SH"
+fi
+exit 0
+HOOK
+chmod +x "$HOOK_FPATH"
+echo "  pre-push hook -> $HOOK_FPATH"
+
 echo
 echo "Local clone configured. \`git push\` from this clone will now:"
-echo "  - check each configured submodule"
-echo "  - push any submodule whose pinned commit isn't on its remote yet"
-echo "  - abort BEFORE pushing the parent if any submodule push fails"
+echo "  1. (pre-push hook) push each submodule via scripts/push_submodules.sh,"
+echo "     respecting the \`branch = ...\` field in .gitmodules"
+echo "  2. (built-in check) verify every submodule commit referenced by the"
+echo "     parent is now on its remote — aborts the parent push if not"
 echo
 echo "To inspect what would happen without pushing:"
+echo "  bash scripts/push_submodules.sh --dry-run"
 echo "  git push --dry-run"
 echo
-echo "To revert: git config --local --unset push.recurseSubmodules"
+echo "To revert:"
+echo "  git config --local --unset push.recurseSubmodules"
+echo "  rm $HOOK_FPATH"

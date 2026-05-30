@@ -489,6 +489,13 @@ def _build_train_yml(
                     "transforms": _train_transforms_block(input_hw),
                 }
             ),
+            # PyTorch DataLoader rejects shuffle=True on IterableDataset
+            # (raises ValueError). The upstream coco_detection.yml's
+            # `shuffle: True` carries over via __include__ when we
+            # don't override. WebDataset shuffles internally via
+            # shardshuffle + worker-local sample buffer, so this is
+            # the right semantic too.
+            "shuffle": False if train_wds_shards_dpath else True,
             "collate_fn": {
                 "type": "BatchImageCollateFunction",
                 "base_size": int(policy.base_size),

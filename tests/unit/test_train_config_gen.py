@@ -357,3 +357,129 @@ def test_every_variant_has_known_upstream_config_relpath():
         assert relpath.endswith("_coco.yml"), (
             f"{variant}: relpath {relpath!r} doesn't end in _coco.yml"
         )
+
+
+# ---------------------------------------------------------------------------
+# WebDataset path: generated YAML must shape correctly for the
+# IterableDataset adapter.
+#
+# Regression for gen002 bugs:
+#   - PyTorch DataLoader rejects shuffle=True on IterableDataset; the
+#     upstream coco_detection.yml's `shuffle: True` carries over via
+#     __include__ when we don't override it for the WDS dataset.
+#   - The WDS dataset block must declare every field the adapter's
+#     __init__ requires AND nothing the parent's __init__ would
+#     accept (else YAML-merger leaks would push img_folder etc.
+#     into our __init__).
+# ---------------------------------------------------------------------------
+
+
+def _generate_wds(trainer, tmp_path, *, variant="deimv2_hgnetv2_n", input_hw=(320, 320),
+                  category_names=("widget",), shards_dpath="/tmp/shards",
+                  source_to_target=None):
+    """Drive generate_config with the WDS extras populated, return the
+    parsed YAML."""
+    workdir = tmp_path / "wd"
+    workdir.mkdir(parents=True, exist_ok=True)
+    category_names = list(category_names)
+    extra = {
+        "category_names": category_names,
+        "train_wds_shards_dpath": shards_dpath,
+        "train_wds_category_names": category_names,
+        "train_wds_source_to_target": dict(source_to_target or {}),
+        "train_wds_epoch_length": 0,
+    }
+    cfg_fpath = trainer.generate_config(
+        train_kwcoco_fpath="/tmp/train.mscoco.json",
+        vali_kwcoco_fpath="/tmp/vali.mscoco.json",
+        workdir=workdir,
+        variant=variant,
+        input_hw=tuple(input_hw),
+        train_policy="fixed",
+        num_classes=len(category_names),
+        batch_size=4,
+        val_batch_size=4,
+        num_epochs=2,
+        lr=5e-4,
+        backbone_lr=2.5e-5,
+        use_amp=False,
+        channels="r|g|b",
+        scale_tier="M",
+        num_gpus=1,
+        data_format="kwcoco",
+        extra=extra,
+    )
+    return yaml.safe_load(Path(cfg_fpath).read_text())
+
+
+def test_wds_dataset_block_uses_webdatasetcocodetection_type(tmp_path):
+    trainer = _get_trainer()
+    cfg = _generate_wds(trainer, tmp_path)
+    td = cfg["train_dataloader"]
+    assert td["dataset"].get("type") == "WebDatasetCocoDetection", (
+        f"WDS path didn't toggle the dataset type: {td['dataset'].get('type')!r}"
+    )
+
+
+def test_wds_train_dataloader_shuffle_is_false(tmp_path):
+    """PyTorch's DataLoader.__init__ raises:
+        ValueError: DataLoader with IterableDataset: expected
+        unspecified shuffle option, but got shuffle=True
+    if we let the parent coco_detection.yml's shuffle=True leak
+    through. The generated YAML MUST explicitly set shuffle=False
+    when emitting the WebDatasetCocoDetection dataset block.
+    """
+    trainer = _get_trainer()
+    cfg = _generate_wds(trainer, tmp_path)
+    td = cfg["train_dataloader"]
+    assert td.get("shuffle") is False, (
+        f"train_dataloader.shuffle must be False on the WDS path; "
+        f"got {td.get('shuffle')!r}. PyTorch DataLoader will reject "
+        "shuffle=True with an IterableDataset at fit() time."
+    )
+
+
+def test_wds_dataset_block_doesnt_carry_legacy_coco_keys(tmp_path):
+    """The WDS adapter accepts-and-ignores img_folder/ann_file (per
+    the YAML-merger leak fix), but the kit's OWN generated block
+    should not emit them — they're meaningless for the IterableDataset
+    and would mislead a reader of the generated YAML."""
+    trainer = _get_trainer()
+    cfg = _generate_wds(trainer, tmp_path)
+    ds = cfg["train_dataloader"]["dataset"]
+    for legacy_key in ("img_folder", "ann_file"):
+        assert legacy_key not in ds, (
+            f"WDS dataset block emitted legacy key {legacy_key!r}; "
+            "those belong to the random-access CocoDetection parent."
+        )
+
+
+def test_wds_dataset_required_fields_are_all_present(tmp_path):
+    """Match the WebDatasetCocoDetection.__init__ contract: the
+    adapter needs shards_dpath + category_names + source_to_target
+    at minimum. Missing any of them surfaces as a TypeError inside
+    DEIMv2's workspace.create() — defeating the purpose of the
+    config-gen tests."""
+    trainer = _get_trainer()
+    cfg = _generate_wds(trainer, tmp_path,
+                       source_to_target={"W": "widget"})
+    ds = cfg["train_dataloader"]["dataset"]
+    assert ds.get("shards_dpath"), "WDS block missing shards_dpath"
+    assert ds.get("category_names") == ["widget"]
+    assert ds.get("source_to_target") == {"W": "widget"}
+    # transforms still required (Mosaic + augs)
+    assert isinstance(ds.get("transforms"), dict)
+
+
+def test_non_wds_path_still_emits_legacy_coco_keys(tmp_path):
+    """Sanity-check the toggle didn't break the MSCOCO path."""
+    trainer = _get_trainer()
+    cfg = _generate(trainer, tmp_path, variant="deimv2_hgnetv2_n",
+                    input_hw=(320, 320))
+    ds = cfg["train_dataloader"]["dataset"]
+    assert "img_folder" in ds
+    assert "ann_file" in ds
+    # On the MSCOCO path the shuffle key isn't set by us; the parent's
+    # True wins (and CocoDetection is map-style, so shuffle=True is
+    # fine for DataLoader).
+    assert ds.get("type") != "WebDatasetCocoDetection"

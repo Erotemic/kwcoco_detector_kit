@@ -216,7 +216,7 @@ run_scenario() {
             # + IPC queues) and DataLoader hangs after iter 0
             # (yardrat 2026-05-30 docker-gpu2x-wds reproduced this).
             local shm_gb=$((16 + 8 * nproc))
-            cmd=(
+            local docker_cmd=(
                 docker run --rm
                 --gpus all
                 --ipc=host --shm-size="${shm_gb}g"
@@ -234,9 +234,27 @@ run_scenario() {
                 -e "DEMO_EPOCHS=$MATRIX_EPOCHS"
                 -e "DEMO_NUM_GPUS=$nproc"
                 -e "PYTHON_BIN=/opt/venv/bin/python"
+            )
+            # Forward every multi-GPU env we set on the host case into
+            # the container too. Without these, multi-GPU docker
+            # scenarios don't cycle the WDS stream (no
+            # DEMO_WDS_EPOCH_LENGTH) and miss the NCCL diagnostics —
+            # yardrat 2026-05-30 docker-gpu2x-wds hung at iter 0
+            # because cycling was off.
+            if [ "$gpus" -gt 1 ]; then
+                docker_cmd+=(
+                    -e "NCCL_DEBUG=INFO"
+                    -e "TORCH_DISTRIBUTED_DEBUG=DETAIL"
+                    -e "TORCH_NCCL_BLOCKING_WAIT=1"
+                    -e "TORCH_NCCL_ASYNC_ERROR_HANDLING=1"
+                    -e "DEMO_WDS_EPOCH_LENGTH=${DEMO_WDS_EPOCH_LENGTH:-16}"
+                )
+            fi
+            docker_cmd+=(
                 "$MATRIX_DOCKER_IMAGE"
                 bash dev/wds_e2e_demo/run_demo.sh
             )
+            cmd=("${docker_cmd[@]}")
             ;;
     esac
     case "$compute" in

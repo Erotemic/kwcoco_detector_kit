@@ -1,0 +1,325 @@
+#!/usr/bin/env bash
+# Run dev/wds_e2e_demo/run_demo.sh across the compute × data-path matrix
+# and produce a concise summary so we can verify the kit works in every
+# deploy target we care about.
+#
+# Scenarios (auto-skipped if the runtime isn't available):
+#
+#   host-cpu-jpeg          host venv, CPU,        kwcoco JPEG path
+#   host-cpu-wds           host venv, CPU,        WebDataset path
+#   host-gpu1-jpeg         host venv, 1 GPU,      kwcoco JPEG
+#   host-gpu1-wds          host venv, 1 GPU,      WebDataset
+#   host-gpu2-jpeg         host venv, 2 GPUs,     kwcoco JPEG
+#   host-gpu2-wds          host venv, 2 GPUs,     WebDataset
+#   docker-gpu1-jpeg       docker,    1 GPU,      kwcoco JPEG
+#   docker-gpu1-wds        docker,    1 GPU,      WebDataset
+#   docker-gpu2-jpeg       docker,    2 GPUs,     kwcoco JPEG
+#   docker-gpu2-wds        docker,    2 GPUs,     WebDataset
+#   slurm-host-gpu1-wds    sbatch -> host venv,   WebDataset
+#   slurm-docker-gpu1-wds  sbatch -> docker,      WebDataset
+#
+# Each scenario produces:
+#   <out>/<name>/log.txt        full stdout/stderr
+#   <out>/<name>/summary.json   {status, duration_s, train_total_time_s,
+#                                ap, bench_ms, error?}
+#
+# After all scenarios run we print a TSV table and write it to
+# <out>/matrix.tsv.
+#
+# Usage:
+#   bash dev/wds_e2e_demo/run_test_matrix.sh
+#
+# Common overrides:
+#   MATRIX_OUT=/path/to/dir              # default /tmp/wds_e2e_matrix
+#   MATRIX_ONLY="host-cpu-wds,..."       # comma list to filter
+#   MATRIX_SKIP="docker-gpu2-jpeg,..."   # comma list to skip
+#   MATRIX_EPOCHS=2                      # per-scenario epochs (default 2)
+#   MATRIX_DOCKER_IMAGE=kwcoco-detector-kit:ogdino-auto
+#   MATRIX_SLURM_PARTITION=<name>        # required for slurm scenarios
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO_ROOT"
+
+MATRIX_OUT="${MATRIX_OUT:-/tmp/wds_e2e_matrix}"
+MATRIX_ONLY="${MATRIX_ONLY:-}"
+MATRIX_SKIP="${MATRIX_SKIP:-}"
+MATRIX_EPOCHS="${MATRIX_EPOCHS:-2}"
+MATRIX_DOCKER_IMAGE="${MATRIX_DOCKER_IMAGE:-kwcoco-detector-kit:ogdino-auto}"
+MATRIX_SLURM_PARTITION="${MATRIX_SLURM_PARTITION:-}"
+PYTHON_BIN="${PYTHON_BIN:-}"
+
+rm -rf "$MATRIX_OUT"
+mkdir -p "$MATRIX_OUT"
+
+# ----- capability detection -------------------------------------------
+HAVE_DOCKER=0
+HAVE_SLURM=0
+HAVE_NVIDIA=0
+N_GPUS=0
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    HAVE_DOCKER=1
+fi
+if command -v sbatch >/dev/null 2>&1; then
+    HAVE_SLURM=1
+fi
+if command -v nvidia-smi >/dev/null 2>&1; then
+    HAVE_NVIDIA=1
+    N_GPUS=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | wc -l)
+fi
+# Does the docker image exist locally?
+HAVE_DOCKER_IMAGE=0
+if [ "$HAVE_DOCKER" = "1" ] && docker image inspect "$MATRIX_DOCKER_IMAGE" >/dev/null 2>&1; then
+    HAVE_DOCKER_IMAGE=1
+fi
+
+echo "=== test matrix for $REPO_ROOT ==="
+echo "  output:   $MATRIX_OUT"
+echo "  host:     $(hostname)"
+echo "  GPUs:     $N_GPUS detected"
+[ "$N_GPUS" -gt 0 ] && nvidia-smi --query-gpu=index,name --format=csv,noheader | sed 's/^/    /'
+echo "  docker:   $([ "$HAVE_DOCKER" = "1" ] && echo "yes" || echo "no")"
+echo "  image:    $MATRIX_DOCKER_IMAGE $([ "$HAVE_DOCKER_IMAGE" = "1" ] && echo "(present)" || echo "(MISSING)")"
+echo "  slurm:    $([ "$HAVE_SLURM" = "1" ] && echo "yes" || echo "no")"
+echo "  epochs:   $MATRIX_EPOCHS"
+echo
+
+# ----- scenario table -------------------------------------------------
+# name|compute|container|data_path|gpus|requires
+declare -a SCENARIOS=(
+    "host-cpu-jpeg|host|none|jpeg|0|"
+    "host-cpu-wds|host|none|wds|0|"
+    "host-gpu1-jpeg|host|none|jpeg|1|cuda"
+    "host-gpu1-wds|host|none|wds|1|cuda"
+    "host-gpu2-jpeg|host|none|jpeg|2|cuda2"
+    "host-gpu2-wds|host|none|wds|2|cuda2"
+    "docker-gpu1-jpeg|host|docker|jpeg|1|cuda,docker"
+    "docker-gpu1-wds|host|docker|wds|1|cuda,docker"
+    "docker-gpu2-jpeg|host|docker|jpeg|2|cuda2,docker"
+    "docker-gpu2-wds|host|docker|wds|2|cuda2,docker"
+    "slurm-host-gpu1-wds|slurm|none|wds|1|slurm"
+    "slurm-docker-gpu1-wds|slurm|docker|wds|1|slurm,docker"
+)
+
+# ----- runner ---------------------------------------------------------
+should_run() {
+    local name="$1" reqs="$2"
+    if [ -n "$MATRIX_ONLY" ] && ! echo ",$MATRIX_ONLY," | grep -q ",$name,"; then
+        echo "SKIP_FILTER"; return
+    fi
+    if [ -n "$MATRIX_SKIP" ] && echo ",$MATRIX_SKIP," | grep -q ",$name,"; then
+        echo "SKIP_EXPLICIT"; return
+    fi
+    for req in ${reqs//,/ }; do
+        case "$req" in
+            cuda)   [ "$HAVE_NVIDIA" = "1" ] || { echo "SKIP_NO_CUDA"; return; } ;;
+            cuda2)  [ "$N_GPUS" -ge 2 ]      || { echo "SKIP_NEED_2GPU"; return; } ;;
+            docker) [ "$HAVE_DOCKER_IMAGE" = "1" ] || { echo "SKIP_NO_DOCKER_IMAGE"; return; } ;;
+            slurm)  [ "$HAVE_SLURM" = "1" ]  || { echo "SKIP_NO_SLURM"; return; } ;;
+            "")     ;;
+        esac
+    done
+    echo "RUN"
+}
+
+run_scenario() {
+    local name="$1" compute="$2" container="$3" data_path="$4" gpus="$5"
+
+    local scen_dir="$MATRIX_OUT/$name"
+    mkdir -p "$scen_dir"
+    local log="$scen_dir/log.txt"
+    local summary="$scen_dir/summary.json"
+    local demo_out="$scen_dir/demo"
+
+    echo
+    echo "--- running $name ---"
+    local t_start
+    t_start=$("$PYTHON_BIN" -c 'import time; print(time.monotonic())' 2>/dev/null \
+              || python3 -c 'import time; print(time.monotonic())')
+
+    # gpus=0 means "CPU only" — torch.distributed.run still needs
+    # --nproc_per_node >= 1 (one driver process), so map 0→1 and rely
+    # on the absence of CUDA to keep tensors on CPU.
+    local nproc="$gpus"
+    [ "$nproc" -lt 1 ] && nproc=1
+
+    local env_prefix=(
+        env
+        "DEMO_OUT=$demo_out"
+        "DEMO_DATA_PATH=$data_path"
+        "DEMO_EPOCHS=$MATRIX_EPOCHS"
+        "DEMO_NUM_GPUS=$nproc"
+    )
+    # For multi-GPU on the host with potentially heterogeneous cards
+    # (yardrat: RTX 8000 + RTX 5000), let NCCL try anyway — the failure
+    # mode tells us whether DDP can handle the heterogeneity, which is
+    # itself useful info.
+    [ -n "$PYTHON_BIN" ] && env_prefix+=("PYTHON_BIN=$PYTHON_BIN")
+
+    local status="ok"
+    local cmd=()
+    case "$container" in
+        none)
+            cmd=("${env_prefix[@]}" bash dev/wds_e2e_demo/run_demo.sh)
+            ;;
+        docker)
+            cmd=(
+                docker run --rm
+                --gpus all
+                --ipc=host --shm-size=16g
+                -v "$REPO_ROOT:$REPO_ROOT" -w "$REPO_ROOT"
+                -e "DEMO_OUT=$demo_out"
+                -e "DEMO_DATA_PATH=$data_path"
+                -e "DEMO_EPOCHS=$MATRIX_EPOCHS"
+                -e "DEMO_NUM_GPUS=$nproc"
+                -e "PYTHON_BIN=/opt/venv/bin/python"
+                "$MATRIX_DOCKER_IMAGE"
+                bash dev/wds_e2e_demo/run_demo.sh
+            )
+            ;;
+    esac
+    case "$compute" in
+        slurm)
+            # Run via sbatch and wait. The slurm scenarios need a
+            # partition; if MATRIX_SLURM_PARTITION isn't set, fail.
+            if [ -z "$MATRIX_SLURM_PARTITION" ]; then
+                echo "  SKIP: slurm scenarios require MATRIX_SLURM_PARTITION" >&2
+                status="skip_no_partition"
+                cmd=(true)
+            else
+                local sbatch_script="$scen_dir/sbatch.sh"
+                {
+                    echo '#!/usr/bin/env bash'
+                    echo "set -e"
+                    echo "${cmd[@]}"
+                } > "$sbatch_script"
+                chmod +x "$sbatch_script"
+                cmd=(
+                    sbatch
+                    --partition="$MATRIX_SLURM_PARTITION"
+                    --gres="gpu:$gpus"
+                    --wait
+                    --output="$scen_dir/slurm.out"
+                    "$sbatch_script"
+                )
+            fi
+            ;;
+    esac
+
+    set +e
+    "${cmd[@]}" >"$log" 2>&1
+    local rc=$?
+    set -e
+
+    local t_end
+    t_end=$("$PYTHON_BIN" -c 'import time; print(time.monotonic())' 2>/dev/null \
+            || python3 -c 'import time; print(time.monotonic())')
+    local duration_s
+    duration_s=$(awk -v a="$t_end" -v b="$t_start" 'BEGIN{printf "%.2f", a-b}')
+
+    if [ "$status" = "ok" ] && [ "$rc" -ne 0 ]; then
+        status="failed"
+    fi
+
+    # Extract metrics from the log.
+    local ap="" bench_ms="" train_time=""
+    if [ -f "$log" ]; then
+        ap=$(grep -oE 'test AP[[:space:]]+[0-9.]+' "$log" | tail -1 | awk '{print $NF}')
+        bench_ms=$(grep -oE 'mean=[0-9.]+ms' "$log" | tail -1 | sed 's/mean=//;s/ms//')
+        train_time=$(grep -oE 'Training time [0-9:]+' "$log" | tail -1 | awk '{print $NF}')
+    fi
+
+    # Capture first error line if not ok.
+    local error=""
+    if [ "$status" != "ok" ] && [ -f "$log" ]; then
+        error=$(grep -oE '^[A-Za-z][^:]+Error:.*|^FAILED.*|^fatal: .*' "$log" | head -1 | tr -d '\n' | cut -c1-200)
+    fi
+
+    python3 - <<PYEOF
+import json
+data = {
+    "name": "$name",
+    "compute": "$compute",
+    "container": "$container",
+    "data_path": "$data_path",
+    "gpus": $gpus,
+    "status": "$status",
+    "rc": $rc,
+    "duration_s": float("$duration_s"),
+    "ap": "$ap" or None,
+    "bench_ms": float("$bench_ms") if "$bench_ms" else None,
+    "train_time": "$train_time" or None,
+    "error": "$error" or None,
+    "log": "$log",
+}
+with open("$summary", "w") as f:
+    json.dump(data, f, indent=2)
+PYEOF
+
+    printf "    %-25s  %-10s  duration=%-6s  ap=%-6s  bench=%-6s\n" \
+        "$name" "$status" "${duration_s}s" "${ap:-—}" "${bench_ms:-—}"
+}
+
+# Resolve PYTHON_BIN if user didn't set it; same auto-detection as the demo.
+if [ -z "$PYTHON_BIN" ]; then
+    for cand in "$REPO_ROOT/.venv/bin/python" /opt/venv/bin/python "$(command -v python3 || true)"; do
+        if [ -n "$cand" ] && [ -x "$cand" ]; then
+            PYTHON_BIN="$cand"
+            break
+        fi
+    done
+fi
+export PYTHON_BIN
+
+# ----- main loop ------------------------------------------------------
+echo "=== scenarios ==="
+declare -a RAN=() SKIPPED=()
+for row in "${SCENARIOS[@]}"; do
+    IFS='|' read -r name compute container data_path gpus reqs <<< "$row"
+    decision=$(should_run "$name" "$reqs")
+    if [ "$decision" = "RUN" ]; then
+        run_scenario "$name" "$compute" "$container" "$data_path" "$gpus"
+        RAN+=("$name")
+    else
+        printf "    %-25s  %s\n" "$name" "$decision"
+        SKIPPED+=("$name:$decision")
+    fi
+done
+
+# ----- summary table --------------------------------------------------
+echo
+echo "=== summary ==="
+{
+    printf "name\tstatus\tcompute\tcontainer\tdata_path\tgpus\tduration_s\ttrain_time\tap\tbench_ms\terror\n"
+    for n in "${RAN[@]}"; do
+        python3 - <<PYEOF
+import json
+with open("$MATRIX_OUT/$n/summary.json") as f:
+    d = json.load(f)
+print("\t".join(str(d.get(k) or "") for k in (
+    "name","status","compute","container","data_path","gpus",
+    "duration_s","train_time","ap","bench_ms","error"
+)))
+PYEOF
+    done
+} | tee "$MATRIX_OUT/matrix.tsv"
+
+echo
+echo "Artifacts:"
+echo "  matrix.tsv:   $MATRIX_OUT/matrix.tsv"
+echo "  per-scenario: $MATRIX_OUT/<name>/{log.txt,summary.json,demo/}"
+echo
+echo "Ran:     ${#RAN[@]} scenario(s)"
+echo "Skipped: ${#SKIPPED[@]} scenario(s)"
+
+# Exit non-zero if any ran scenario failed.
+failures=0
+for n in "${RAN[@]}"; do
+    s=$(python3 -c "import json; print(json.load(open('$MATRIX_OUT/$n/summary.json'))['status'])")
+    [ "$s" != "ok" ] && failures=$((failures+1))
+done
+if [ "$failures" -gt 0 ]; then
+    echo
+    echo "FAILED scenarios: $failures of ${#RAN[@]}" >&2
+    exit 1
+fi

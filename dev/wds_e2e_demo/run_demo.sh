@@ -80,6 +80,15 @@ DEMO_LR="${DEMO_LR:-1e-3}"
 DEMO_BACKBONE_LR="${DEMO_BACKBONE_LR:-1e-4}"
 DEMO_TRAIN_WORKERS="${DEMO_TRAIN_WORKERS:-2}"
 DEMO_VAL_WORKERS="${DEMO_VAL_WORKERS:-1}"
+DEMO_NUM_GPUS="${DEMO_NUM_GPUS:-1}"
+# Which data input path to exercise:
+#   wds  - WebDataset shards via WebDatasetCocoDetection (the new gen002 path)
+#   jpeg - legacy CocoDataset reading kwcoco JSON + JPEG files directly
+DEMO_DATA_PATH="${DEMO_DATA_PATH:-wds}"
+case "$DEMO_DATA_PATH" in
+    wds|jpeg) ;;
+    *) echo "ERROR: DEMO_DATA_PATH must be 'wds' or 'jpeg' (got '$DEMO_DATA_PATH')" >&2; exit 1 ;;
+esac
 
 if [ ! -x "$PYTHON_BIN" ]; then
     echo "ERROR: $PYTHON_BIN not executable. Set PYTHON_BIN= to the venv python." >&2
@@ -145,24 +154,29 @@ TRAIN_KWCOCO="$SRC_DPATH/train.kwcoco.json"
 VALI_KWCOCO="$SRC_DPATH/vali.kwcoco.json"
 TEST_KWCOCO="$SRC_DPATH/test.kwcoco.json"
 
-# ---------- 2. WebDataset shards
-echo
-echo "=== 2. WebDataset shards ==="
-if [ "$DEMO_KEEP" = "1" ] && [ -d "$SHARDS_DPATH" ] && \
-   [ -n "$(find "$SHARDS_DPATH" -name '*.tar' -print -quit 2>/dev/null)" ]; then
-    echo "  reusing shards at $SHARDS_DPATH"
+# ---------- 2. WebDataset shards (only for wds path)
+if [ "$DEMO_DATA_PATH" = "wds" ]; then
+    echo
+    echo "=== 2. WebDataset shards ==="
+    if [ "$DEMO_KEEP" = "1" ] && [ -d "$SHARDS_DPATH" ] && \
+       [ -n "$(find "$SHARDS_DPATH" -name '*.tar' -print -quit 2>/dev/null)" ]; then
+        echo "  reusing shards at $SHARDS_DPATH"
+    else
+        rm -rf "$SHARDS_DPATH"
+        "$PYTHON_BIN" -m kwcoco_dataloader.cli.build_detection_webdataset \
+            --in_fpath  "$TRAIN_KWCOCO" \
+            --out_dpath "$SHARDS_DPATH" \
+            --bucket_attr source_category \
+            --maxcount 4 \
+            --maxsize_mb 1024 \
+            --jpeg_quality 80 \
+            --no-progress 2>&1 | tail -10
+        echo "  shard tree:"
+        find "$SHARDS_DPATH" -maxdepth 2 -type f -name '*.tar' | sort | sed 's/^/    /'
+    fi
 else
-    rm -rf "$SHARDS_DPATH"
-    "$PYTHON_BIN" -m kwcoco_dataloader.cli.build_detection_webdataset \
-        --in_fpath  "$TRAIN_KWCOCO" \
-        --out_dpath "$SHARDS_DPATH" \
-        --bucket_attr source_category \
-        --maxcount 4 \
-        --maxsize_mb 1024 \
-        --jpeg_quality 80 \
-        --no-progress 2>&1 | tail -10
-    echo "  shard tree:"
-    find "$SHARDS_DPATH" -maxdepth 2 -type f -name '*.tar' | sort | sed 's/^/    /'
+    echo
+    echo "=== 2. WebDataset shards: skipped (DEMO_DATA_PATH=jpeg) ==="
 fi
 
 # Build the source_to_target JSON for sweep. Demo data has classes
@@ -179,29 +193,41 @@ echo "  source_to_target: $SRC_TO_TGT_JSON"
 
 # ---------- 3. sweep (train + export + eval + bench)
 echo
-echo "=== 3. sweep (train + export + eval + bench) ==="
-"$PYTHON_BIN" -m kwcoco_detector_kit sweep \
-    --train_kwcoco "$TRAIN_KWCOCO" \
-    --vali_kwcoco  "$VALI_KWCOCO" \
-    --test_kwcoco  "$TEST_KWCOCO" \
-    --kcd_root "$KCD_ROOT" \
-    --trainer deimv2 \
-    --variant deimv2_hgnetv2_n \
-    --input_hw "$DEMO_INPUT_HW" \
-    --train_policy fixed \
-    --num_epochs "$DEMO_EPOCHS" \
-    --batch_size "$DEMO_BATCH" \
-    --val_batch_size "$DEMO_VAL_BATCH" \
-    --train_wds_shards_dpath "$SHARDS_DPATH" \
-    --train_wds_source_to_target "$SRC_TO_TGT_JSON" \
-    --train_num_workers "$DEMO_TRAIN_WORKERS" \
-    --val_num_workers "$DEMO_VAL_WORKERS" \
-    --category_names "$CATEGORY_NAMES" \
-    --lr "$DEMO_LR" \
-    --backbone_lr "$DEMO_BACKBONE_LR" \
-    --use_amp "$DEMO_AMP" \
-    --scale_tier S \
-    --num_gpus 1
+echo "=== 3. sweep (train + export + eval + bench) [data_path=$DEMO_DATA_PATH, gpus=$DEMO_NUM_GPUS] ==="
+
+# Build the sweep CLI args incrementally so the wds-only flags only
+# appear in the wds case.
+SWEEP_ARGS=(
+    --train_kwcoco "$TRAIN_KWCOCO"
+    --vali_kwcoco  "$VALI_KWCOCO"
+    --test_kwcoco  "$TEST_KWCOCO"
+    --kcd_root "$KCD_ROOT"
+    --trainer deimv2
+    --variant deimv2_hgnetv2_n
+    --input_hw "$DEMO_INPUT_HW"
+    --train_policy fixed
+    --num_epochs "$DEMO_EPOCHS"
+    --batch_size "$DEMO_BATCH"
+    --val_batch_size "$DEMO_VAL_BATCH"
+    --train_num_workers "$DEMO_TRAIN_WORKERS"
+    --val_num_workers "$DEMO_VAL_WORKERS"
+    --category_names "$CATEGORY_NAMES"
+    --lr "$DEMO_LR"
+    --backbone_lr "$DEMO_BACKBONE_LR"
+    --use_amp "$DEMO_AMP"
+    --scale_tier S
+    --num_gpus "$DEMO_NUM_GPUS"
+)
+if [ "$DEMO_DATA_PATH" = "wds" ]; then
+    SWEEP_ARGS+=(
+        --train_wds_shards_dpath "$SHARDS_DPATH"
+        --train_wds_source_to_target "$SRC_TO_TGT_JSON"
+    )
+fi
+if [ "$DEMO_NUM_GPUS" -gt 1 ]; then
+    SWEEP_ARGS+=(--distributed)
+fi
+"$PYTHON_BIN" -m kwcoco_detector_kit sweep "${SWEEP_ARGS[@]}"
 
 # ---------- 4. eligibility manifest
 echo

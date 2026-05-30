@@ -126,17 +126,34 @@ echo "[_sbatch_train.sh] forwarding ${#KCD_ENV_FLAGS[@]} KCD_* values to docker 
 # (gen002 OOM 2026-05-30: jobs 2508 + 2537 both landed on UUID
 # ebfc1af1 with 45 GB held by the other). `--gpus device=<idx>`
 # pins docker to exactly the GPUs slurm reserved.
+# Docker --gpus=device=<host-idx> exposes ONLY that physical GPU to the
+# container, but inside the container that GPU is remapped to logical
+# index 0 (the only visible device). So:
+#   - host side: CUDA_VISIBLE_DEVICES=1 (slurm's pin to physical GPU 1)
+#   - --gpus=device=1 → container sees one device, at logical idx 0
+#   - container side: CUDA_VISIBLE_DEVICES MUST be "0" to match the
+#     post-remap logical index, or "" to let torch see all visible
+#     devices. Forwarding the host idx (1) makes torch look for logical
+#     device 1 inside the container — which doesn't exist — and silently
+#     ends up with zero usable GPUs, model stays on CPU, DDP errors
+#     ("module parameters {device(type='cpu')}"). gen002 2544 hit this.
 if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
     GPU_FLAG="--gpus=device=${CUDA_VISIBLE_DEVICES}"
+    # Build container-side device list: 0,1,2,... up to the count slurm
+    # gave us. Slurm sets CUDA_VISIBLE_DEVICES to a comma-separated host
+    # index list ("0", "1,2", etc.); count its entries.
+    n_gpus=$(echo "$CUDA_VISIBLE_DEVICES" | awk -F',' '{print NF}')
+    CONTAINER_CUDA_VISIBLE=$(seq -s, 0 $((n_gpus - 1)))
 else
     GPU_FLAG="--gpus=all"
+    CONTAINER_CUDA_VISIBLE=""
     echo "WARN: CUDA_VISIBLE_DEVICES unset; using --gpus=all (collision risk)" >&2
 fi
 docker run --rm \
     $GPU_FLAG \
     --ipc=host \
     --shm-size="${shm_gb}g" \
-    -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}" \
+    -e CUDA_VISIBLE_DEVICES="${CONTAINER_CUDA_VISIBLE}" \
     -e SLURM_JOB_ID="${SLURM_JOB_ID:-manual}" \
     "${KCD_ENV_FLAGS[@]}" \
     "${NCCL_DEBUG_FLAGS[@]}" \

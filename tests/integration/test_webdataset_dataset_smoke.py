@@ -210,6 +210,67 @@ def test_webdataset_dataset_end_to_end(tmp_path):
     assert isinstance(one_batch, list) and len(one_batch) == 2
 
 
+def test_warp_loader_passes_iterable_dataset_through(tmp_path, monkeypatch):
+    """DEIMv2's dist_utils.warp_loader() wraps every dataset in a
+    DistributedSampler when torch.distributed is initialised. The
+    sampler's __init__ calls len(dataset), which crashes an
+    IterableDataset like ours. The fix is to skip the wrap when the
+    dataset is iterable; the WebDataset stream handles its own
+    per-rank + per-worker shard splitting via split_by_node.
+
+    This test simulates "distributed initialised" by monkeypatching
+    is_dist_available_and_initialized to True; the function under
+    test should detect IterableDataset and return the loader as-is
+    rather than trying to wrap it.
+    """
+    pytest.importorskip("torch")
+    pytest.importorskip("torchvision")
+    pytest.importorskip("webdataset")
+    pytest.importorskip("wids")
+    pytest.importorskip("kwcoco_dataloader")
+
+    WebDatasetCocoDetection = _import_adapter()
+
+    # Build a 4-image synthetic kwcoco + shards (reuse the helpers).
+    bundle_dpath = tmp_path / "src"
+    bundle_dpath.mkdir()
+    _build_tiny_synth_kwcoco(bundle_dpath)
+    shards_dpath = tmp_path / "shards"
+    _make_shards(bundle_dpath / "tiny.kwcoco.json", shards_dpath)
+
+    ds = WebDatasetCocoDetection(
+        shards_dpath=str(shards_dpath),
+        category_names=["widget"],
+        source_to_target={"W": "widget"},
+    )
+
+    from torch.utils.data import DataLoader, IterableDataset
+    assert isinstance(ds, IterableDataset)
+    loader = DataLoader(ds, batch_size=2, num_workers=0, shuffle=False,
+                        collate_fn=lambda batch: batch)
+
+    # Import warp_loader from DEIMv2's dist_utils.
+    import sys as _sys
+    from pathlib import Path as _Path
+    kit_dpath = _Path(__file__).resolve().parents[2]
+    deimv2_dpath = kit_dpath / "tpl" / "DEIMv2"
+    _sys.path.insert(0, str(deimv2_dpath))
+    try:
+        from engine.misc import dist_utils as _dist_utils
+    finally:
+        _sys.path.pop(0)
+
+    # Pretend distributed is initialised to force the wrap branch.
+    monkeypatch.setattr(_dist_utils, "is_dist_available_and_initialized",
+                        lambda: True)
+
+    # warp_loader must NOT raise — the iterable-dataset branch should
+    # return the loader unchanged. Without the fix, DistributedSampler.__init__
+    # calls len(ds) which raises NotImplementedError.
+    out = _dist_utils.warp_loader(loader, shuffle=False)
+    assert out is loader, "warp_loader should pass IterableDataset through unchanged"
+
+
 def test_webdataset_dataset_drops_unmapped_source_classes(tmp_path):
     """A scheme that doesn't list a source category in `mapping`
     should drop those annotations silently (default unmapped_policy

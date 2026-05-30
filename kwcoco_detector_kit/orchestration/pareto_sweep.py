@@ -79,6 +79,10 @@ class SweepConfig(scfg.DataConfig):
     )
     train_wds_source_to_target = scfg.Value(
         None,
+        # type=str disables scriptconfig's smartcast comma-split that
+        # would otherwise turn a JSON object string like {"B":"x","S":"y"}
+        # into a set of fragments. We json.loads() ourselves in _run_train.
+        type=str,
         help=(
             "JSON string mapping raw source category names (as written into "
             "shards by build_detection_webdataset's `source_category` field) "

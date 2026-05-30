@@ -47,6 +47,14 @@ MATRIX_SKIP="${MATRIX_SKIP:-}"
 MATRIX_EPOCHS="${MATRIX_EPOCHS:-2}"
 MATRIX_DOCKER_IMAGE="${MATRIX_DOCKER_IMAGE:-kwcoco-detector-kit:ogdino-auto}"
 MATRIX_SLURM_PARTITION="${MATRIX_SLURM_PARTITION:-}"
+# Per-scenario wall-clock cap. Heterogeneous DDP (e.g. yardrat's
+# RTX 8000 + RTX 5000) can hang in NCCL init_process_group; without
+# a timeout the runner blocks indefinitely. 600s is comfortably
+# enough for a clean GPU/docker run of the demo (~30s on a 3090).
+MATRIX_SCENARIO_TIMEOUT="${MATRIX_SCENARIO_TIMEOUT:-600}"
+# Heartbeat log every N seconds so a "hung" scenario is visible
+# (otherwise stdout is silent between print_freq=500 iter prints).
+MATRIX_HEARTBEAT_INTERVAL="${MATRIX_HEARTBEAT_INTERVAL:-30}"
 PYTHON_BIN="${PYTHON_BIN:-}"
 
 rm -rf "$MATRIX_OUT"
@@ -206,10 +214,26 @@ run_scenario() {
             ;;
     esac
 
+    # Run with a wall-clock timeout + a heartbeat loop that prints the
+    # last log line every $MATRIX_HEARTBEAT_INTERVAL seconds so a hung
+    # scenario is at least visible.
     set +e
-    "${cmd[@]}" >"$log" 2>&1
+    timeout --kill-after=30 --signal=TERM "$MATRIX_SCENARIO_TIMEOUT" \
+        "${cmd[@]}" >"$log" 2>&1 &
+    local cmd_pid=$!
+    while kill -0 "$cmd_pid" 2>/dev/null; do
+        sleep "$MATRIX_HEARTBEAT_INTERVAL"
+        kill -0 "$cmd_pid" 2>/dev/null || break
+        local last
+        last=$(tail -n 1 "$log" 2>/dev/null | tr -d '\r' | cut -c1-100)
+        echo "    [heartbeat $(date +%H:%M:%S) pid=$cmd_pid] ${last:-(no output yet)}"
+    done
+    wait "$cmd_pid"
     local rc=$?
     set -e
+    if [ "$rc" = "124" ] || [ "$rc" = "137" ]; then
+        status="timeout"
+    fi
 
     local t_end
     t_end=$("$PYTHON_BIN" -c 'import time; print(time.monotonic())' 2>/dev/null \

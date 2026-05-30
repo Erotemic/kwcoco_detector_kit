@@ -36,6 +36,14 @@ echo "  push.recurseSubmodules = on-demand"
 git config --local fetch.recurseSubmodules on-demand
 echo "  fetch.recurseSubmodules = on-demand"
 
+# 2b. `git pull` from the parent also advances submodules to the
+#     parent's new pointer. Without this, the parent gets the new
+#     pinned commit but the submodule's working tree stays at the
+#     old one, and dev-mounts (KCD_DEV_MOUNT_DEIMV2=1) pick up stale
+#     code from the host's submodule dir.
+git config --local pull.recurseSubmodules on-demand
+echo "  pull.recurseSubmodules = on-demand"
+
 # 3. `git status` / `git diff` summarises submodule pointer changes
 #    (e.g. "1 file changed, 1 insertion(+), 1 deletion(-)" with the
 #    old/new commit displayed) rather than the per-file diff of the

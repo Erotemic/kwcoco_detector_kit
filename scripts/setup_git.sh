@@ -93,20 +93,22 @@ git config -f .gitmodules --get-regexp '^submodule\..*\.path$' | while read -r k
         cd "$path"
         git fetch --quiet origin "$cfg_branch" 2>/dev/null || true
 
-        if git show-ref --verify --quiet "refs/heads/$cfg_branch"; then
-            # Local branch exists; just switch to it.
-            git checkout --quiet "$cfg_branch"
-        elif git show-ref --verify --quiet "refs/remotes/origin/$cfg_branch"; then
-            # Remote branch exists; create local tracking branch.
-            git checkout --quiet -b "$cfg_branch" --track "origin/$cfg_branch"
-        else
-            # Remote doesn't have the branch yet — create local
-            # branch at current HEAD (first push will land it).
-            git checkout --quiet -b "$cfg_branch"
-        fi
-        # Ensure upstream is set (idempotent — no error if already set).
+        # CRITICAL: never move HEAD away from the kit's pinned commit.
+        # That commit is what `git submodule update --init` just
+        # checked out (detached HEAD). If we `git checkout <branch>`
+        # naively, we'd lose the kit's pin and land on whatever the
+        # local branch tip happens to be — which can be a wildly
+        # different commit from a sibling line of work on the fork.
+        #
+        # `git checkout -B <branch> HEAD` is atomic: reset local
+        # branch to current HEAD AND check it out. The kit-pinned
+        # commit stays the working-tree commit AND becomes the tip
+        # of the named branch. The branch's upstream is then set so
+        # push goes to the right place on the fork.
+        pinned=$(git rev-parse HEAD)
+        git checkout --quiet -B "$cfg_branch" "$pinned"
         git branch --set-upstream-to="origin/$cfg_branch" "$cfg_branch" 2>/dev/null || true
-        echo "  $path: on '$cfg_branch' tracking origin/$cfg_branch"
+        echo "  $path: on '$cfg_branch' at $(git rev-parse --short HEAD), tracking origin/$cfg_branch"
     )
 done
 

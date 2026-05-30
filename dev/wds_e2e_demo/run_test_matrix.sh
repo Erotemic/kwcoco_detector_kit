@@ -209,10 +209,17 @@ run_scenario() {
             cmd=("${env_prefix[@]}" bash dev/wds_e2e_demo/run_demo.sh)
             ;;
         docker)
+            # shm-size scales with rank count. Production _sbatch_train.sh
+            # uses 16 + 8 * n_gpus; mirror that here so the matrix tests
+            # the same envelope. Without the bump, WDS workers under 2+
+            # ranks starve on 16g shm (each worker holds shuffle buffers
+            # + IPC queues) and DataLoader hangs after iter 0
+            # (yardrat 2026-05-30 docker-gpu2x-wds reproduced this).
+            local shm_gb=$((16 + 8 * nproc))
             cmd=(
                 docker run --rm
                 --gpus all
-                --ipc=host --shm-size=16g
+                --ipc=host --shm-size="${shm_gb}g"
                 -v "$REPO_ROOT:$REPO_ROOT" -w "$REPO_ROOT"
                 # Bind-mount the host's tpl/DEIMv2 over the image's
                 # baked copy so that DEIMv2 fixes on the host (e.g.
@@ -279,8 +286,17 @@ run_scenario() {
         if [ $((SECONDS - last_beat)) -ge "$MATRIX_HEARTBEAT_INTERVAL" ]; then
             last_beat=$SECONDS
             local last
-            last=$(tail -n 1 "$log" 2>/dev/null | tr -d '\r' | cut -c1-100)
-            echo "    [heartbeat $(date +%H:%M:%S) pid=$cmd_pid] ${last:-(no output yet)}"
+            # Strip ANSI escapes (NCCL_DEBUG=INFO, onnxruntime, etc.
+            # emit colored warnings that leak the unclosed escape into
+            # the rest of the matrix output and make every subsequent
+            # line render yellow on the terminal).
+            last=$(tail -n 1 "$log" 2>/dev/null \
+                   | sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g' \
+                   | tr -d '\r' | cut -c1-100)
+            # Always end with the reset code so even if a stray escape
+            # snuck through tail, the next prompt is back to normal.
+            printf "    [heartbeat %s pid=%s] %s\033[0m\n" \
+                   "$(date +%H:%M:%S)" "$cmd_pid" "${last:-(no output yet)}"
         fi
     done
     wait "$cmd_pid"

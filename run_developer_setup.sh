@@ -130,6 +130,17 @@ else
     # editable install. The opengroundingdino extra is also omitted
     # (heavy + legacy); install manually if you need it.
     uv pip install --python "$PYTHON_BIN" -e ".[deimv2,webdataset,dev]"
+
+    echo
+    echo "=== 4. developer convenience tools ==="
+    # line_profiler: kwcoco_dataloader's reader uses @line_profiler.profile
+    # markers throughout. Defensive imports in the reader fall back to a
+    # no-op decorator when line_profiler is missing, so it's not strictly
+    # required — but on dev boxes we want the real tool available so
+    # LINE_PROFILE=1 actually profiles. py-spy similarly: not required
+    # for runtime, but invaluable for debugging hangs (we used it to
+    # diagnose gen002 worker stalls 2026-05-30).
+    uv pip install --python "$PYTHON_BIN" line_profiler py-spy
 fi
 
 # ---------- 3. verify --------------------------------------------------
@@ -154,6 +165,7 @@ REQUIRED = [
     ("webdataset",          "WDS reader backend"),
     ("PIL",                 "image decode"),
     ("pytest",              "test runner"),
+    ("line_profiler",       "dev convenience (kwcoco_dataloader markers)"),
 ]
 
 missing = []

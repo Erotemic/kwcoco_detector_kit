@@ -148,7 +148,7 @@ RUN test -f /opt/kwcoco_detector_kit/tpl/kwcoco_dataloader/kwcoco_dataloader/__i
         (echo "kwcoco_dataloader submodule contents are missing. Run: git submodule update --init tpl/kwcoco_dataloader" >&2; exit 1)
 RUN --mount=type=cache,target=/root/.cache/pip \
     ${PYTHON_BIN} -m pip install -e /opt/kwcoco_detector_kit/tpl/kwcoco_dataloader && \
-    ${PYTHON_BIN} -m pip install "webdataset>=0.2" "wids>=0.1" braceexpand
+    ${PYTHON_BIN} -m pip install "webdataset>=0.2" "wids>=0.1" braceexpand "line_profiler>=4.0"
 
 COPY kwcoco_detector_kit /opt/kwcoco_detector_kit/kwcoco_detector_kit
 COPY docs /opt/kwcoco_detector_kit/docs

@@ -81,6 +81,10 @@ DEMO_BACKBONE_LR="${DEMO_BACKBONE_LR:-1e-4}"
 DEMO_TRAIN_WORKERS="${DEMO_TRAIN_WORKERS:-2}"
 DEMO_VAL_WORKERS="${DEMO_VAL_WORKERS:-1}"
 DEMO_NUM_GPUS="${DEMO_NUM_GPUS:-1}"
+# When set, pins the per-epoch sample count for the WDS path. Required
+# for multi-GPU DDP correctness — without it, uneven shard splits
+# cause "Rank 0 BROADCAST vs Rank 1 REDUCE" collective mismatches.
+DEMO_WDS_EPOCH_LENGTH="${DEMO_WDS_EPOCH_LENGTH:-0}"
 # Which data input path to exercise:
 #   wds  - WebDataset shards via WebDatasetCocoDetection (the new gen002 path)
 #   jpeg - legacy CocoDataset reading kwcoco JSON + JPEG files directly
@@ -223,6 +227,9 @@ if [ "$DEMO_DATA_PATH" = "wds" ]; then
         --train_wds_shards_dpath "$SHARDS_DPATH"
         --train_wds_source_to_target "$SRC_TO_TGT_JSON"
     )
+    if [ "$DEMO_WDS_EPOCH_LENGTH" -gt 0 ]; then
+        SWEEP_ARGS+=(--train_wds_epoch_length "$DEMO_WDS_EPOCH_LENGTH")
+    fi
 fi
 if [ "$DEMO_NUM_GPUS" -gt 1 ]; then
     SWEEP_ARGS+=(--distributed)

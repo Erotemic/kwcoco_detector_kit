@@ -446,6 +446,41 @@ def test_many_small_shards_yield(tmp_path, num_workers):
     )
 
 
+def test_epoch_length_pin_cycles_stream(tmp_path):
+    """With epoch_length>0, the iterator yields exactly epoch_length
+    samples even if the underlying stream is shorter — it cycles back
+    to the start as needed.
+
+    Critical for DDP: each rank must see the same per-epoch sample
+    count regardless of how unevenly shards split between ranks.
+    Without this, "Rank 0 BROADCAST vs Rank 1 REDUCE" collective
+    mismatches kill multi-GPU runs (host-gpu2x-wds matrix scenario,
+    yardrat 2026-05-30).
+
+    Conversely with epoch_length=0 (the default), we keep the
+    "drain once and stop" behavior the gen001 single-rank path
+    depends on.
+    """
+    pytest.importorskip("webdataset")
+    pytest.importorskip("kwcoco_dataloader")
+
+    # Drain-once contract (epoch_length=0): yields == nonempty count.
+    ds_drain, _, nonempty = _make_dataset(tmp_path, n_images=20)
+    assert _count_via_iter(ds_drain) == nonempty
+
+    # Cycle contract (epoch_length > nonempty): yields == epoch_length.
+    target = nonempty * 3 + 5  # not a multiple of nonempty
+    ds_cycle, _, _ = _make_dataset(
+        (tmp_path / "cycle"), n_images=20,
+        epoch_length=target,
+    )
+    yielded = _count_via_iter(ds_cycle)
+    assert yielded == target, (
+        f"epoch_length={target} requested but yielded {yielded}; "
+        f"adapter is not cycling the stream when it exhausts."
+    )
+
+
 def test_load_bucket_streams_sees_all_footers(tmp_path):
     """load_bucket_streams walks __footer__.json files to weight
     buckets. If footers are missing or unparseable for some

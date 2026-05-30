@@ -164,12 +164,19 @@ run_scenario() {
     # For multi-GPU scenarios, enable NCCL + torch.distributed verbose
     # logging into the scenario log so we can see WHERE a hang happens
     # (rendezvous, topology negotiation, first all_reduce, etc.).
+    # Also pin DEMO_WDS_EPOCH_LENGTH so every rank iterates the same
+    # number of samples per epoch — without it, uneven shard splits
+    # cause DDP collective mismatches between ranks (host-gpu2x-wds
+    # symptom 2026-05-30: "Rank 0 BROADCAST vs Rank 1 REDUCE"). 16
+    # matches the demo corpus size; smaller values are fine, the
+    # adapter cycles to fill the count.
     if [ "$gpus" -gt 1 ]; then
         env_prefix+=(
             "NCCL_DEBUG=INFO"
             "TORCH_DISTRIBUTED_DEBUG=DETAIL"
             "TORCH_NCCL_BLOCKING_WAIT=1"
             "TORCH_NCCL_ASYNC_ERROR_HANDLING=1"
+            "DEMO_WDS_EPOCH_LENGTH=${DEMO_WDS_EPOCH_LENGTH:-16}"
         )
     fi
     # For multi-GPU on the host with potentially heterogeneous cards

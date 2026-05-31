@@ -227,6 +227,13 @@ class SysSample:
     ram_cache_gb: float
     disk_read_mb_s: float
     disk_write_mb_s: float
+    # Linux PSI (Pressure Stall Information): % of time tasks are
+    # stalled on I/O / CPU / memory. 0 = no pressure, >10% in avg10
+    # is meaningful, >20% in avg60 is real congestion.
+    io_pressure_some_10: float = 0.0
+    io_pressure_some_60: float = 0.0
+    cpu_pressure_some_10: float = 0.0
+    mem_pressure_some_10: float = 0.0
 
 
 class SysSampler:
@@ -250,6 +257,14 @@ class SysSampler:
         # Linux only: page cache is `cached`. On other OSes we surface 0.
         cache = getattr(mem, "cached", 0)
 
+        # PSI — direct measure of how much time tasks waited on
+        # a resource (cgroup-aware kernel metric, kernel >= 4.20).
+        # Far more meaningful than throughput numbers for "is the
+        # system pressured?" Read once per sample; cheap.
+        io_some_10, io_some_60 = _read_pressure("io", "some")
+        cpu_some_10, _ = _read_pressure("cpu", "some")
+        mem_some_10, _ = _read_pressure("memory", "some")
+
         return SysSample(
             cpu_pct=psutil.cpu_percent(interval=None),
             ram_used_gb=(mem.total - mem.available) / 1e9,
@@ -257,7 +272,30 @@ class SysSampler:
             ram_cache_gb=cache / 1e9,
             disk_read_mb_s=r,
             disk_write_mb_s=w,
+            io_pressure_some_10=io_some_10,
+            io_pressure_some_60=io_some_60,
+            cpu_pressure_some_10=cpu_some_10,
+            mem_pressure_some_10=mem_some_10,
         )
+
+
+def _read_pressure(resource: str, line_prefix: str) -> tuple[float, float]:
+    """Parse /proc/pressure/<resource> for the given line ('some' or 'full').
+
+    Returns (avg10, avg60). Both 0.0 if the file isn't readable
+    (older kernels, non-Linux, restricted containers).
+    """
+    try:
+        with open(f"/proc/pressure/{resource}") as f:
+            for line in f:
+                if line.startswith(line_prefix):
+                    parts = line.split()
+                    avg10 = float(parts[1].split("=")[1])
+                    avg60 = float(parts[2].split("=")[1])
+                    return avg10, avg60
+    except (FileNotFoundError, PermissionError, IndexError, ValueError):
+        pass
+    return 0.0, 0.0
 
 
 # -------------------- discovery + rendering -----------------------
@@ -293,6 +331,15 @@ def render(sys_s: SysSample, procs: List[ProcSample], gpus: Dict[int, dict]) -> 
         f"disk r={sys_s.disk_read_mb_s:7.2f} MB/s  "
         f"w={sys_s.disk_write_mb_s:6.2f} MB/s"
     )
+    # PSI line — only show if any pressure exists, else it's noise.
+    if (sys_s.io_pressure_some_10 or sys_s.cpu_pressure_some_10
+            or sys_s.mem_pressure_some_10):
+        lines.append(
+            f"  PSI  io  10s={sys_s.io_pressure_some_10:5.1f}%  60s={sys_s.io_pressure_some_60:5.1f}%   "
+            f"cpu 10s={sys_s.cpu_pressure_some_10:5.1f}%   "
+            f"mem 10s={sys_s.mem_pressure_some_10:5.1f}%   "
+            f"(some-stall %)"
+        )
     if gpus:
         for idx, g in sorted(gpus.items()):
             lines.append(
@@ -348,6 +395,22 @@ def diagnose(sys_s: SysSample, procs: List[ProcSample], gpus: Dict[int, dict]) -
         notes.append(
             f"CPU saturated ({sys_s.cpu_pct:.0f}%) — dataloader workers may be "
             "queuing; check `data:` field in train iter prints"
+        )
+    # PSI thresholds — meaningful signal that goes beyond just %util.
+    if sys_s.io_pressure_some_60 > 20:
+        notes.append(
+            f"sustained I/O pressure (PSI io some 60s={sys_s.io_pressure_some_60:.1f}%) "
+            "— tasks have been stalled on disk; check page cache fit + shard storage"
+        )
+    elif sys_s.io_pressure_some_10 > 30:
+        notes.append(
+            f"recent I/O pressure spike (PSI io some 10s={sys_s.io_pressure_some_10:.1f}%) — "
+            "may settle if it was a one-off (checkpoint save?)"
+        )
+    if sys_s.mem_pressure_some_10 > 10:
+        notes.append(
+            f"memory pressure (PSI mem some 10s={sys_s.mem_pressure_some_10:.1f}%) — "
+            "page cache thrashing, reduce per-job RAM use or workers"
         )
     return notes
 

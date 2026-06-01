@@ -28,6 +28,22 @@ the binding constraint, hurts everywhere else.**
 Crude, but the kit's NFS-excluded class-agnostic eval has been roughly
 3-4× the COCO-style mAP across all our prior runs.
 
+### Update 2026-06-01 18:36 — single_sealion gen002 finished
+
+| Run | Train time | best in-train mAP | **actual kit AP** | projected | error |
+|---|---|---|---|---|---|
+| 2558 single_sealion gen002 | 27h | 0.0120 @ ep 21 | **0.024** | ~0.044 | 1.8× overestimate |
+
+The projection was way off — the kit-AP-to-mAP ratio was **~2×** for
+gen002, not the ~3.65× we saw for gen001 v5. That's its own finding:
+gen002 produces predictions that are more uniformly low-confidence
+(so the kit's NFS-exclusion + class-agnostic re-eval can't promote
+them as much as it can for gen001 detections). Likely a downstream
+effect of the corpus-composition imbalance — the model isn't
+confidently detecting anything.
+
+So the corrected verdict for single_sealion is **0.024 vs v5's 0.177 = 86% regression** (7.4× worse), not 4× worse. Gen002 is much more strongly contraindicated for single_sealion than the in-train mAP alone would suggest.
+
 ### Zombies
 
 | Run | Scheme | Stuck since | Cause |

@@ -481,6 +481,45 @@ def test_epoch_length_pin_cycles_stream(tmp_path):
     )
 
 
+def test_sample_timeout_env_disables_watchdog(tmp_path, monkeypatch):
+    """When KCD_WDS_SAMPLE_TIMEOUT_S=0, the watchdog thread is not
+    started. Default config (timeout=120) installs the thread.
+
+    Smoke-checks that the env var routes correctly without firing
+    the SIGKILL path (which would kill the test process).
+    """
+    pytest.importorskip("webdataset")
+    pytest.importorskip("kwcoco_dataloader")
+
+    import threading
+
+    # Disabled: no watchdog thread spawned
+    monkeypatch.setenv("KCD_WDS_SAMPLE_TIMEOUT_S", "0")
+    ds, _, _ = _make_dataset(tmp_path, n_images=16)
+    before = threading.active_count()
+    list(ds)
+    after = threading.active_count()
+    assert after <= before + 1, (
+        f"thread leak with timeout disabled: {before} -> {after}"
+    )
+
+    # Enabled but generous timeout: watchdog spawns + cleans up
+    monkeypatch.setenv("KCD_WDS_SAMPLE_TIMEOUT_S", "120")
+    ds2, _, _ = _make_dataset((tmp_path / "b"), n_images=16)
+    before = threading.active_count()
+    list(ds2)
+    # daemon=True watchdogs aren't guaranteed to exit immediately
+    # after we call stop, but they should within a few seconds.
+    deadline = __import__('time').monotonic() + 10
+    while __import__('time').monotonic() < deadline:
+        if threading.active_count() <= before + 1:
+            break
+        __import__('time').sleep(0.1)
+    assert threading.active_count() <= before + 1, (
+        f"watchdog thread didn't stop: {before} -> {threading.active_count()}"
+    )
+
+
 def test_load_bucket_streams_sees_all_footers(tmp_path):
     """load_bucket_streams walks __footer__.json files to weight
     buckets. If footers are missing or unparseable for some

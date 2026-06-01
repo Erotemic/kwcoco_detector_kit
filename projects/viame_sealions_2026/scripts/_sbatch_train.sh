@@ -113,6 +113,29 @@ if [ "${KCD_DEV_MOUNT_DATALOADER:-0}" = "1" ]; then
     fi
 fi
 
+# Extra host->container bind mounts. Use case: data on a path outside
+# the default $KCD_DATA_ROOT / $KCD_DATA_DPATH / $KCD_REPO_ROOT mounts,
+# typically when the data path is a SYMLINK to a target the container
+# can't see (e.g. /data/.../ssd-data -> /home/.../ssd-data with /home
+# not bind-mounted). gen003 single_sealion 2026-06-01 hit this.
+#
+# Format: colon-separated list of host paths to mount at the same
+# path inside the container. The kit's `mkdir -p` etc. then succeeds
+# because the symlink resolves through to a real directory the
+# container CAN see.
+#
+#   export KCD_EXTRA_MOUNTS="/home/.../ssd-data:/some/other/path"
+EXTRA_MOUNT_FLAGS=()
+if [ -n "${KCD_EXTRA_MOUNTS:-}" ]; then
+    IFS=':' read -ra _extra <<< "$KCD_EXTRA_MOUNTS"
+    for _p in "${_extra[@]}"; do
+        if [ -n "$_p" ]; then
+            EXTRA_MOUNT_FLAGS+=(-v "$_p:$_p")
+            echo "EXTRA MOUNT: $_p" >&2
+        fi
+    done
+fi
+
 # Shared shm size scales with gpu count: DataLoader workers' ipc.
 shm_gb=$(( 16 + 8 * KCD_NUM_GPUS ))
 
@@ -175,6 +198,7 @@ docker run --rm \
     -v "$KCD_DATA_DPATH:$KCD_DATA_DPATH" \
     -v "$KCD_REPO_ROOT:$KCD_REPO_ROOT" \
     "${DEV_MOUNT_FLAGS[@]}" \
+    "${EXTRA_MOUNT_FLAGS[@]}" \
     -w "$KCD_REPO_ROOT" \
     "$KCD_IMAGE" \
     bash "$KCD_REPO_ROOT/scripts/_launch_train.sh"

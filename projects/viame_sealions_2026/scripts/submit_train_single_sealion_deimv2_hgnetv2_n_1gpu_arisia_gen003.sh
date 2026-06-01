@@ -80,6 +80,12 @@ export KCD_WDS_SKIP_EMPTY=0
 #   mkdir -p /data/users/jon.crall/kcd_sealion/ssd-data/tile_cache/_universal
 #   cp -a /data/users/jon.crall/kcd_sealion/tile_cache/_universal/fd353b1c \
 #         /data/users/jon.crall/kcd_sealion/ssd-data/tile_cache/_universal/
+# Bind-mount the SSD target into the docker container. Without this,
+# the symlink at $KCD_WDS_SHARDS_DPATH resolves to a path that does
+# not exist inside the container (/home/local/KHQ is not mounted),
+# and `mkdir -p` fails with EEXIST on the symlink itself.
+export KCD_EXTRA_MOUNTS=/home/local/KHQ/jon.crall/ssd-data
+
 export KCD_WDS_SHARDS_DPATH=/data/users/jon.crall/kcd_sealion/ssd-data/tile_cache/_universal/fd353b1c/shards
 
 # ============================================================

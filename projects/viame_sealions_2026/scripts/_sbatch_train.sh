@@ -57,6 +57,20 @@ if [ "$KCD_NCCL_DEBUG" != "0" ]; then
         -e TORCH_NCCL_DEBUG_INFO_TEMP_FILE="$KCD_ROOT/nccl_traces/rank_"
         -e TORCH_NCCL_DESYNC_DEBUG=1
     )
+    # Heartbeat watchdog: if a NCCL collective doesn't complete
+    # within KCD_NCCL_HEARTBEAT_TIMEOUT_SEC (default 600s), torch
+    # raises a real error instead of hanging silently. Job 2556
+    # (2026-05-31 → 2026-06-01) hung 30+ hours in loss.backward()
+    # because a stuck NCCL allreduce never timed out; this would
+    # have killed it after 10 minutes with an actionable traceback.
+    NCCL_DEBUG_FLAGS+=(
+        -e "TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=${KCD_NCCL_HEARTBEAT_TIMEOUT_SEC:-600}"
+        # Blocking wait makes collective failures synchronous —
+        # the traceback then points at the actual stuck call site
+        # instead of bubbling up later from a watcher thread.
+        -e "TORCH_NCCL_BLOCKING_WAIT=${KCD_NCCL_BLOCKING_WAIT:-1}"
+        -e "TORCH_NCCL_ASYNC_ERROR_HANDLING=1"
+    )
 fi
 if [ "$KCD_NCCL_DEBUG" = "verbose" ]; then
     NCCL_DEBUG_FLAGS+=(-e NCCL_DEBUG=INFO -e NCCL_DEBUG_SUBSYS=COLL)

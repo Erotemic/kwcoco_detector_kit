@@ -175,16 +175,30 @@ echo "[_sbatch_train.sh] forwarding ${#KCD_ENV_FLAGS[@]} KCD_* values to docker 
 #     ends up with zero usable GPUs, model stays on CPU, DDP errors
 #     ("module parameters {device(type='cpu')}"). gen002 2544 hit this.
 if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
-    # Use the SPACE-SEPARATED form (--gpus device=0,1) not the
-    # equals form (--gpus=device=0,1). The equals form
-    # mis-parses the comma list in some Docker versions, splitting
-    # "0,1" into ["device=0", "1"] and treating "1" as a Count —
-    # then erroring "cannot set both Count and DeviceIDs on device
-    # request". Reproduced 2026-06-01 on arisia with the 2-GPU
-    # dinov3_s gen004 prep job. The array form keeps --gpus and
-    # its value as two separate argv entries so Docker's parser
-    # treats the comma-list as a pure DeviceIDs spec.
-    GPU_FLAG=(--gpus "device=${CUDA_VISIBLE_DEVICES}")
+    # Multi-GPU: docker's --gpus value parser splits on commas and
+    # mis-interprets any purely-numeric segment as a Count, then
+    # errors "cannot set both Count and DeviceIDs on device request"
+    # when DeviceIDs are also set. Reproduced 2026-06-01 on arisia
+    # twice (jobs 2572, 2574) with --gpus device=0,1 — both the
+    # equals form and the space form hit this.
+    #
+    # Workaround: pass GPU UUIDs instead of indices. UUIDs always
+    # contain hex letters, so no comma-separated segment can be
+    # mistaken for a count. Get them from nvidia-smi keyed on
+    # the slurm-pinned indices in CUDA_VISIBLE_DEVICES.
+    GPU_UUIDS=$(nvidia-smi --query-gpu=uuid --format=csv,noheader \
+                  -i "$CUDA_VISIBLE_DEVICES" 2>/dev/null \
+                | tr '\n' ',' | sed 's/,$//')
+    if [ -n "$GPU_UUIDS" ]; then
+        GPU_FLAG=(--gpus "device=${GPU_UUIDS}")
+    else
+        # nvidia-smi unavailable or refused our indices; fall back
+        # to the index form. Single-GPU jobs (no comma) work fine
+        # this way; multi-GPU will fail at docker — surface that
+        # rather than silently mis-running.
+        GPU_FLAG=(--gpus "device=${CUDA_VISIBLE_DEVICES}")
+        echo "WARN: nvidia-smi UUID lookup failed; falling back to indices" >&2
+    fi
     # Build container-side device list: 0,1,2,... up to the count slurm
     # gave us. Slurm sets CUDA_VISIBLE_DEVICES to a comma-separated host
     # index list ("0", "1,2", etc.); count its entries.

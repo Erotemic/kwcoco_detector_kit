@@ -175,19 +175,28 @@ echo "[_sbatch_train.sh] forwarding ${#KCD_ENV_FLAGS[@]} KCD_* values to docker 
 #     ends up with zero usable GPUs, model stays on CPU, DDP errors
 #     ("module parameters {device(type='cpu')}"). gen002 2544 hit this.
 if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
-    GPU_FLAG="--gpus=device=${CUDA_VISIBLE_DEVICES}"
+    # Use the SPACE-SEPARATED form (--gpus device=0,1) not the
+    # equals form (--gpus=device=0,1). The equals form
+    # mis-parses the comma list in some Docker versions, splitting
+    # "0,1" into ["device=0", "1"] and treating "1" as a Count —
+    # then erroring "cannot set both Count and DeviceIDs on device
+    # request". Reproduced 2026-06-01 on arisia with the 2-GPU
+    # dinov3_s gen004 prep job. The array form keeps --gpus and
+    # its value as two separate argv entries so Docker's parser
+    # treats the comma-list as a pure DeviceIDs spec.
+    GPU_FLAG=(--gpus "device=${CUDA_VISIBLE_DEVICES}")
     # Build container-side device list: 0,1,2,... up to the count slurm
     # gave us. Slurm sets CUDA_VISIBLE_DEVICES to a comma-separated host
     # index list ("0", "1,2", etc.); count its entries.
     n_gpus=$(echo "$CUDA_VISIBLE_DEVICES" | awk -F',' '{print NF}')
     CONTAINER_CUDA_VISIBLE=$(seq -s, 0 $((n_gpus - 1)))
 else
-    GPU_FLAG="--gpus=all"
+    GPU_FLAG=(--gpus all)
     CONTAINER_CUDA_VISIBLE=""
-    echo "WARN: CUDA_VISIBLE_DEVICES unset; using --gpus=all (collision risk)" >&2
+    echo "WARN: CUDA_VISIBLE_DEVICES unset; using --gpus all (collision risk)" >&2
 fi
 docker run --rm \
-    $GPU_FLAG \
+    "${GPU_FLAG[@]}" \
     --ipc=host \
     --shm-size="${shm_gb}g" \
     -e CUDA_VISIBLE_DEVICES="${CONTAINER_CUDA_VISIBLE}" \

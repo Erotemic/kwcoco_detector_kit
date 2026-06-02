@@ -42,9 +42,23 @@ case "$VARIANT" in
         CANONICAL_PTH="$KCD_DEIMV2_HGNETV2_N_COCO_PTH"
         ;;
     deimv2_hgnetv2_s)
-        REPO_ID="${KCD_HF_REPO:-Intellindust/DEIMv2_HGNetv2_S_COCO}"
-        DEST_DIR="$KCD_DEIMV2_HGNETV2_S_COCO_DIR"
-        CANONICAL_PTH="$KCD_DEIMV2_HGNETV2_S_COCO_PTH"
+        # DEIMv2's public model zoo has NO HGNetv2-S COCO release.
+        # The S tier in their zoo uses the DINOv3 backbone instead
+        # (Intellindust/DEIMv2_DINOv3_S_COCO). The kit's _BATCH_TABLE
+        # still defines deimv2_hgnetv2_s because the architecture
+        # config exists in tpl/DEIMv2/configs/deimv2/, but you have
+        # to supply a checkpoint yourself (from-scratch training,
+        # third-party HGNetv2-S weights, etc.).
+        echo "ERROR: no public HGNetv2-S COCO checkpoint upstream" >&2
+        echo "  DEIMv2's S tier uses DINOv3, not HGNetv2." >&2
+        echo "  Options:" >&2
+        echo "    1. Train deimv2_hgnetv2_s from scratch:" >&2
+        echo "         export KCD_TRAIN_FROM_SCRATCH=1" >&2
+        echo "    2. Use the DEIMv2 S-tier (DINOv3-S, 9.7M params, 50.9 AP COCO):" >&2
+        echo "         bash $0 deimv2_dinov3_s" >&2
+        echo "    3. Supply your own checkpoint:" >&2
+        echo "         export KCD_DEIMV2_HGNETV2_S_COCO_PTH=/path/to/your.pth" >&2
+        exit 1
         ;;
     *)
         echo "ERROR: unknown variant: $VARIANT" >&2

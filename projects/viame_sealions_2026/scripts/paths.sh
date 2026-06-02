@@ -94,9 +94,11 @@ export KCD_DEIMV2_DINOV3_S_COCO_PTH="${KCD_DEIMV2_DINOV3_S_COCO_PTH:-$KCD_DEIMV2
 export KCD_DEIMV2_HGNETV2_N_COCO_DIR="${KCD_DEIMV2_HGNETV2_N_COCO_DIR:-$KCD_PRETRAINED_ROOT/deimv2_hgnetv2_n_coco}"
 export KCD_DEIMV2_HGNETV2_N_COCO_PTH="${KCD_DEIMV2_HGNETV2_N_COCO_PTH:-$KCD_DEIMV2_HGNETV2_N_COCO_DIR/deimv2_hgnetv2_n_coco.pth}"
 
-# DEIMv2-HGNetv2-S COCO. Same backbone family as HGNetv2-N but
-# bigger (~3-4x params); gen004 bigger-leap run pairs it with 2-GPU
-# training and balanced-MSCOCO class composition.
+# DEIMv2-HGNetv2-S: NO public COCO checkpoint exists upstream
+# (DEIMv2's S tier uses DINOv3, not HGNetv2). These vars are kept
+# for users who supply their own checkpoint (from-scratch training,
+# third-party HGNetv2-S weights, etc.). fetch_pretrained.sh refuses
+# to download for this variant; user must set the path manually.
 export KCD_DEIMV2_HGNETV2_S_COCO_DIR="${KCD_DEIMV2_HGNETV2_S_COCO_DIR:-$KCD_PRETRAINED_ROOT/deimv2_hgnetv2_s_coco}"
 export KCD_DEIMV2_HGNETV2_S_COCO_PTH="${KCD_DEIMV2_HGNETV2_S_COCO_PTH:-$KCD_DEIMV2_HGNETV2_S_COCO_DIR/deimv2_hgnetv2_s_coco.pth}"
 

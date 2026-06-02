@@ -51,19 +51,36 @@ balancing.
 
 ### Run 2 — bigger leap (2 GPUs)
 
-`submit_train_pup_vs_nonpup_deimv2_hgnetv2_s_2gpu_arisia_gen004_balanced.sh`
+`submit_train_pup_vs_nonpup_deimv2_dinov3_s_2gpu_arisia_gen004_balanced.sh`
+
+Originally drafted as `deimv2_hgnetv2_s` until we discovered
+DEIMv2's public model zoo's S tier uses the DINOv3 foundation
+backbone, not HGNetv2 — there's no public HGNetv2-S COCO
+checkpoint. Switched to DEIMv2's real S-tier model.
 
 | Knob | Value (delta vs Run 1) |
 |---|---|
-| model | **deimv2_hgnetv2_s** (~3-4× params) |
+| model | **deimv2_dinov3_s** (foundation backbone, 9.7M params, 50.9 COCO AP) |
 | GPUs | **2** |
 | total batch | **32** (= 16/GPU × 2) |
-| LR | **8.00e-4** (sqrt(2) × Run 1's 5.66e-4) |
-| backbone_lr | **4.00e-4** (sqrt(2) × Run 1's 2.83e-4) |
+| input | **640 × 640** (DINOv3-S anchor) |
+| LR | **5e-4**   (matches dinov3_s v1 recipe) |
+| backbone_lr | **2.5e-5** (much lower than head LR — DINOv3 backbone is finetuned gently) |
+| tile params | **640 / scale=1.0,0.5,0.25,0.125** (different hash; one-time re-tile) |
 | balance target | SAME as Run 1 |
 
-Three independent improvements stacked on Run 1:
-capacity, gradient stability, and continued data balancing.
+Multiple levers move vs Run 1 (capacity, foundation backbone,
+batch, input resolution, multi-scale tiles). It's not a clean
+ablation — but it IS the actual next tier in DEIMv2's zoo and
+the one with the strongest prior on COCO. If both Run 1 and
+Run 2 improve, balance + capacity stack additively; if Run 2
+doesn't improve over Run 1, capacity / resolution isn't the
+bottleneck.
+
+**Tile cache reality**: gen003 / Run 1 use a 320-tile cache.
+Run 2 needs a 640 + multi-scale cache (different params →
+different hash). One-time re-tile (~hours). Pre-warm with
+`KCD_DATA_PREP_ONLY=1` if you don't want it inside the slurm job.
 
 ## Wiring
 
@@ -88,10 +105,11 @@ Three small edits land in this commit:
 1. Confirm gen003 single_sealion 2565 (currently training) has
    finished or will be done before submitting. We have 3 GPUs
    available; if 2565 is still using one, hold Run 2.
-2. Fetch hgnetv2_s pretrained:
+2. Confirm dinov3_s pretrained is on disk (or fetch):
    ```
-   bash projects/viame_sealions_2026/scripts/fetch_pretrained.sh deimv2_hgnetv2_s
+   bash projects/viame_sealions_2026/scripts/fetch_pretrained.sh deimv2_dinov3_s
    ```
+   (Likely already present from the v1 4-GPU run; idempotent.)
 3. (Optional) Pre-warm the apply_scheme+balance steps locally so
    the slurm job starts straight into training:
    ```
@@ -113,7 +131,7 @@ per-class AP, especially pup.
 |---|---|
 | gen002 pup_vs_nonpup baseline | 0.025 (already on disk) |
 | gen004 Run 1 (balance only) | beat 0.025; goal ≥ 0.05 |
-| gen004 Run 2 (balance + bigger + 2-GPU) | goal ≥ 0.10 |
+| gen004 Run 2 (balance + dinov3_s + 2-GPU + 640) | goal ≥ 0.10 |
 
 If Run 1 doesn't beat 0.025, the balance hypothesis is wrong and
 we should re-examine whether pup_vs_nonpup needs a different lever

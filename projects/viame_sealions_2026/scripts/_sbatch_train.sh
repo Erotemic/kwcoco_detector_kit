@@ -222,7 +222,121 @@ else
     CONTAINER_CUDA_VISIBLE=""
     echo "WARN: CUDA_VISIBLE_DEVICES unset; exposing all GPUs (collision risk)" >&2
 fi
+# ============================================================
+# Zombie defense: deterministic container ID + cleanup traps
+# ============================================================
+# Without this, `docker run` losing its parent shell (slurm cancel,
+# OOM kill, host reboot mid-job) can leave the container running
+# with the GPUs reserved. The leaked container holds VRAM until
+# manually killed, blocking subsequent jobs with "out of memory"
+# errors on a GPU that's actually free per nvidia-smi -- because
+# nvidia-smi sees the leaked container's processes still pinning
+# the device.
+#
+# Defense layers:
+#   1. Stable --name + --cidfile so cleanup has a target even if
+#      the wrapper PID dies.
+#   2. EXIT/INT/TERM/HUP traps that docker-stop the container.
+#      EXIT covers normal exit + most errors; INT covers Ctrl-C;
+#      TERM covers slurm scancel; HUP covers SSH disconnect.
+#   3. Baseline GPU PID snapshot + post-run leak detection.
+#      Diagnostic-only by default; KCD_KILL_GPU_LEAKS=1 escalates
+#      to SIGKILL on same-user leaks.
+#   4. Container labels for post-hoc audit (which slurm job /
+#      kit run produced this surviving container).
+
+# Stable container identity. docker --name only accepts
+# [a-zA-Z0-9_.-], length <= 128. Replace anything else with '-'
+# and truncate.
+_kcd_sanitize_name() {
+    local s="$1"
+    echo -n "${s}" | tr -c 'a-zA-Z0-9_.-' '-' | cut -c1-128
+}
+KCD_CONTAINER_NAME="kcd-${SLURM_JOB_ID:-manual}-$(_kcd_sanitize_name "$KCD_RUN_NAME")"
+KCD_CONTAINER_NAME="$(_kcd_sanitize_name "$KCD_CONTAINER_NAME")"
+# --cidfile requires the file NOT to exist; mktemp -u gives a
+# unique path without creating the file.
+KCD_CIDFILE="$(mktemp -u --tmpdir kcd-cid.XXXXXX 2>/dev/null || echo "/tmp/kcd-cid.$$")"
+
+# Baseline GPU PIDs (own UID only -- don't snoop on neighbors).
+# Subtract these from the post-run set to detect leaks attributable
+# to this job.
+KCD_GPU_BASELINE_PIDS="$(nvidia-smi --query-compute-apps=pid \
+    --format=csv,noheader 2>/dev/null | sort -u | tr '\n' ' ')"
+KCD_USER_UID="$(id -u)"
+
+_kcd_gpu_leak_report() {
+    local cur_pids new_pids my_leaks pid pid_uid cgr
+    cur_pids="$(nvidia-smi --query-compute-apps=pid \
+        --format=csv,noheader 2>/dev/null | sort -u | tr '\n' ' ')"
+    new_pids="$(comm -13 \
+        <(echo "$KCD_GPU_BASELINE_PIDS" | tr ' ' '\n' | sort -u) \
+        <(echo "$cur_pids" | tr ' ' '\n' | sort -u))"
+    my_leaks=""
+    for pid in $new_pids; do
+        [ -z "$pid" ] && continue
+        pid_uid="$(stat -c '%u' "/proc/$pid" 2>/dev/null || true)"
+        [ "$pid_uid" = "$KCD_USER_UID" ] && my_leaks="$my_leaks $pid"
+    done
+    if [ -n "$my_leaks" ]; then
+        echo "[_sbatch_train.sh] GPU LEAK: same-user processes still on GPU after cleanup:" >&2
+        for pid in $my_leaks; do
+            ps -o pid,ppid,pgid,sid,etime,user,cmd -p "$pid" 2>/dev/null >&2 || true
+            cgr="$(head -1 "/proc/$pid/cgroup" 2>/dev/null || echo "<no cgroup>")"
+            echo "  cgroup: $cgr" >&2
+        done
+        if [ "${KCD_KILL_GPU_LEAKS:-0}" = "1" ]; then
+            echo "[_sbatch_train.sh] KCD_KILL_GPU_LEAKS=1; SIGKILL'ing leaks: $my_leaks" >&2
+            # shellcheck disable=SC2086
+            kill -9 $my_leaks 2>/dev/null || true
+        else
+            echo "[_sbatch_train.sh] (set KCD_KILL_GPU_LEAKS=1 to auto-SIGKILL these)" >&2
+        fi
+    fi
+}
+
+_kcd_cleanup() {
+    local exit_code=$?
+    # Don't let cleanup errors abort the trap path.
+    set +e
+    trap - EXIT INT TERM HUP
+
+    # Stop+remove the container by name (in case --cidfile race)
+    # and by cidfile. --rm on docker run means most paths leave
+    # nothing to clean, but the docker daemon won't honor --rm if
+    # the container is mid-stop or got orphaned; belt and suspenders.
+    if [ -f "$KCD_CIDFILE" ]; then
+        local cid
+        cid="$(cat "$KCD_CIDFILE" 2>/dev/null)"
+        if [ -n "$cid" ]; then
+            docker stop -t 30 "$cid" >/dev/null 2>&1
+            docker rm -f "$cid" >/dev/null 2>&1
+        fi
+        rm -f "$KCD_CIDFILE"
+    fi
+    docker stop -t 5 "$KCD_CONTAINER_NAME" >/dev/null 2>&1
+    docker rm -f "$KCD_CONTAINER_NAME" >/dev/null 2>&1
+
+    # Leak diagnostics on every exit path.
+    _kcd_gpu_leak_report
+
+    exit "$exit_code"
+}
+trap _kcd_cleanup EXIT INT TERM HUP
+
+echo "=== Container guard ==="
+echo "  name:    $KCD_CONTAINER_NAME"
+echo "  cidfile: $KCD_CIDFILE"
+echo "  traps:   EXIT INT TERM HUP -> docker stop + leak check"
+echo "  KCD_KILL_GPU_LEAKS=${KCD_KILL_GPU_LEAKS:-0}  (1 = SIGKILL same-user GPU leaks on exit)"
+
 docker run --rm \
+    --name "$KCD_CONTAINER_NAME" \
+    --cidfile "$KCD_CIDFILE" \
+    --label "kcd.run_name=$KCD_RUN_NAME" \
+    --label "kcd.slurm_job_id=${SLURM_JOB_ID:-manual}" \
+    --label "kcd.user=$(whoami)" \
+    --label "kcd.created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     "${GPU_FLAG[@]}" \
     --ipc=host \
     --shm-size="${shm_gb}g" \

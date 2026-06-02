@@ -87,6 +87,20 @@ export KCD_USE_WEBDATASET=0
 export KCD_BALANCE_TARGET_JSON='{"<empty>": 0.4, "pup": 0.2, "nonpup_sealion": 0.4}'
 
 # ============================================================
+# Slurm resource budget (performance-only — env-overridable)
+# ============================================================
+# arisia is shared. dinov3_s + 640x640 needs more VRAM/RAM than
+# hgnetv2_n + 320x320, but the kit's 4 CPU + 32G/GPU default still
+# over-provisions for 2 GPUs (would block 8 CPUs + 64G total).
+# Per memory feedback_arisia_resource_budgets, bump modestly from
+# the hgnetv2 baseline: 3 CPU + 32G per GPU (= 6 CPU + 64G for 2
+# GPUs). Profile and adjust if epochs are I/O-bound.
+export KCD_CPUS_PER_TASK="${KCD_CPUS_PER_TASK:-6}"
+export KCD_MEM="${KCD_MEM:-64G}"
+export KCD_TRAIN_NUM_WORKERS="${KCD_TRAIN_NUM_WORKERS:-3}"
+export KCD_VAL_NUM_WORKERS="${KCD_VAL_NUM_WORKERS:-1}"
+
+# ============================================================
 # Run identity
 # ============================================================
 RUN_NAME="$(basename "${BASH_SOURCE[0]}" .sh)"

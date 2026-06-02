@@ -106,6 +106,20 @@ export KCD_BALANCE_TARGET_JSON='{"<empty>": 0.4, "pup": 0.2, "nonpup_sealion": 0
 # export KCD_BALANCE_TARGET_SIZE=
 
 # ============================================================
+# Slurm resource budget (performance-only — env-overridable)
+# ============================================================
+# arisia is shared. The kit's default is 4 CPU + 32G per GPU, which
+# is ~4x over actual use for the hgnetv2 family and blocks other
+# users from co-scheduling. Per memory feedback_arisia_resource_budgets,
+# 2 CPU + 24G is plenty for hgnetv2_n at 320x320. Bump via env
+# (KCD_CPUS_PER_TASK / KCD_MEM) if a profile run shows we need more.
+export KCD_CPUS_PER_TASK="${KCD_CPUS_PER_TASK:-2}"
+export KCD_MEM="${KCD_MEM:-24G}"
+# Worker count: 2 CPUs -> 2 dataloader workers is the safe ceiling.
+export KCD_TRAIN_NUM_WORKERS="${KCD_TRAIN_NUM_WORKERS:-2}"
+export KCD_VAL_NUM_WORKERS="${KCD_VAL_NUM_WORKERS:-1}"
+
+# ============================================================
 # Run identity
 # ============================================================
 RUN_NAME="$(basename "${BASH_SOURCE[0]}" .sh)"

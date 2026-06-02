@@ -100,10 +100,19 @@ export KCD_USE_WEBDATASET=0
 # pass via env override; edit the script for a new run.
 export KCD_BALANCE_TARGET_JSON='{"<empty>": 0.4, "pup": 0.2, "nonpup_sealion": 0.4}'
 
-# Match input size = output size (per user decision 2026-06-01).
-# Default is unset; balance_mscoco uses len(src.images) when
-# KCD_BALANCE_TARGET_SIZE is unset.
-# export KCD_BALANCE_TARGET_SIZE=
+# Cap per-sample repetition at 1× per epoch. With pup ~1-2% of the
+# corpus and target=0.2, the legacy default (target_size=len(src))
+# would oversample each pup tile ~15-20× per epoch — wasteful and
+# overfitting-prone. max_oversample=1 means each pup tile is seen
+# at most once per epoch; the more-common buckets (empty, nonpup)
+# are subsampled to maintain the target ratio. Epochs become
+# ~5-10× shorter, the LR schedule + augmentation provide cross-
+# epoch diversity, and pup features get fresh stochastic exposure
+# instead of memorizing the same tile.
+export KCD_BALANCE_MAX_OVERSAMPLE=1
+# KCD_BALANCE_TARGET_SIZE intentionally left unset — when only
+# max_oversample is set, balance_mscoco computes
+# target_size = K * min(len_b / f_b) (rarest bucket fits).
 
 # ============================================================
 # Slurm resource budget (performance-only — env-overridable)

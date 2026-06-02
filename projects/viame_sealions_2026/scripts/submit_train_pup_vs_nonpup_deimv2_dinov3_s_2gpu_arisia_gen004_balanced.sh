@@ -85,6 +85,11 @@ export KCD_USE_WEBDATASET=0
 # Keeping the same target so the n-vs-s and 1-vs-2-GPU comparison
 # isolates capacity + batch + resolution from data composition.
 export KCD_BALANCE_TARGET_JSON='{"<empty>": 0.4, "pup": 0.2, "nonpup_sealion": 0.4}'
+# Cap pup repetition at 1× per epoch (see Run 1 comment for
+# rationale). Matches the ablation so the comparison between
+# Run 1 and Run 2 isolates capacity / batch / resolution from
+# data composition.
+export KCD_BALANCE_MAX_OVERSAMPLE=1
 
 # ============================================================
 # Slurm resource budget (performance-only — env-overridable)

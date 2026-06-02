@@ -158,47 +158,36 @@ def _count_via_iter(ds):
     (32, 0.0),
     (32, 0.5),     # half the source has no annotations
 ])
-def test_len_vs_actual_yield(tmp_path, n_images, empty_frac):
-    """len(ds) is the *nominal* sample count; the *actual* yield
-    (after our adapter's empty-annotation skip) can be lower.
+def test_len_vs_actual_yield_default_keeps_empties(tmp_path, n_images, empty_frac):
+    """Post-gen003 default contract: skip_empty=False, so empty tiles
+    flow through as negative samples. len(ds) and actual yield agree.
 
-    Production bug: DEIMv2's MetricLogger reports
-        Total time: X (X/len(ds) s/it)
-    and the LR scheduler plans epoch boundaries from len(ds). If the
-    actual yield is much smaller, the per-iter average looks fake
-    and the scheduler over-shoots its warmup.
+    The pre-gen003 default was True (silently drop empties) and was
+    the root cause of the single_sealion AP regression — journal
+    2026-06-01. The opposite contract (skip_empty=True) is exercised
+    in test_skip_empty_constructor_arg_filters_stream.
     """
     pytest.importorskip("torch")
     pytest.importorskip("webdataset")
     pytest.importorskip("kwcoco_dataloader")
 
-    ds, total, nonempty = _make_dataset(
+    ds, total, _ = _make_dataset(
         tmp_path, n_images=n_images, empty_frac=empty_frac,
     )
 
     nominal = len(ds)
     actual = _count_via_iter(ds)
 
-    # Pin the actual contract: __len__ reports the source-side
-    # sample count (== total written to shards), but the iterator
-    # only yields samples that pass the empty-annotation filter.
     assert nominal == total, (
         f"len(ds)={nominal} should equal source samples ({total}); "
-        f"if this changes, the LR scheduler will plan against the "
-        f"wrong epoch boundary."
+        "the LR scheduler plans epoch boundaries from this."
     )
-    assert actual == nonempty, (
-        f"iterating yielded {actual} samples; expected "
-        f"{nonempty} (= total {total} minus {total - nonempty} "
-        f"empty-annotation skips). If this changes, gen002's "
-        f"\"epoch is shorter than nominal\" bug got worse."
+    assert actual == total, (
+        f"iterating yielded {actual}, expected total={total}. With "
+        "skip_empty=False (default), empty-annotation tiles must "
+        "flow through. If this changes, single_sealion will silently "
+        "regress to gen002's 0.024 (journal 2026-06-01)."
     )
-
-    if empty_frac > 0:
-        # This is the gen002 surprise: len() and actual disagree.
-        # We pin it as expected behavior so anyone touching this
-        # path KNOWS the divergence is intentional, not a bug.
-        assert actual < nominal
 
 
 def test_len_is_memoized(tmp_path):
@@ -549,4 +538,182 @@ def test_load_bucket_streams_sees_all_footers(tmp_path):
         f"load_bucket_streams returned {len(bucket_set.streams)} "
         f"streams but disk has {len(bucket_dirs)} bucket dirs. "
         f"Footer parsing dropped a bucket silently."
+    )
+
+
+# --- experiment-defining constructor args (no env vars!) ----------------
+#
+# Both `bucket_weights` and `skip_empty` affect training-set composition
+# and therefore final metrics. They MUST be passed via the constructor
+# (which the kit wires to a CLI flag set by the submit script) — never
+# read from os.environ inside the dataset. See
+# feedback_no_env_for_experiment_config in agent memory and the journal
+# 2026-06-01 single_sealion regression for why this matters.
+
+
+def test_skip_empty_constructor_arg_filters_stream(tmp_path):
+    """skip_empty=True drops post-scheme-collapse empty samples;
+    skip_empty=False (default) keeps them.
+
+    This is the contract the gen003 fix landed on. If a future change
+    re-introduces an env-var override or flips the default, this test
+    catches it before another single_sealion regression ships.
+    """
+    pytest.importorskip("torch")
+    pytest.importorskip("webdataset")
+    pytest.importorskip("kwcoco_dataloader")
+
+    # 32 images, half empty → 16 positive, 16 empty.
+    ds_keep, total, nonempty = _make_dataset(
+        tmp_path / "a", n_images=32, empty_frac=0.5,
+        skip_empty=False,
+    )
+    ds_drop, _, _ = _make_dataset(
+        tmp_path / "b", n_images=32, empty_frac=0.5,
+        skip_empty=True,
+    )
+
+    n_keep = _count_via_iter(ds_keep)
+    n_drop = _count_via_iter(ds_drop)
+
+    # With epoch_length=0, the adapter caps the mixer at len(ds)=total
+    # yields. skip_empty=False passes them all through; skip_empty=True
+    # drops the empty-annotation ones. Under WeightedChunkMix's
+    # weighted-random sampling across {A, B, empty} buckets, the
+    # exact split varies by rng but empties get dropped either way.
+    assert n_keep == total, (
+        f"skip_empty=False should yield all {total} samples (mixer "
+        f"epoch_size=len(ds)), got {n_keep}"
+    )
+    assert n_drop < n_keep, (
+        f"skip_empty=True must yield strictly fewer samples than "
+        f"skip_empty=False; got drop={n_drop} keep={n_keep}"
+    )
+    # Bound the drop count: at least one empty exists in the source
+    # so at least one must be dropped; at most all empties can be
+    # dropped, so n_drop >= n_keep - (total - nonempty).
+    n_empty = total - nonempty
+    assert n_keep - n_empty <= n_drop < n_keep, (
+        f"n_drop={n_drop} outside expected range "
+        f"[{n_keep - n_empty}, {n_keep}); empties={n_empty}"
+    )
+
+
+def test_skip_empty_does_not_read_environ(tmp_path, monkeypatch):
+    """Hard guarantee: setting KCD_WDS_SKIP_EMPTY in the environment
+    must NOT change behavior. If a future patch re-introduces an
+    os.environ.get("KCD_WDS_SKIP_EMPTY") read, this test fails.
+    """
+    pytest.importorskip("torch")
+    pytest.importorskip("webdataset")
+    pytest.importorskip("kwcoco_dataloader")
+
+    # Set the legacy env aggressively — old code would have filtered.
+    monkeypatch.setenv("KCD_WDS_SKIP_EMPTY", "1")
+
+    ds, total, _ = _make_dataset(
+        tmp_path, n_images=24, empty_frac=0.5,
+        # No skip_empty kwarg → default False.
+    )
+    actual = _count_via_iter(ds)
+    assert actual == total, (
+        f"env-set KCD_WDS_SKIP_EMPTY=1 leaked into behavior: "
+        f"yielded {actual} of {total}. The dataset must not read "
+        f"this env var; see feedback_no_env_for_experiment_config."
+    )
+
+
+def test_bucket_weights_constructor_arg_skews_stream(tmp_path):
+    """A non-uniform bucket_weights dict passed to the constructor
+    must visibly skew which bucket dominates the output stream.
+
+    Mirrors WeightedChunkMix's own test_weight_bias (kwcoco_dataloader)
+    but exercises the full WebDatasetCocoDetection adapter — including
+    the dict-keyed-by-bucket-name → ordered weights-array translation
+    that the unit test bypasses.
+    """
+    pytest.importorskip("torch")
+    pytest.importorskip("webdataset")
+    pytest.importorskip("kwcoco_dataloader")
+
+    # Build shards with two source classes A and B → two buckets.
+    # Strongly upweight bucket B; epoch_length=400 to give the
+    # weighted mixer enough draws to dominate.
+    src_classes = ("A", "B")
+    ds, _, _ = _make_dataset(
+        tmp_path, n_images=200, empty_frac=0.0,
+        source_classes=src_classes,
+        epoch_length=400,
+        chunk_size=4,
+        bucket_weights={
+            "source_category_EQ_A": 1.0,
+            "source_category_EQ_B": 9.0,
+        },
+    )
+
+    # The adapter has emitted target['labels'] as 0-indexed ints
+    # matching category_names = ["target_A", "target_B"]. We count
+    # samples whose first label is class 1 (= target_B) vs class 0.
+    n_a = n_b = 0
+    for _img, target in ds:
+        labels = target["labels"]
+        if labels.numel() == 0:
+            continue
+        first = int(labels[0].item())
+        if first == 0:
+            n_a += 1
+        elif first == 1:
+            n_b += 1
+    # 9:1 weighting on B should give B a clear majority. Allow slack
+    # for chunk-granularity noise (chunk_size=4 over 400 samples).
+    assert n_b > 3 * n_a, (
+        f"bucket_weights B:A = 9:1 should give B >= 3× A; got "
+        f"A={n_a}, B={n_b}. The constructor-passed weights did not "
+        f"reach WeightedChunkMix; check the bucket-name lookup in "
+        f"_build_stream."
+    )
+
+
+def test_bucket_weights_does_not_read_environ(tmp_path, monkeypatch):
+    """Hard guarantee: KCD_WDS_BUCKET_WEIGHTS_JSON in the environment
+    must NOT change behavior. The old code read this at runtime and
+    silently merged it with the constructor arg — a reproducibility
+    hazard. The fix removed the env-read entirely; this test pins
+    that contract.
+    """
+    pytest.importorskip("torch")
+    pytest.importorskip("webdataset")
+    pytest.importorskip("kwcoco_dataloader")
+
+    # Aggressively skew via env (would have skewed pre-fix).
+    monkeypatch.setenv(
+        "KCD_WDS_BUCKET_WEIGHTS_JSON",
+        '{"source_category_EQ_A": 1.0, "source_category_EQ_B": 99.0}',
+    )
+
+    src_classes = ("A", "B")
+    ds, _, _ = _make_dataset(
+        tmp_path, n_images=200, empty_frac=0.0,
+        source_classes=src_classes,
+        epoch_length=400,
+        chunk_size=4,
+        # No bucket_weights kwarg → uniform per the footers.
+    )
+
+    n_a = n_b = 0
+    for _img, target in ds:
+        labels = target["labels"]
+        if labels.numel() == 0:
+            continue
+        first = int(labels[0].item())
+        if first == 0:
+            n_a += 1
+        elif first == 1:
+            n_b += 1
+    # Source is round-robin A/B → roughly balanced. If the env
+    # leaked in, B would dominate. Pin "roughly balanced": within 2×.
+    assert n_a > 0 and n_b > 0 and max(n_a, n_b) < 2 * min(n_a, n_b), (
+        f"env-set KCD_WDS_BUCKET_WEIGHTS_JSON leaked into behavior: "
+        f"A={n_a}, B={n_b} should be ~balanced. The dataset must not "
+        f"read this env var."
     )

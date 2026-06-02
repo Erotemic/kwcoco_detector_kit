@@ -401,6 +401,8 @@ echo "  KCD_DISTRACTOR_CLASSES = ${KCD_DISTRACTOR_CLASSES:-<unset>}"
     ${KCD_WDS_SHARDS_DPATH:+--train_wds_shards_dpath "$KCD_WDS_SHARDS_DPATH"} \
     ${KCD_WDS_EPOCH_LENGTH:+--train_wds_epoch_length "$KCD_WDS_EPOCH_LENGTH"} \
     ${KCD_WDS_SOURCE_TO_TARGET:+--train_wds_source_to_target "$KCD_WDS_SOURCE_TO_TARGET"} \
+    ${KCD_WDS_BUCKET_WEIGHTS_JSON:+--train_wds_bucket_weights "$KCD_WDS_BUCKET_WEIGHTS_JSON"} \
+    ${KCD_WDS_SKIP_EMPTY:+--train_wds_skip_empty "$KCD_WDS_SKIP_EMPTY"} \
     --train_num_workers "${KCD_TRAIN_NUM_WORKERS:-4}" \
     --val_num_workers "${KCD_VAL_NUM_WORKERS:-2}" \
     --category_names "$KCD_CATEGORY_NAMES" \

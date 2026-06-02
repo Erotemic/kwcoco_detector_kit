@@ -41,9 +41,14 @@ case "$VARIANT" in
         DEST_DIR="$KCD_DEIMV2_HGNETV2_N_COCO_DIR"
         CANONICAL_PTH="$KCD_DEIMV2_HGNETV2_N_COCO_PTH"
         ;;
+    deimv2_hgnetv2_s)
+        REPO_ID="${KCD_HF_REPO:-Intellindust/DEIMv2_HGNetv2_S_COCO}"
+        DEST_DIR="$KCD_DEIMV2_HGNETV2_S_COCO_DIR"
+        CANONICAL_PTH="$KCD_DEIMV2_HGNETV2_S_COCO_PTH"
+        ;;
     *)
         echo "ERROR: unknown variant: $VARIANT" >&2
-        echo "Known: deimv2_dinov3_s, deimv2_hgnetv2_n" >&2
+        echo "Known: deimv2_dinov3_s, deimv2_hgnetv2_n, deimv2_hgnetv2_s" >&2
         echo "Add a case branch in $0 to support more." >&2
         exit 1
         ;;

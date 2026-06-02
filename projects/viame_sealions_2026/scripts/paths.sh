@@ -94,6 +94,12 @@ export KCD_DEIMV2_DINOV3_S_COCO_PTH="${KCD_DEIMV2_DINOV3_S_COCO_PTH:-$KCD_DEIMV2
 export KCD_DEIMV2_HGNETV2_N_COCO_DIR="${KCD_DEIMV2_HGNETV2_N_COCO_DIR:-$KCD_PRETRAINED_ROOT/deimv2_hgnetv2_n_coco}"
 export KCD_DEIMV2_HGNETV2_N_COCO_PTH="${KCD_DEIMV2_HGNETV2_N_COCO_PTH:-$KCD_DEIMV2_HGNETV2_N_COCO_DIR/deimv2_hgnetv2_n_coco.pth}"
 
+# DEIMv2-HGNetv2-S COCO. Same backbone family as HGNetv2-N but
+# bigger (~3-4x params); gen004 bigger-leap run pairs it with 2-GPU
+# training and balanced-MSCOCO class composition.
+export KCD_DEIMV2_HGNETV2_S_COCO_DIR="${KCD_DEIMV2_HGNETV2_S_COCO_DIR:-$KCD_PRETRAINED_ROOT/deimv2_hgnetv2_s_coco}"
+export KCD_DEIMV2_HGNETV2_S_COCO_PTH="${KCD_DEIMV2_HGNETV2_S_COCO_PTH:-$KCD_DEIMV2_HGNETV2_S_COCO_DIR/deimv2_hgnetv2_s_coco.pth}"
+
 # -- Per-experiment workspaces -------------------------------------------
 #
 # Convention: descriptive submit_train_*.sh scripts derive their

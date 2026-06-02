@@ -89,15 +89,20 @@ export KCD_BALANCE_TARGET_JSON='{"<empty>": 0.4, "pup": 0.2, "nonpup_sealion": 0
 # ============================================================
 # Slurm resource budget (performance-only — env-overridable)
 # ============================================================
-# arisia is shared. dinov3_s + 640x640 needs more VRAM/RAM than
-# hgnetv2_n + 320x320, but the kit's 4 CPU + 32G/GPU default still
-# over-provisions for 2 GPUs (would block 8 CPUs + 64G total).
-# Per memory feedback_arisia_resource_budgets, bump modestly from
-# the hgnetv2 baseline: 3 CPU + 32G per GPU (= 6 CPU + 64G for 2
-# GPUs). Profile and adjust if epochs are I/O-bound.
-export KCD_CPUS_PER_TASK="${KCD_CPUS_PER_TASK:-6}"
-export KCD_MEM="${KCD_MEM:-64G}"
-export KCD_TRAIN_NUM_WORKERS="${KCD_TRAIN_NUM_WORKERS:-3}"
+# Right-sized for dinov3_s + 640x640 + 2-GPU JPEG usage:
+#   Model + opt + AMP grads (9.7M params, 2 ranks)  ~ 4 GB
+#   4 dataloader workers (640x640 = 4x decode mem)  ~12 GB
+#   Main process + COCO eval on rank 0              ~ 4 GB
+#   DDP overhead + headroom                         ~ 4 GB
+#   Peak realistic                                  ~24 GB
+# 32 GB total for 2 GPUs = 16 GB/GPU; half the kit default and
+# still ~8 GB headroom. Bump via env if profile shows pressure.
+#
+# arisia is shared; minimizing the reservation lets co-scheduled
+# jobs run instead of queuing on (Resources).
+export KCD_CPUS_PER_TASK="${KCD_CPUS_PER_TASK:-4}"
+export KCD_MEM="${KCD_MEM:-32G}"
+export KCD_TRAIN_NUM_WORKERS="${KCD_TRAIN_NUM_WORKERS:-2}"
 export KCD_VAL_NUM_WORKERS="${KCD_VAL_NUM_WORKERS:-1}"
 
 # ============================================================

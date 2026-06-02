@@ -175,39 +175,52 @@ echo "[_sbatch_train.sh] forwarding ${#KCD_ENV_FLAGS[@]} KCD_* values to docker 
 #     ends up with zero usable GPUs, model stays on CPU, DDP errors
 #     ("module parameters {device(type='cpu')}"). gen002 2544 hit this.
 if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
-    # Multi-GPU: docker's --gpus value parser splits on commas and
-    # mis-interprets any purely-numeric segment as a Count, then
-    # errors "cannot set both Count and DeviceIDs on device request"
-    # when DeviceIDs are also set. Reproduced 2026-06-01 on arisia
-    # twice (jobs 2572, 2574) with --gpus device=0,1 — both the
-    # equals form and the space form hit this.
+    # Multi-GPU on arisia: docker's --gpus value parser is broken
+    # for comma-separated device lists in the version installed.
+    # We tried:
+    #   --gpus=device=0,1     → splits on ',' → reads "1" as Count
+    #                            → "cannot set both Count and DeviceIDs"
+    #                            (job 2572, 2026-06-01)
+    #   --gpus device=0,1     → same bug (job 2574)
+    #   --gpus device=UUID1,UUID2 → parser tries to read UUID2 as a
+    #                            count → "value must be either 'all'
+    #                            or an integer" (job after 1cb28cf)
+    # All three forms route through the same broken value parser.
     #
-    # Workaround: pass GPU UUIDs instead of indices. UUIDs always
-    # contain hex letters, so no comma-separated segment can be
-    # mistaken for a count. Get them from nvidia-smi keyed on
-    # the slurm-pinned indices in CUDA_VISIBLE_DEVICES.
+    # Workaround: bypass --gpus entirely. The pre-19.03 nvidia-
+    # docker2 path uses --runtime=nvidia plus NVIDIA_VISIBLE_DEVICES
+    # env var — same effect, doesn't touch the buggy parser.
+    # NVIDIA_VISIBLE_DEVICES is read by the runtime hook before
+    # the container starts, exposes exactly the listed GPUs, and
+    # accepts comma-separated UUIDs or indices.
+    #
+    # We use UUIDs (not indices) so the env var matches what the
+    # slurm-context log echoes and so concurrent jobs can't have
+    # subtle ordering ambiguity. nvidia-smi resolves the slurm-
+    # pinned indices to UUIDs.
     GPU_UUIDS=$(nvidia-smi --query-gpu=uuid --format=csv,noheader \
                   -i "$CUDA_VISIBLE_DEVICES" 2>/dev/null \
                 | tr '\n' ',' | sed 's/,$//')
-    if [ -n "$GPU_UUIDS" ]; then
-        GPU_FLAG=(--gpus "device=${GPU_UUIDS}")
-    else
-        # nvidia-smi unavailable or refused our indices; fall back
-        # to the index form. Single-GPU jobs (no comma) work fine
-        # this way; multi-GPU will fail at docker — surface that
-        # rather than silently mis-running.
-        GPU_FLAG=(--gpus "device=${CUDA_VISIBLE_DEVICES}")
-        echo "WARN: nvidia-smi UUID lookup failed; falling back to indices" >&2
+    if [ -z "$GPU_UUIDS" ]; then
+        # Fall back to indices if nvidia-smi lookup fails.
+        # NVIDIA_VISIBLE_DEVICES accepts both forms.
+        GPU_UUIDS="$CUDA_VISIBLE_DEVICES"
+        echo "WARN: nvidia-smi UUID lookup failed; using indices" >&2
     fi
+    GPU_FLAG=(--runtime=nvidia \
+              -e "NVIDIA_VISIBLE_DEVICES=${GPU_UUIDS}" \
+              -e "NVIDIA_DRIVER_CAPABILITIES=compute,utility")
     # Build container-side device list: 0,1,2,... up to the count slurm
     # gave us. Slurm sets CUDA_VISIBLE_DEVICES to a comma-separated host
     # index list ("0", "1,2", etc.); count its entries.
     n_gpus=$(echo "$CUDA_VISIBLE_DEVICES" | awk -F',' '{print NF}')
     CONTAINER_CUDA_VISIBLE=$(seq -s, 0 $((n_gpus - 1)))
 else
-    GPU_FLAG=(--gpus all)
+    GPU_FLAG=(--runtime=nvidia \
+              -e "NVIDIA_VISIBLE_DEVICES=all" \
+              -e "NVIDIA_DRIVER_CAPABILITIES=compute,utility")
     CONTAINER_CUDA_VISIBLE=""
-    echo "WARN: CUDA_VISIBLE_DEVICES unset; using --gpus all (collision risk)" >&2
+    echo "WARN: CUDA_VISIBLE_DEVICES unset; exposing all GPUs (collision risk)" >&2
 fi
 docker run --rm \
     "${GPU_FLAG[@]}" \

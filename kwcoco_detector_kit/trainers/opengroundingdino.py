@@ -229,7 +229,12 @@ class OpenGroundingDINOPredictor:
             # does not resolve in this fork.)
             from models import build_model
             from util.slconfig import SLConfig
-            from util.utils import clean_state_dict, get_phrases_from_posmap
+            from util.utils import clean_state_dict
+            # get_phrases_from_posmap is NOT in repo-root util.utils in this
+            # fork — it lives in the partial groundingdino.util subpackage
+            # (the one part of the groundingdino/ package that is present),
+            # which is where the fork's own inference.py imports it from.
+            from groundingdino.util.utils import get_phrases_from_posmap
         except Exception as ex:
             resolved = str(repo) if repo else "(not found)"
             raise ImportError(

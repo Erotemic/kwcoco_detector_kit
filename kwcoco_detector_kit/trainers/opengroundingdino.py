@@ -220,10 +220,20 @@ class OpenGroundingDINOPredictor:
                 load_model, predict,
             )
         except Exception as ex:
+            resolved = str(repo) if repo else "(not found)"
             raise ImportError(
-                "OpenGroundingDINOPredictor needs the OpenGroundingDINO "
-                "submodule on PYTHONPATH; set "
-                "$KCD_OPENGROUNDINGDINO_REPO_DPATH."
+                "OpenGroundingDINOPredictor could not import `groundingdino`.\n"
+                f"  repo resolved to: {resolved}\n"
+                f"    (from $KCD_OPENGROUNDINGDINO_REPO_DPATH, else the kit's "
+                f"tpl/Open-GroundingDino fallback)\n"
+                f"  underlying error: {type(ex).__name__}: {ex}\n"
+                "If the repo path above is correct, the path is NOT the problem "
+                "— the import itself failed. The usual cause is the compiled "
+                "MSDeformAttn op (`groundingdino._C`) not being built in this "
+                "environment, or a missing dependency. Build the extension in "
+                "this env (cd <repo> && pip install -e .  — needs nvcc/CUDA), or "
+                "run the teacher step inside the shitspotter docker image where "
+                "it is prebuilt."
             ) from ex
         self._device = device
         self._label_list = list(label_list or ["widget"])

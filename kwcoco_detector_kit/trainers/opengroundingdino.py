@@ -221,10 +221,15 @@ class OpenGroundingDINOPredictor:
             # below and the image transform uses torchvision, so the teacher
             # runs with just torch/torchvision + the core groundingdino model.
             import torch  # noqa: F401
-            from groundingdino.models import build_model
-            from groundingdino.util.slconfig import SLConfig
-            from groundingdino.util.misc import clean_state_dict
-            from groundingdino.util.utils import get_phrases_from_posmap
+            # Open-GroundingDino (the TRAINING fork) keeps models/util/datasets
+            # at the REPO ROOT — not under a `groundingdino.` package (its
+            # groundingdino/ subdir has only util/). This matches main.py /
+            # engine.py in the fork. (The fork's tools/inference_on_a_image.py
+            # uses `groundingdino.models`, but that path is upstream-derived and
+            # does not resolve in this fork.)
+            from models import build_model
+            from util.slconfig import SLConfig
+            from util.utils import clean_state_dict, get_phrases_from_posmap
         except Exception as ex:
             resolved = str(repo) if repo else "(not found)"
             raise ImportError(

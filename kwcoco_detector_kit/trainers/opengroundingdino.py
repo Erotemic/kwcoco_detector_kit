@@ -214,31 +214,45 @@ class OpenGroundingDINOPredictor:
         if repo and str(repo) not in sys.path:
             sys.path.insert(0, str(repo))
         try:
-            # Defer the import until __init__ — the upstream repo's
-            # init has heavy module-level side effects.
-            from groundingdino.util.inference import (  # type: ignore
-                load_model, predict,
-            )
+            # Import only the CORE model code. We deliberately do NOT import
+            # groundingdino.util.inference — it pulls in cv2 + supervision
+            # (visualization-only) and groundingdino.datasets (transforms),
+            # none of which the detector needs. load_model/predict are inlined
+            # below and the image transform uses torchvision, so the teacher
+            # runs with just torch/torchvision + the core groundingdino model.
+            import torch  # noqa: F401
+            from groundingdino.models import build_model
+            from groundingdino.util.slconfig import SLConfig
+            from groundingdino.util.misc import clean_state_dict
+            from groundingdino.util.utils import get_phrases_from_posmap
         except Exception as ex:
             resolved = str(repo) if repo else "(not found)"
             raise ImportError(
-                "OpenGroundingDINOPredictor could not import `groundingdino`.\n"
+                "OpenGroundingDINOPredictor could not import core `groundingdino` "
+                "model code.\n"
                 f"  repo resolved to: {resolved}\n"
                 f"    (from $KCD_OPENGROUNDINGDINO_REPO_DPATH, else the kit's "
                 f"tpl/Open-GroundingDino fallback)\n"
                 f"  underlying error: {type(ex).__name__}: {ex}\n"
-                "If the repo path above is correct, the path is NOT the problem "
-                "— the import itself failed. The usual cause is the compiled "
-                "MSDeformAttn op (`groundingdino._C`) not being built in this "
-                "environment, or a missing dependency. Build the extension in "
-                "this env (cd <repo> && pip install -e .  — needs nvcc/CUDA), or "
-                "run the teacher step inside the shitspotter docker image where "
-                "it is prebuilt."
+                "The repo must be a COMPLETE Open-GroundingDino checkout with the "
+                "MSDeformAttn op (`groundingdino._C`) built — a checkout that has "
+                "only `groundingdino/util/` is incomplete. Point "
+                "$KCD_OPENGROUNDINGDINO_REPO_DPATH at the full, _C-built repo. In "
+                "the shitspotter docker image it is prebuilt; don't shadow that "
+                "path with a host-repo bind mount."
             ) from ex
         self._device = device
         self._label_list = list(label_list or ["widget"])
-        self._model = load_model(str(config_fpath), str(ckpt_fpath))
-        self._predict = predict
+        self._get_phrases_from_posmap = get_phrases_from_posmap
+        # Inline of groundingdino.util.inference.load_model (so we don't import
+        # that module's cv2/supervision deps).
+        args = SLConfig.fromfile(str(config_fpath))
+        args.device = device
+        model = build_model(args)
+        checkpoint = torch.load(str(ckpt_fpath), map_location="cpu")
+        model.load_state_dict(clean_state_dict(checkpoint["model"]), strict=False)
+        model.eval()
+        self._model = model
         # eval_spatial_size — OGDino is flexible; report a typical inference size.
         self._eval_h = 800
         self._eval_w = 800
@@ -248,25 +262,20 @@ class OpenGroundingDINOPredictor:
         return (self._eval_h, self._eval_w)
 
     def predict_image(self, image_np, orig_size):
-        # OpenGroundingDINO consumes a PIL/torch image with text prompt.
+        # Replicate groundingdino's load_image transform (RandomResize[800],
+        # max_size=1333 -> ToTensor -> ImageNet Normalize) WITHOUT importing
+        # groundingdino.datasets — torchvision only.
         from PIL import Image
-        import torch
-        import groundingdino.datasets.transforms as T  # type: ignore
+        import torchvision.transforms.functional as TF
 
-        pil = Image.fromarray(image_np)
-        transform = T.Compose([
-            T.RandomResize([800], max_size=1333),
-            T.ToTensor(),
-            T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-        ])
-        image_transformed, _ = transform(pil, None)
+        pil = Image.fromarray(image_np).convert("RGB")
+        pil = self._resize_min_max(pil, 800, 1333)
+        tensor = TF.to_tensor(pil)
+        tensor = TF.normalize(tensor, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+
+        caption = " . ".join(self._label_list) + " ."
         boxes, logits, phrases = self._predict(
-            model=self._model,
-            image=image_transformed,
-            caption=" . ".join(self._label_list) + " .",
-            box_threshold=0.30,
-            text_threshold=0.25,
-            device=self._device,
+            tensor, caption, box_threshold=0.30, text_threshold=0.25,
         )
         W, H = int(orig_size[0]), int(orig_size[1])
         out: List[dict] = []
@@ -284,6 +293,45 @@ class OpenGroundingDINOPredictor:
                 "score": float(logit),
             })
         return out
+
+    @staticmethod
+    def _resize_min_max(pil, size: int, max_size: int):
+        """Mimic groundingdino ``T.RandomResize([size], max_size)``: scale so the
+        short side == ``size``, but cap the long side at ``max_size``."""
+        from PIL import Image as _Image
+        w, h = pil.size
+        short, long_ = min(w, h), max(w, h)
+        scale = size / float(short)
+        if long_ * scale > max_size:
+            scale = max_size / float(long_)
+        return pil.resize(
+            (max(1, round(w * scale)), max(1, round(h * scale))), _Image.BILINEAR
+        )
+
+    def _predict(self, image, caption, box_threshold, text_threshold):
+        """Inline of groundingdino.util.inference.predict (no cv2/supervision)."""
+        import torch
+        caption = caption.lower().strip()
+        if not caption.endswith("."):
+            caption = caption + "."
+        model = self._model.to(self._device)
+        image = image.to(self._device)
+        with torch.no_grad():
+            outputs = model(image[None], captions=[caption])
+        prediction_logits = outputs["pred_logits"].cpu().sigmoid()[0]
+        prediction_boxes = outputs["pred_boxes"].cpu()[0]
+        mask = prediction_logits.max(dim=1)[0] > box_threshold
+        logits = prediction_logits[mask]
+        boxes = prediction_boxes[mask]
+        tokenizer = model.tokenizer
+        tokenized = tokenizer(caption)
+        phrases = [
+            self._get_phrases_from_posmap(
+                logit > text_threshold, tokenized, tokenizer
+            ).replace(".", "")
+            for logit in logits
+        ]
+        return boxes, logits.max(dim=1)[0], phrases
 
 
 # ---------------------------------------------------------------------------

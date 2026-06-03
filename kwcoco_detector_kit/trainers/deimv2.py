@@ -435,6 +435,8 @@ def _build_train_yml(
     train_wds_category_names: Optional[Sequence[str]] = None,
     train_wds_source_to_target: Optional[Dict[str, str]] = None,
     train_wds_epoch_length: int = 0,
+    train_wds_bucket_weights: Optional[Dict[str, float]] = None,
+    train_wds_skip_empty: bool = False,
 ) -> Dict[str, Any]:
     H, W = int(input_hw[0]), int(input_hw[1])
     if family == "hgnetv2":
@@ -478,6 +480,11 @@ def _build_train_yml(
                     "category_names": list(train_wds_category_names or []),
                     "source_to_target": dict(train_wds_source_to_target or {}),
                     "epoch_length": int(train_wds_epoch_length),
+                    "bucket_weights": (
+                        dict(train_wds_bucket_weights)
+                        if train_wds_bucket_weights else None
+                    ),
+                    "skip_empty": bool(train_wds_skip_empty),
                     "return_masks": False,
                     "transforms": _train_transforms_block(input_hw),
                 }
@@ -839,6 +846,8 @@ class DEIMv2Trainer:
             train_wds_category_names=(extra or {}).get("train_wds_category_names"),
             train_wds_source_to_target=(extra or {}).get("train_wds_source_to_target"),
             train_wds_epoch_length=int((extra or {}).get("train_wds_epoch_length", 0) or 0),
+            train_wds_bucket_weights=(extra or {}).get("train_wds_bucket_weights"),
+            train_wds_skip_empty=bool((extra or {}).get("train_wds_skip_empty", False)),
         )
 
         cfg_fpath.write_text(yaml.safe_dump(yml, sort_keys=False))

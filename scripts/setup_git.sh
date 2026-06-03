@@ -25,12 +25,20 @@ if [ ! -d .git ] && [ ! -f .git ]; then
     exit 1
 fi
 
-# 1. `git push` from the parent auto-pushes each submodule's
-#    current-branch commits to that branch's UPSTREAM. We configure
-#    each submodule's local branch + upstream below (see step 6) so
-#    on-demand pushes go to the right branch on the fork.
-git config --local push.recurseSubmodules on-demand
-echo "  push.recurseSubmodules = on-demand"
+# 1. `git push` from the parent VERIFIES (via `check` mode) that every
+#    referenced submodule commit is on its remote, but does not push
+#    submodules itself. Git's built-in `on-demand` mode is unreliable
+#    here — it interprets the parent's refspec (`refs/heads/main`)
+#    literally inside the submodule and fails with
+#       fatal: src refspec 'refs/heads/main' must name a ref
+#    when the submodule's local branch isn't named `main`
+#    (gen002 shakedown 2026-05-30: dev/0.1.3 and
+#    ddp-loss-key-alignment both tripped this). The actual submodule
+#    push is done by our scripts/push_submodules.sh from the pre-push
+#    hook installed in step 5, which respects each submodule's tracked
+#    branch.
+git config --local push.recurseSubmodules check
+echo "  push.recurseSubmodules = check"
 
 # 2. `git fetch` from the parent also fetches submodules.
 git config --local fetch.recurseSubmodules on-demand
@@ -59,14 +67,31 @@ echo "  diff.submodule = log"
 git config --local submodule.recurse true
 echo "  submodule.recurse = true"
 
-# 5. Drop any pre-push hook a previous version of this script may
-#    have installed (we moved the branch-aware push into step 6
-#    rather than carrying a hook).
+# 5. Install pre-push hook that pushes each submodule on ITS tracked
+#    branch BEFORE the parent push runs. The branch-tracking config in
+#    step 6 alone isn't enough — git's `push.recurseSubmodules=on-demand`
+#    leaks the parent's refspec into the submodule. The hook calls
+#    scripts/push_submodules.sh which reads .gitmodules' `branch =`
+#    fields + the submodule's checked-out branch and pushes the right
+#    thing. The hook exits non-zero on any submodule failure, so the
+#    parent push aborts before touching its own remote.
 HOOK_FPATH="$(git rev-parse --git-dir)/hooks/pre-push"
-if [ -f "$HOOK_FPATH" ] && grep -q "push_submodules.sh" "$HOOK_FPATH" 2>/dev/null; then
-    rm -f "$HOOK_FPATH"
-    echo "  removed stale pre-push hook"
+mkdir -p "$(dirname "$HOOK_FPATH")"
+cat > "$HOOK_FPATH" <<'HOOK'
+#!/usr/bin/env bash
+# Pre-push hook installed by scripts/setup_git.sh.
+# Pushes every submodule (via scripts/push_submodules.sh: respects
+# .gitmodules `branch =` hints) before the parent push runs.
+set -e
+PUSH_SUBMODULES_SH="$(git rev-parse --show-toplevel)/scripts/push_submodules.sh"
+if [ -x "$PUSH_SUBMODULES_SH" ]; then
+    echo "[pre-push] Pushing submodules first..."
+    bash "$PUSH_SUBMODULES_SH"
 fi
+exit 0
+HOOK
+chmod +x "$HOOK_FPATH"
+echo "  pre-push hook -> $HOOK_FPATH"
 
 # 6. For every submodule that declares `branch = X` in .gitmodules,
 #    ensure the submodule has a LOCAL branch X tracking origin/X.
@@ -114,10 +139,13 @@ done
 
 echo
 echo "Local clone configured. \`git push\` from this clone will now:"
-echo "  - recursively push each submodule's current-branch commits to its"
-echo "    upstream (origin/<branch>), per push.recurseSubmodules=on-demand"
-echo "  - abort the parent push BEFORE touching its remote if any submodule"
-echo "    push fails"
+echo "  1. (pre-push hook) push each submodule via scripts/push_submodules.sh,"
+echo "     respecting the \`branch = ...\` field in .gitmodules"
+echo "  2. (push.recurseSubmodules=check) verify all referenced submodule"
+echo "     commits are on their remotes"
+echo "  3. push the parent (origin/main)"
+echo "  Any submodule failure in step 1 aborts the push before touching"
+echo "  the parent's remote."
 echo
 echo "To inspect what would happen without pushing:"
 echo "  git push --dry-run"

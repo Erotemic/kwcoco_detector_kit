@@ -92,6 +92,28 @@ class SweepConfig(scfg.DataConfig):
             "sample's annotations."
         ),
     )
+    train_wds_bucket_weights = scfg.Value(
+        None,
+        type=str,
+        help=(
+            "JSON object mapping bucket directory name (one of the "
+            "<shards>/dominant_raw_class_EQ_*/ subdirs) to a float weight "
+            "for kwcoco_dataloader.WeightedChunkMix. Unmentioned buckets "
+            "fall back to the footer-derived default. Set 0.0 to exclude "
+            "a bucket from training (e.g. NFS, DN). Experiment-defining: "
+            "set in submit script, NOT via env."
+        ),
+    )
+    train_wds_skip_empty = scfg.Value(
+        False,
+        help=(
+            "If True, drop samples whose post-scheme-collapse annotation "
+            "list is empty. Default False: empty tiles are valuable "
+            "negative signal for detection AP. Only set True to reproduce "
+            "the pre-gen003 contract (see journal 2026-06-01). "
+            "Experiment-defining: set in submit script, NOT via env."
+        ),
+    )
     category_names = scfg.Value(
         "widget",
         help=(
@@ -354,7 +376,12 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
                    json.loads(config.train_wds_source_to_target)
                    if config.train_wds_source_to_target else None
                ),
-               "train_wds_epoch_length": int(config.train_wds_epoch_length or 0)},
+               "train_wds_epoch_length": int(config.train_wds_epoch_length or 0),
+               "train_wds_bucket_weights": (
+                   json.loads(config.train_wds_bucket_weights)
+                   if config.train_wds_bucket_weights else None
+               ),
+               "train_wds_skip_empty": bool(config.train_wds_skip_empty)},
     )
     # init_ckpt was already resolved + validated above.
     resume_ckpt = config.resume

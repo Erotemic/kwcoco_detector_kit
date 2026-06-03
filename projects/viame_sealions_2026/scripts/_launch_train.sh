@@ -124,6 +124,7 @@ if [ -z "${KCD_INIT_CHECKPOINT:-}" ] && [ "${KCD_TRAIN_FROM_SCRATCH:-0}" != "1" 
     case "$KCD_VARIANT" in
         deimv2_dinov3_s)  KCD_INIT_CHECKPOINT="$KCD_DEIMV2_DINOV3_S_COCO_PTH" ;;
         deimv2_hgnetv2_n) KCD_INIT_CHECKPOINT="$KCD_DEIMV2_HGNETV2_N_COCO_PTH" ;;
+        deimv2_hgnetv2_s) KCD_INIT_CHECKPOINT="$KCD_DEIMV2_HGNETV2_S_COCO_PTH" ;;
         *) ;;
     esac
 fi
@@ -363,6 +364,66 @@ if [ "$N_VALI_ANNS" -eq 0 ]; then
     echo "  Eval mAP will be meaningless. Continuing anyway." >&2
 fi
 
+# =========================================================
+# 2c. Optional: class-balance the training MSCOCO
+# =========================================================
+# gen004 lever for the JPEG (non-WDS) backend. Set in the submit
+# script when an experiment wants a different class composition
+# than the on-disk MSCOCO provides.
+#
+#   KCD_BALANCE_TARGET_JSON='{"<empty>":0.4,"pup":0.2,"nonpup_sealion":0.4}'
+#   KCD_BALANCE_TARGET_SIZE=80000      # optional; defaults to source size
+#
+# Mechanism: export apply_scheme'd kwcoco -> MSCOCO once, run
+# balance_mscoco to oversample/undersample image entries to hit
+# the target distribution, then override TRAIN_KWCOCO so the
+# trainer's _ensure_mscoco passes the balanced .mscoco.json
+# through unchanged. Assets on disk are NOT modified.
+#
+# Buckets:
+#   * <empty> = images with no annotations after apply_scheme
+#   * <target_class_name> = dominant target class per image
+# (See kwcoco_detector_kit/data/balance_mscoco.py for the
+# bucketing rules.)
+if [ -n "${KCD_BALANCE_TARGET_JSON:-}" ]; then
+    echo
+    echo "=== 2c. Class-balance training MSCOCO ==="
+    BALANCE_DIR="$KCD_ROOT/balance"
+    mkdir -p "$BALANCE_DIR"
+    UNBALANCED_MSCOCO="$BALANCE_DIR/train_unbalanced.mscoco.json"
+    BALANCED_MSCOCO="$BALANCE_DIR/train_balanced.mscoco.json"
+
+    if [ ! -f "$UNBALANCED_MSCOCO" ] || [ "${KCD_FORCE_REBALANCE:-0}" = "1" ]; then
+        echo "  export $TRAIN_KWCOCO -> $UNBALANCED_MSCOCO"
+        "$PYTHON_BIN" -c "
+import sys
+from kwcoco_detector_kit.data.coco_export import export_mscoco
+cat_names = [n.strip() for n in '$KCD_CATEGORY_NAMES'.split(',') if n.strip()]
+export_mscoco(src='$TRAIN_KWCOCO', dst='$UNBALANCED_MSCOCO',
+              category_names=cat_names,
+              include_segmentations=False, category_id_start=0)
+"
+    else
+        echo "  Reusing $UNBALANCED_MSCOCO (KCD_FORCE_REBALANCE=1 to redo)."
+    fi
+
+    if [ ! -f "$BALANCED_MSCOCO" ] || [ "${KCD_FORCE_REBALANCE:-0}" = "1" ]; then
+        echo "  balance: $KCD_BALANCE_TARGET_JSON"
+        "$PYTHON_BIN" -m kwcoco_detector_kit.data.balance_mscoco \
+            "$UNBALANCED_MSCOCO" "$BALANCED_MSCOCO" \
+            --target_distribution "$KCD_BALANCE_TARGET_JSON" \
+            ${KCD_BALANCE_TARGET_SIZE:+--target_size "$KCD_BALANCE_TARGET_SIZE"} \
+            --seed "${KCD_BALANCE_SEED:-0}"
+    else
+        echo "  Reusing $BALANCED_MSCOCO (KCD_FORCE_REBALANCE=1 to redo)."
+    fi
+
+    # Repoint the trainer at the balanced MSCOCO. The sweep accepts
+    # .mscoco.json directly via _ensure_mscoco.
+    TRAIN_KWCOCO="$BALANCED_MSCOCO"
+    echo "  -> TRAIN_KWCOCO=$TRAIN_KWCOCO"
+fi
+
 echo
 echo "=== 3. Sweep (train + export + eval + bench) ==="
 DIST_FLAG=(--num_gpus "$KCD_NUM_GPUS")
@@ -401,6 +462,8 @@ echo "  KCD_DISTRACTOR_CLASSES = ${KCD_DISTRACTOR_CLASSES:-<unset>}"
     ${KCD_WDS_SHARDS_DPATH:+--train_wds_shards_dpath "$KCD_WDS_SHARDS_DPATH"} \
     ${KCD_WDS_EPOCH_LENGTH:+--train_wds_epoch_length "$KCD_WDS_EPOCH_LENGTH"} \
     ${KCD_WDS_SOURCE_TO_TARGET:+--train_wds_source_to_target "$KCD_WDS_SOURCE_TO_TARGET"} \
+    ${KCD_WDS_BUCKET_WEIGHTS_JSON:+--train_wds_bucket_weights "$KCD_WDS_BUCKET_WEIGHTS_JSON"} \
+    ${KCD_WDS_SKIP_EMPTY:+--train_wds_skip_empty "$KCD_WDS_SKIP_EMPTY"} \
     --train_num_workers "${KCD_TRAIN_NUM_WORKERS:-4}" \
     --val_num_workers "${KCD_VAL_NUM_WORKERS:-2}" \
     --category_names "$KCD_CATEGORY_NAMES" \

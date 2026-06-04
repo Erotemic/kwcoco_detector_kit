@@ -104,7 +104,6 @@ export KCD_RESUME_CKPT=/data/users/jon.crall/kcd_sealion/runs/pup_vs_nonpup_deim
 #
 # Remove this line after rebuilding the image
 # (bash docker/opengroundingdino/build.sh in the kit root).
-export KCD_DEV_MOUNT_KIT=1
 
 # ============================================================
 # Resource budget - kept tight per memory feedback_arisia_resource_budgets

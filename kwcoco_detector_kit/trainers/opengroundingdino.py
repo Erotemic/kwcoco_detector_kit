@@ -259,7 +259,10 @@ class OpenGroundingDINOPredictor:
         args = SLConfig.fromfile(str(config_fpath))
         args.device = device
         model = build_model(args)
-        checkpoint = torch.load(str(ckpt_fpath), map_location="cpu")
+        # weights_only=False: OGDino checkpoints pickle an argparse.Namespace
+        # (training args), which PyTorch 2.6+'s default weights_only=True
+        # refuses to unpickle. The checkpoint is a trusted local file.
+        checkpoint = torch.load(str(ckpt_fpath), map_location="cpu", weights_only=False)
         model.load_state_dict(clean_state_dict(checkpoint["model"]), strict=False)
         model.eval()
         self._model = model

@@ -126,6 +126,16 @@ Observed memory peaks at OOM for the dinov3_s gen004 runs:
 |---|---|---|---|
 | 2577 | FP32, multiscale 512-768 | epoch 6 backward | 45.76 GB |
 | 2578 | **FP16**, multiscale 512-768 | epoch 5 iter 500 | 44.79 GB |
+| 2579 | **FP16**, **fixed 640**, resume | epoch 8 (mid-batch spike) | 42.82 GB |
+
+2579 ran THREE full epochs (5-7) at steady-state ~31-33 GB
+before hitting a transient peak at 42.82 GB and OOMing on a
+4.68 GB allocation. So fixed 640 reduces the typical peak
+substantially but the worst-case batch (lots of GT, IoUCrop
+producing a lot of crops, etc.) still flirts with the 47 GB
+ceiling. Reproducibly. Lesson: at batch_per_gpu=16,
+dinov3_s + 640 is too close to the ceiling regardless of
+multiscale on/off.
 
 AMP saved ~1 GB. Less than expected because:
 
@@ -147,22 +157,33 @@ The 768×768 batches hit when `multiscale_512_768` samples the
 upper end of its range. At 768²/640² = 1.44× pixels, activations
 scale 1.44×, pushing the total over 47.4 GB.
 
-**Mitigation options** in order of safety:
+**Mitigation options**, learned the hard way:
 
-1. `KCD_TRAIN_POLICY=fixed` — train at 640 only. **Used in 2578
-   → resume.** Loses tail scale-aug diversity; gains memory
-   headroom and predictable iter time.
-2. `multiscale_512_640` — cap upper end; still some
-   downscale diversity, no upscale.
-3. `KCD_PER_GPU_BATCH=8` — halves activation memory, halves
-   throughput, changes effective batch 32 → 16 (LR may need
-   adjustment).
+1. ~~`KCD_TRAIN_POLICY=fixed` alone~~ — NOT sufficient. 2579
+   ran 3 full epochs at fixed 640 then OOMd on a transient
+   peak. Reduces typical peak but worst-case batch still
+   hits the ceiling.
+2. **`KCD_PER_GPU_BATCH=8` is the actual fix**. Halves
+   activation memory in worst-case batches → ~7-10 GB
+   headroom. Adopted in both gen004 dinov3_s scripts after
+   2579. Trade-off: 2× iters/epoch and ~half per-iter
+   throughput. With `max_oversample=1` keeping epochs short
+   (~1600 iters at batch 8), wallclock is still manageable
+   (4-8h per 30-epoch run).
+3. `multiscale_512_640` — cap upper end; some downscale
+   diversity, no upscale. Untested but probably equivalent
+   to fixed 640 in memory terms.
 4. Disable EMA (`use_ema: false` in YAML) — saves ~5 GB but
-   may slightly hurt convergence; EMA is usually worth the
-   memory.
+   may hurt convergence; EMA is usually worth the memory.
+   Untested.
 5. Gradient checkpointing on the decoder — saves activation
    memory at cost of 30-50% wallclock per backward pass. Not
    currently exposed; would need a DEIMv2 patch.
+
+**Conclusion**: at dinov3_s + 640 on A6000 (47 GB), batch 16
+per GPU is too aggressive. Batch 8 is the sweet spot — model
+fits with headroom, the shorter epoch from max_oversample=1
+absorbs the 2× iter overhead.
 
 ## 5. Other knobs to know about
 

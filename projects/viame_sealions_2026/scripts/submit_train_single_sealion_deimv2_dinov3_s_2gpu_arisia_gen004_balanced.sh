@@ -48,7 +48,11 @@ export KCD_SCHEME=single_sealion
 export KCD_CATEGORY_NAMES=sealion
 export KCD_VARIANT=deimv2_dinov3_s
 export KCD_NUM_GPUS=2
-export KCD_PER_GPU_BATCH=16
+# per_gpu_batch=8 (total batch 16) — matches the pup_vs_nonpup
+# gen004 script after 2579 confirmed that batch 16 OOMs at
+# fixed 640 in transient spikes. Halving gives ~7-10 GB
+# headroom. See pup script comment for full rationale.
+export KCD_PER_GPU_BATCH=8
 export KCD_VAL_BATCH_MULT=1
 export KCD_NUM_EPOCHS=30
 export KCD_INPUT_HW='[640, 640]'

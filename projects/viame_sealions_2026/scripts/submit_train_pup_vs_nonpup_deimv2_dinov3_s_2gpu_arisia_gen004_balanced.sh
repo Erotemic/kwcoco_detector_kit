@@ -52,7 +52,17 @@ export KCD_SCHEME=pup_vs_nonpup
 export KCD_CATEGORY_NAMES=pup,nonpup_sealion
 export KCD_VARIANT=deimv2_dinov3_s
 export KCD_NUM_GPUS=2
-export KCD_PER_GPU_BATCH=16          # total batch = 32
+# per_gpu_batch=8 (total batch 16). Reason: even with AMP +
+# fixed 640, 2579 OOM'd at epoch 8 — memory was steady at
+# 31-33 GB but transient peaks hit 42.82 GB and tried to
+# allocate ~5 GB more (47 GB ceiling). Halving batch halves the
+# worst-case activation memory in those spikes and gives us
+# ~7-10 GB headroom. Trade-off: 2x more iters per epoch, ~half
+# the per-iter throughput. With max_oversample=1 keeping epochs
+# short (~1600 iters at batch 8), wallclock stays manageable.
+# Keep LR at 5e-4 since we're past warmup; the flat phase is
+# not sensitive to precise LR scaling.
+export KCD_PER_GPU_BATCH=8           # total batch = 16
 export KCD_VAL_BATCH_MULT=1
 export KCD_NUM_EPOCHS=30
 export KCD_INPUT_HW='[640, 640]'

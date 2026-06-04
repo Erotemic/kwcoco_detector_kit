@@ -18,18 +18,27 @@
 # kcd.user label OR /proc inspection). Skips containers without a
 # resolvable slurm job id (manual runs, foreign containers).
 #
+# DEFAULT MODE IS REPORT-ONLY. The janitor will identify zombies
+# and print them, but will NOT kill anything unless you set
+# KCD_KILL_ZOMBIES=1 explicitly. Killing is opt-in because a
+# correctly-set-up training run should never produce zombies in
+# the first place — if zombies appear, that's a signal worth
+# investigating before papering over.
+#
 # Usage:
-#   bash projects/viame_sealions_2026/scripts/kit_zombie_janitor.sh        # clean
-#   KCD_DRY_RUN=1 bash .../kit_zombie_janitor.sh                           # just print
+#   bash projects/viame_sealions_2026/scripts/kit_zombie_janitor.sh        # report only
+#   KCD_KILL_ZOMBIES=1 bash .../kit_zombie_janitor.sh                      # report + kill
 #
 # Recommend running this:
-#   - Periodically (cron, every 15-30 min)
-#   - Before rsync_from_arisia.sh (avoid syncing zombie writes)
-#   - After a known scancel / walltime event
+#   - After a known scancel / walltime event, with KCD_KILL_ZOMBIES=1
+#     once you've confirmed the trap-cleanup didn't fire.
+#   - As a periodic SANITY CHECK (cron, every 15-30 min, no
+#     KCD_KILL_ZOMBIES) — silent on no-op runs; if a zombie shows up,
+#     the cron output reveals the bug to investigate.
 
 set -u
 
-DRY_RUN="${KCD_DRY_RUN:-0}"
+KILL="${KCD_KILL_ZOMBIES:-0}"
 MY_USER="$(whoami)"
 
 # Find candidates: container name starts with "kcd-" OR has our
@@ -102,14 +111,17 @@ for z in "${ZOMBIES[@]}"; do
     TO_KILL+=("$cid")
 done
 
-if [ "$DRY_RUN" = "1" ]; then
+if [ "$KILL" != "1" ]; then
     echo
-    echo "(KCD_DRY_RUN=1 set; not actually killing. Unset and re-run to clean.)"
+    echo "(default mode: report only; set KCD_KILL_ZOMBIES=1 to actually kill these.)"
+    echo "Zombies appearing here without a trap-cleanup having fired is a signal" >&2
+    echo "worth investigating before just nuking — check _sbatch_train.sh's trap" >&2
+    echo "and the slurm log for the orphaned job(s)." >&2
     exit 0
 fi
 
 echo
-echo "kit_zombie_janitor: killing ${#TO_KILL[@]} zombie(s)..."
+echo "kit_zombie_janitor: KCD_KILL_ZOMBIES=1 set; killing ${#TO_KILL[@]} zombie(s)..."
 docker rm -f "${TO_KILL[@]}"
 echo "kit_zombie_janitor: done."
 

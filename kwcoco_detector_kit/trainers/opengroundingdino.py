@@ -258,7 +258,10 @@ class OpenGroundingDINOPredictor:
         # that module's cv2/supervision deps).
         args = SLConfig.fromfile(str(config_fpath))
         args.device = device
-        model = build_model(args)
+        # This fork's build_model returns (model, criterion, postprocessors);
+        # we only need the model (inference reads pred_logits/pred_boxes
+        # directly, no postprocessors).
+        model, _criterion, _postprocessors = build_model(args)
         # weights_only=False: OGDino checkpoints pickle an argparse.Namespace
         # (training args), which PyTorch 2.6+'s default weights_only=True
         # refuses to unpickle. The checkpoint is a trusted local file.

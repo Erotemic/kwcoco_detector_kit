@@ -56,7 +56,17 @@ export KCD_PER_GPU_BATCH=16          # total batch = 32
 export KCD_VAL_BATCH_MULT=1
 export KCD_NUM_EPOCHS=30
 export KCD_INPUT_HW='[640, 640]'
-export KCD_TRAIN_POLICY=multiscale_512_768
+# fixed 640, NOT multiscale_512_768. Reason: the original plan
+# used multiscale_512_768 and 2577 reached in-train mAP 0.161 at
+# epoch 5 — but OOM'd at epoch 6 because 768x768 batches exceed
+# the 47 GB VRAM budget when stacked on dinov3_s (5G) + AdamW (10G)
+# + EMA (5G) + grads/activations (peak 25G at 768). The resume
+# at 2578 confirmed the same OOM with AMP on. See
+# [[2026-06-04_deimv2_training_internals]] for the OOM math.
+# This clean restart drops the multiscale upper bound; the
+# checkpoint history is uniform 640 throughout, making the run
+# directly comparable to the single_sealion gen004 companion.
+export KCD_TRAIN_POLICY=fixed
 export KCD_LR=5e-4
 export KCD_BACKBONE_LR=2.5e-5
 export KCD_USE_AMP=true

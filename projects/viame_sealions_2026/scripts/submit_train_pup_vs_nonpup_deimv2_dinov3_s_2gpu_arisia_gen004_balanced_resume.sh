@@ -93,6 +93,20 @@ export KCD_FORCE_REBALANCE=1
 export KCD_RESUME_CKPT=/data/users/jon.crall/kcd_sealion/runs/pup_vs_nonpup_deimv2_dinov3_s_2gpu_arisia_gen004_balanced/runs/deimv2_dinov3_s_640x640_multiscale_512_768/checkpoint0004.pth
 
 # ============================================================
+# Dev mount: load today's kit changes without an image rebuild
+# ============================================================
+# The AMP fix (kit commit c43bf8f) and max_oversample (bfbed6b)
+# live in kit Python, which is baked into the docker image at
+# build time (pip install -e /opt/kwcoco_detector_kit). Without
+# this mount, the container runs the STALE kit code from the
+# image -- the --use-amp flag wouldn't be appended to train.py,
+# and balance_mscoco wouldn't recognise --max_oversample.
+#
+# Remove this line after rebuilding the image
+# (bash docker/opengroundingdino/build.sh in the kit root).
+export KCD_DEV_MOUNT_KIT=1
+
+# ============================================================
 # Resource budget - kept tight per memory feedback_arisia_resource_budgets
 # ============================================================
 # With AMP on, peak memory is ~half of 2577's: ~12 GB per GPU

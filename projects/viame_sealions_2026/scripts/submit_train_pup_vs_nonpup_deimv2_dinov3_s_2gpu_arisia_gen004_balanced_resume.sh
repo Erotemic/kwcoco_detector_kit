@@ -6,6 +6,18 @@
 # cancelled. That run used the LEGACY oversample mode (no
 # max_oversample): 229k samples/epoch -> 6 epochs in 48h.
 #
+# 2026-06-04 update: resume 2578 OOM'd at epoch 5 iter ~500 even
+# with AMP confirmed on (cfg dump showed use_amp:True). Root cause:
+# multiscale_512_768 policy occasionally samples 768x768 batches
+# whose activation memory exceeds the 47 GB budget when stacked on
+# the model + AdamW(2x) + EMA(1x). max mem grew from 9.9 GB at iter
+# 0 to 28.1 GB at iter 500, then peaked above 47 GB. AMP halved
+# activations (vs 2577's FP32 OOM) but the worst-case multiscale
+# tile still blew the budget. Fix: drop multiscale; train at fixed
+# 640. The 2577->2578 checkpoint already saw 512-768 in earlier
+# epochs so it's familiar with 640; we just stop the scheduler from
+# occasionally pushing to 768 where memory peaks.
+#
 # This resume changes two things; everything else matches 2577:
 #
 #   1. max_oversample=1 (per kit commit bfbed6b). Each pup tile
@@ -53,7 +65,7 @@ export KCD_PER_GPU_BATCH=16
 export KCD_VAL_BATCH_MULT=1
 export KCD_NUM_EPOCHS=30
 export KCD_INPUT_HW='[640, 640]'
-export KCD_TRAIN_POLICY=multiscale_512_768
+export KCD_TRAIN_POLICY=fixed
 export KCD_LR=5e-4
 export KCD_BACKBONE_LR=2.5e-5
 export KCD_USE_AMP=true

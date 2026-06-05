@@ -1,4 +1,17 @@
 # 2026-06-04 — DEIMv2 training internals: AMP, LR, Mosaic, OOM
+> [!WARNING]
+> **2026-06-05 retroactive correction.** Every training run referenced
+> below used `training_ready_v1/` — a 1,314-image, 2021–2024-only,
+> n_cats=1 subset of the actual corpus. The authoritative bundles at
+> `/data/Public/VIAME/viame_sealions_2026/unpacked/*_norm.kwcoco.zip`
+> have 6,462 train images across 14 years (2007–2024) with 9 proper
+> kwcoco categories. All AP numbers in this journal are SUBSET-only
+> and not comparable to gen005+ runs trained on the real corpus. The
+> recipe-level findings (dinov3_s + balance beats hgnetv2_n, EMA
+> beats best_stg1, multiscale OOMs at 2-GPU 512–768) likely
+> generalize; the absolute AP numbers (kit AP 0.5xx, in-train mAP
+> 0.1xx) do not. See `2026-06-05_corpus_audit_wrong_bundle.md`.
+
 
 ## Context
 
@@ -271,23 +284,140 @@ of submission):
 LOG=/data/users/jon.crall/slurm_logs/<run>-<jobid>.out
 
 # AMP active end-to-end
+> [!WARNING]
+> **2026-06-05 retroactive correction.** Every training run referenced
+> below used `training_ready_v1/` — a 1,314-image, 2021–2024-only,
+> n_cats=1 subset of the actual corpus. The authoritative bundles at
+> `/data/Public/VIAME/viame_sealions_2026/unpacked/*_norm.kwcoco.zip`
+> have 6,462 train images across 14 years (2007–2024) with 9 proper
+> kwcoco categories. All AP numbers in this journal are SUBSET-only
+> and not comparable to gen005+ runs trained on the real corpus. The
+> recipe-level findings (dinov3_s + balance beats hgnetv2_n, EMA
+> beats best_stg1, multiscale OOMs at 2-GPU 512–768) likely
+> generalize; the absolute AP numbers (kit AP 0.5xx, in-train mAP
+> 0.1xx) do not. See `2026-06-05_corpus_audit_wrong_bundle.md`.
+
 grep -oE "'use_amp': (True|False)" "$LOG" | head -2
 # Both should print 'use_amp': True
+> [!WARNING]
+> **2026-06-05 retroactive correction.** Every training run referenced
+> below used `training_ready_v1/` — a 1,314-image, 2021–2024-only,
+> n_cats=1 subset of the actual corpus. The authoritative bundles at
+> `/data/Public/VIAME/viame_sealions_2026/unpacked/*_norm.kwcoco.zip`
+> have 6,462 train images across 14 years (2007–2024) with 9 proper
+> kwcoco categories. All AP numbers in this journal are SUBSET-only
+> and not comparable to gen005+ runs trained on the real corpus. The
+> recipe-level findings (dinov3_s + balance beats hgnetv2_n, EMA
+> beats best_stg1, multiscale OOMs at 2-GPU 512–768) likely
+> generalize; the absolute AP numbers (kit AP 0.5xx, in-train mAP
+> 0.1xx) do not. See `2026-06-05_corpus_audit_wrong_bundle.md`.
+
 
 # Balance applied (if KCD_BALANCE_TARGET_JSON was set)
+> [!WARNING]
+> **2026-06-05 retroactive correction.** Every training run referenced
+> below used `training_ready_v1/` — a 1,314-image, 2021–2024-only,
+> n_cats=1 subset of the actual corpus. The authoritative bundles at
+> `/data/Public/VIAME/viame_sealions_2026/unpacked/*_norm.kwcoco.zip`
+> have 6,462 train images across 14 years (2007–2024) with 9 proper
+> kwcoco categories. All AP numbers in this journal are SUBSET-only
+> and not comparable to gen005+ runs trained on the real corpus. The
+> recipe-level findings (dinov3_s + balance beats hgnetv2_n, EMA
+> beats best_stg1, multiscale OOMs at 2-GPU 512–768) likely
+> generalize; the absolute AP numbers (kit AP 0.5xx, in-train mAP
+> 0.1xx) do not. See `2026-06-05_corpus_audit_wrong_bundle.md`.
+
 grep "balance_mscoco: wrote" "$LOG"
 # Should show your target_distribution and actual bucket counts
+> [!WARNING]
+> **2026-06-05 retroactive correction.** Every training run referenced
+> below used `training_ready_v1/` — a 1,314-image, 2021–2024-only,
+> n_cats=1 subset of the actual corpus. The authoritative bundles at
+> `/data/Public/VIAME/viame_sealions_2026/unpacked/*_norm.kwcoco.zip`
+> have 6,462 train images across 14 years (2007–2024) with 9 proper
+> kwcoco categories. All AP numbers in this journal are SUBSET-only
+> and not comparable to gen005+ runs trained on the real corpus. The
+> recipe-level findings (dinov3_s + balance beats hgnetv2_n, EMA
+> beats best_stg1, multiscale OOMs at 2-GPU 512–768) likely
+> generalize; the absolute AP numbers (kit AP 0.5xx, in-train mAP
+> 0.1xx) do not. See `2026-06-05_corpus_audit_wrong_bundle.md`.
+
 
 # max_oversample took effect
+> [!WARNING]
+> **2026-06-05 retroactive correction.** Every training run referenced
+> below used `training_ready_v1/` — a 1,314-image, 2021–2024-only,
+> n_cats=1 subset of the actual corpus. The authoritative bundles at
+> `/data/Public/VIAME/viame_sealions_2026/unpacked/*_norm.kwcoco.zip`
+> have 6,462 train images across 14 years (2007–2024) with 9 proper
+> kwcoco categories. All AP numbers in this journal are SUBSET-only
+> and not comparable to gen005+ runs trained on the real corpus. The
+> recipe-level findings (dinov3_s + balance beats hgnetv2_n, EMA
+> beats best_stg1, multiscale OOMs at 2-GPU 512–768) likely
+> generalize; the absolute AP numbers (kit AP 0.5xx, in-train mAP
+> 0.1xx) do not. See `2026-06-05_corpus_audit_wrong_bundle.md`.
+
 grep -E "max_oversample|target_size" "$LOG"
 
 # Augmentation policy active
+> [!WARNING]
+> **2026-06-05 retroactive correction.** Every training run referenced
+> below used `training_ready_v1/` — a 1,314-image, 2021–2024-only,
+> n_cats=1 subset of the actual corpus. The authoritative bundles at
+> `/data/Public/VIAME/viame_sealions_2026/unpacked/*_norm.kwcoco.zip`
+> have 6,462 train images across 14 years (2007–2024) with 9 proper
+> kwcoco categories. All AP numbers in this journal are SUBSET-only
+> and not comparable to gen005+ runs trained on the real corpus. The
+> recipe-level findings (dinov3_s + balance beats hgnetv2_n, EMA
+> beats best_stg1, multiscale OOMs at 2-GPU 512–768) likely
+> generalize; the absolute AP numbers (kit AP 0.5xx, in-train mAP
+> 0.1xx) do not. See `2026-06-05_corpus_audit_wrong_bundle.md`.
+
 grep -oE "'policy': \{[^}]+\}" "$LOG" | head -1
 
 # First few iters' memory growth
+> [!WARNING]
+> **2026-06-05 retroactive correction.** Every training run referenced
+> below used `training_ready_v1/` — a 1,314-image, 2021–2024-only,
+> n_cats=1 subset of the actual corpus. The authoritative bundles at
+> `/data/Public/VIAME/viame_sealions_2026/unpacked/*_norm.kwcoco.zip`
+> have 6,462 train images across 14 years (2007–2024) with 9 proper
+> kwcoco categories. All AP numbers in this journal are SUBSET-only
+> and not comparable to gen005+ runs trained on the real corpus. The
+> recipe-level findings (dinov3_s + balance beats hgnetv2_n, EMA
+> beats best_stg1, multiscale OOMs at 2-GPU 512–768) likely
+> generalize; the absolute AP numbers (kit AP 0.5xx, in-train mAP
+> 0.1xx) do not. See `2026-06-05_corpus_audit_wrong_bundle.md`.
+
 grep -oE "max mem: [0-9]+" "$LOG" | head -5
 # At iter 0 max mem should be ~1/3 of GPU. Growth across iters is
+> [!WARNING]
+> **2026-06-05 retroactive correction.** Every training run referenced
+> below used `training_ready_v1/` — a 1,314-image, 2021–2024-only,
+> n_cats=1 subset of the actual corpus. The authoritative bundles at
+> `/data/Public/VIAME/viame_sealions_2026/unpacked/*_norm.kwcoco.zip`
+> have 6,462 train images across 14 years (2007–2024) with 9 proper
+> kwcoco categories. All AP numbers in this journal are SUBSET-only
+> and not comparable to gen005+ runs trained on the real corpus. The
+> recipe-level findings (dinov3_s + balance beats hgnetv2_n, EMA
+> beats best_stg1, multiscale OOMs at 2-GPU 512–768) likely
+> generalize; the absolute AP numbers (kit AP 0.5xx, in-train mAP
+> 0.1xx) do not. See `2026-06-05_corpus_audit_wrong_bundle.md`.
+
 # expected (caching, EMA buildup); plateau by iter ~500.
+> [!WARNING]
+> **2026-06-05 retroactive correction.** Every training run referenced
+> below used `training_ready_v1/` — a 1,314-image, 2021–2024-only,
+> n_cats=1 subset of the actual corpus. The authoritative bundles at
+> `/data/Public/VIAME/viame_sealions_2026/unpacked/*_norm.kwcoco.zip`
+> have 6,462 train images across 14 years (2007–2024) with 9 proper
+> kwcoco categories. All AP numbers in this journal are SUBSET-only
+> and not comparable to gen005+ runs trained on the real corpus. The
+> recipe-level findings (dinov3_s + balance beats hgnetv2_n, EMA
+> beats best_stg1, multiscale OOMs at 2-GPU 512–768) likely
+> generalize; the absolute AP numbers (kit AP 0.5xx, in-train mAP
+> 0.1xx) do not. See `2026-06-05_corpus_audit_wrong_bundle.md`.
+
 ```
 
 ## Open

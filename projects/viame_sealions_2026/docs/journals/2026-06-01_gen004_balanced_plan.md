@@ -1,4 +1,17 @@
 # 2026-06-01 — gen004: class-balanced JPEG runs
+> [!WARNING]
+> **2026-06-05 retroactive correction.** Every training run referenced
+> below used `training_ready_v1/` — a 1,314-image, 2021–2024-only,
+> n_cats=1 subset of the actual corpus. The authoritative bundles at
+> `/data/Public/VIAME/viame_sealions_2026/unpacked/*_norm.kwcoco.zip`
+> have 6,462 train images across 14 years (2007–2024) with 9 proper
+> kwcoco categories. All AP numbers in this journal are SUBSET-only
+> and not comparable to gen005+ runs trained on the real corpus. The
+> recipe-level findings (dinov3_s + balance beats hgnetv2_n, EMA
+> beats best_stg1, multiscale OOMs at 2-GPU 512–768) likely
+> generalize; the absolute AP numbers (kit AP 0.5xx, in-train mAP
+> 0.1xx) do not. See `2026-06-05_corpus_audit_wrong_bundle.md`.
+
 
 ## Context
 

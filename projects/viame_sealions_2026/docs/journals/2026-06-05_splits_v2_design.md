@@ -116,9 +116,131 @@ Test per-class: NFS=**105**, DN=8. 7 test years = strong
 generalization signal. Costs ~320 more training images vs
 balanced.
 
-## Recommendation
+## FINAL recommendation (2026-06-05 late): OPT_F_12pct
 
-**REC_balanced** is the best fit for the user's stated
+User requirements after several iterations:
+* Test 10–15% of corpus (statistical power for AP).
+* All classes covered in test.
+* **Train must retain the BULK of rare classes** (esp. NFS).
+
+Designed by:
+1. Keeping two mini-chunks that include partial NFS clusters
+   (2014 [426:441] size=15 → 5 NFS; 2022 [115:130] size=15
+   → 11 NFS).
+2. Growing 2009/2019/2024 chunks to 35–40% size *without
+   capturing additional NFS*, since 2009/2019 have ≤1 NFS
+   each and 2024's 11 NFS are already captured at 25% chunk
+   size. Growing these chunks pulls common-class imagery
+   only.
+
+### OPT_F_12pct (recommended primary)
+
+| year | start | size | size% | first image | last image |
+|---|---:|---:|---:|---|---|
+| 2009 | 319 | 346 | 40% | `20090627_SSLC1936_C.JPG` | `20090708_SSLC3974_C.JPG` |
+| 2014 | 426 |  15 |  2% | `20140628_SSLP1914_C.jpg` | `20140628_SSLS0145_C.jpg` |
+| 2019 | 193 | 336 | 35% | `20190624_SEA LION ISLANDS_SSLC0412.jpg` | `20190628_MARMOT_SSLC0507.jpg` |
+| 2022 | 115 |  15 |  4% | `20220627_AMAK+ROCKS_SSLS0226.jpg` | `20220627_BOGOSLOF_SSLC0462.jpg` |
+| 2024 | 379 | 253 | 40% | `20240703_HOOK POINT_SLC00144_BB.jpg` | `20240718_OTTER_DJI0356_BB.jpg` |
+
+* Test: **965 imgs (11.7% of corpus), 56,889 annots (12.0% of
+  corpus annots).**
+* Per-class test img counts: bull=780, sam=578, female=530,
+  juvenile=721, pup=357, **NFS=29**, dead_nonpup=10, dead_pup=33,
+  negative=231.
+* **NFS in train**: 140 imgs / 27,681 anns — 89.7% of corpus
+  NFS annotations retained for training.
+* 4 independent NFS clusters in test: 2009 (1), 2014 (5),
+  2022 (11), 2024 (11).
+* All 9 classes present in test ✓.
+
+### OPT_G_14pct (alternative — adds 2021 chunk)
+
+Adds `2021 [128:324] size=196` for a 6th test year representing
+the UAS-platform transition. Test grows to 1,161 imgs (14.1%
+of corpus). NFS train-retention basically unchanged
+(138 imgs / 27,676 anns — 89.7%). Generalization signal
+across more flight platforms.
+
+### Rejected alternatives (kept for reasoning trail)
+
+| name | test imgs | NFS test% | why rejected |
+|---|---:|---:|---|
+| REC_minimal | 585 | 27% | only 1 NFS cluster (2022) |
+| REC_balanced | 653 | 43% | NFS train-starved — backwards |
+| REC_larger | 935 | 62% | severely NFS train-starved |
+| REC_train_max | 480 | 14% | only 1 NFS cluster in test |
+| REC_train_heavy | 495 | 17% | small test pool, 2 clusters |
+| REC_train_diverse (15%) | 495 | 17% | test pool too small |
+| REC_train_diverse_LARGER | 644 | 17% | still under 10% test |
+| OPT_F_10pct | 799 | 17% | just under 10% threshold |
+
+## Earlier recommendation (REC_train_diverse_LARGER — superseded)
+
+After surfacing per-class TRAIN counts, REC_balanced was
+revealed to be backwards on NFS — putting 43% of NFS images
+(and 53% of NFS annotations) in test, leaving train
+NFS-starved. User feedback: "we need to make sure NFS and rare
+classes appear in TRAIN; test just needs some."
+
+Solution: **truncate** the 2022 / 2014 NFS chunks (the
+clusters fit inside 15 contiguous images) so we hold out just
+~10 NFS imgs from each year for test, keeping the rest in
+train. Then add a bigger 2009 + 2024 chunk for continuity and
+all-9-class coverage.
+
+**REC_train_diverse_LARGER:**
+
+| year | start | size | size% | cls | NFS-test | NFS-train(yr) |
+|---|---:|---:|---:|---:|---:|---:|
+| 2009 | 650 | 216 | 25% | 9 | 1 | 1 |
+| 2014 | 426 |  15 |  2% | 9 | 5 | 25 |
+| 2019 | 528 | 240 | 25% | 9 | 1 | 0 |
+| 2022 | 115 |  15 |  4% | 8 | 11 | 21 |
+| 2024 | 474 | 158 | 25% | 9 | 11 | 0 |
+
+Test total: 644 imgs (7.8% of corpus), 38,867 annots.
+Train NFS: **140 imgs / 27,681 annots** (89.7% of corpus NFS
+annotations retained for training).
+Test NFS: 29 imgs across **4 independent test-year
+clusters** (2009/2014/2022/2024) — robust distractor
+measurement.
+
+### Why this composition
+
+- **Test size matches v1** (644 vs broken v1's 616 imgs).
+  Statistical power for mAP is the same.
+- **4 independent NFS clusters in test**: 2009 (1 NFS),
+  2014 (5 NFS, older year), 2022 (11 NFS, recent),
+  2024 (11 NFS, latest). NFS measurement is robust to any
+  single cluster being unrepresentative.
+- **NFS in train preserved**: 11 different years contribute
+  NFS to train (vs only 2 absent: 2019, 2024). 27,681
+  NFS annotations is plenty for the model to learn NFS as
+  distractor.
+- **dead_nonpup**: 7 in test, 42 in train (best achievable
+  given corpus scarcity of 49 total).
+- **`negative` (background)**: 140 in test, 2,238 in train —
+  reasonable.
+- Bumping 2009 and 2024 to 25% chunks (vs 15%) was free —
+  NFS in those years is already fully captured by 15%
+  chunks, so larger chunks only add common-class imagery
+  to the test pool.
+
+### Rejected alternatives
+
+| name | test imgs | NFS test% | why rejected |
+|---|---:|---:|---|
+| REC_minimal | 585 | 27% | OK but only 1 NFS cluster (2022) |
+| REC_balanced | 653 | 43% | NFS train-starved — backwards |
+| REC_larger | 935 | 62% | Severely NFS train-starved (7,705 ann left) |
+| REC_train_max | 480 | 14% | Only 1 NFS cluster in test |
+| REC_train_heavy | 495 | 17% | 2 clusters but small test pool |
+| REC_train_diverse (15%) | 495 | 17% | Test pool too small for user comfort |
+
+## Original recommendation (superseded — kept for reasoning trail)
+
+REC_balanced was the original best fit for the user's stated
 constraints ("lower test to 15%, can bump to 25% for coverage",
 "NFS is important"):
 

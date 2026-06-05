@@ -361,7 +361,7 @@ docker run --rm \
     "${EXTRA_MOUNT_FLAGS[@]}" \
     -w "$KCD_REPO_ROOT" \
     "$KCD_IMAGE" \
-    bash "$KCD_REPO_ROOT/scripts/_launch_train.sh"
+    bash "$KCD_REPO_ROOT/scripts/${KCD_LAUNCH_SCRIPT:-_launch_train.sh}"
 
 echo
 echo "Done. Output under: $KCD_ROOT"

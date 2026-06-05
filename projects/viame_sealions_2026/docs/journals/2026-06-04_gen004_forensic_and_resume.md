@@ -382,6 +382,106 @@ but not blocking the deployment of what we have.
   [[feedback-image-is-reproducibility-unit]]); resume script no
   longer needs `KCD_DEV_MOUNT_KIT=1`.
 
+## Update 2026-06-05 evening — first kit AP measurement on namek
+
+Ran the rescore on namek (3090) inside the kit's docker image
+against 2581's `best_stg1.pth` (in-train mAP 0.228 from the
+synced snapshot, epoch ~16).
+
+**Result: kit AP = 0.471** (`nocls_measures.ap`, class-agnostic
+at IoU 0.50, NFS-excluded by virtue of the single_sealion
+scheme dropping NFS entirely).
+
+* **v5 baseline (previous SOTA for single_sealion)**: 0.177 kit AP
+* **2581 best_stg1**: **0.471 kit AP** — **2.66× v5**.
+
+In-train → kit-AP ratio for this run: 0.471 / 0.228 = **2.07×**.
+Compared to historical ratios:
+
+| run | in-train mAP | kit AP | ratio |
+|---|---|---|---|
+| v5 (gen001) | 0.0485 | 0.177 | 3.65× |
+| gen002 single_sealion | 0.0120 | 0.024 | 2.00× |
+| **2581 best_stg1 (synced ep ~16)** | **0.228** | **0.471** | **2.07×** |
+
+If 2581's in-train mAP continues climbing to ~0.24 by epoch 30
+(extrapolating the slowing trajectory in the parent section
+above), and the ratio holds at ~2×, the **deployable kit AP
+projects to ~0.48-0.50** for the final checkpoint. Even if the
+ratio degrades to 1.8× as the model saturates, we're still at
+0.43-0.45 deployable — **comfortably the strongest model the
+project has ever produced**.
+
+### Cross-host eval setup gotchas
+
+Hit two friction points worth recording so future agents don't
+spend time on the same ones:
+
+1. **The kit's docker image bakes kit Python + DEIMv2 but NOT
+   `projects/`**. The Dockerfile COPY list excludes the project
+   trees, so any analysis tool under
+   `projects/.../scripts/` (e.g. `rescore_per_checkpoint.py`)
+   isn't inside the image. Workaround: bind-mount the host's
+   `projects/` dir at `/opt/kwcoco_detector_kit/projects:ro`
+   when running. Long-term fix: add `COPY projects ...` to the
+   Dockerfile.
+
+2. **kwcoco files bake absolute imagery paths**, not bundle-
+   relative ones (see [[feedback-kwcoco-bakes-absolute-paths]]).
+   On namek the imagery lives at
+   `/media/joncrall/raid/Public/VIAME/...` but the synced
+   vali.kwcoco.zip's `file_name` hardcodes
+   `/data/Public/VIAME/...` (arisia's path). Eval fails because
+   the kwcoco refuses to find images that ARE on disk but at a
+   different path. Workaround: bind-mount aliasing —
+   `-v /media/joncrall/raid/Public/VIAME:/data/Public/VIAME:ro`
+   in the docker run. Long-term fix: write bundle-relative
+   paths in `coco_export.py` and `tile.py`.
+
+3. **`rsync_from_arisia.sh` does NOT sync source imagery.** It
+   pulls `$KCD_TRAINING_ROOT/` (your training outputs); the
+   imagery at `/data/Public/VIAME/...` is the cluster-shared
+   read-only corpus, intentionally excluded from sync. A
+   correctly-configured eval host needs the imagery already
+   present (most users have it from initial project setup).
+   Took us a few minutes of "but I thought rsync brought
+   everything!" to figure out.
+
+4. **"Training ViT-Tiny from scratch..." in the eval log is
+   harmless.** It's a misleading `__init__` print from
+   `DINOv3STAs` that fires whenever the model is constructed,
+   EVEN when we're about to load checkpoint weights over it.
+   The next thing after that print is the checkpoint load
+   (`tuning=...` in the kit's launch args). No actual training
+   happens. Don't be alarmed.
+
+### Final working rescore command (for posterity)
+
+```bash
+docker run --rm --gpus all \
+  -v /media/joncrall/raid/users/jon.crall:/data/users/jon.crall \
+  -v /media/joncrall/raid/users/jon.crall:/media/joncrall/raid/users/jon.crall \
+  -v ~/code/kwcoco_detector_kit/projects:/opt/kwcoco_detector_kit/projects:ro \
+  -v /media/joncrall/raid/Public/VIAME:/data/Public/VIAME:ro \
+  -w /opt/kwcoco_detector_kit \
+  kwcoco-detector-kit:ogdino-auto \
+  python3 /opt/kwcoco_detector_kit/projects/viame_sealions_2026/scripts/rescore_per_checkpoint.py \
+    --run-dir /data/users/jon.crall/kcd_sealion/runs/<RUN_NAME> \
+    --eval-target vali --device cuda
+```
+
+Replace `<RUN_NAME>` with the run dir name. Works for both
+gen004 schemes; the bind-mount set is invariant.
+
+### State at this update
+
+* 2581 best_stg1 (synced epoch ~16): **kit AP 0.471**. Other
+  checkpoints (best_stg2, last) rescoring in the same job
+  — results pending.
+* 2580: still rescoring later when the docker run gets to it.
+* Training continues on arisia; next sync will bring fresher
+  checkpoints with potentially higher AP.
+
 ## How to resume this analysis
 
 If a future agent picks this up:

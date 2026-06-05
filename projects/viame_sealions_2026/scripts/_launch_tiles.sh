@@ -25,6 +25,8 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 : "${KCD_TILE_MIN_KEEP_FRACTION:?_launch_tiles.sh: missing KCD_TILE_MIN_KEEP_FRACTION}"
 : "${KCD_TILE_OVERSIZE_FACTOR:?_launch_tiles.sh: missing KCD_TILE_OVERSIZE_FACTOR}"
 : "${KCD_TILE_KEEP_NEGATIVE:?_launch_tiles.sh: missing KCD_TILE_KEEP_NEGATIVE}"
+: "${KCD_TILE_CATEGORY_NAMES:?_launch_tiles.sh: missing KCD_TILE_CATEGORY_NAMES}"
+: "${KCD_TILE_MODE:?_launch_tiles.sh: missing KCD_TILE_MODE}"
 
 kcd_require_path "universal train.kwcoco.zip" "$KCD_UNIVERSAL_TRAIN_KWCOCO" || exit 1
 
@@ -40,6 +42,7 @@ print('v{}:{}'.format(
 " 2>/dev/null || echo 'unknown')
 
 TILE_PARAMS_BODY=$(printf '%s\n' \
+    "tile_mode=$KCD_TILE_MODE" \
     "tile_size=$KCD_TILE_SIZE" \
     "source_scales=$KCD_TILE_SOURCE_SCALES" \
     "stride_frac=$KCD_TILE_STRIDE_FRAC" \
@@ -47,6 +50,7 @@ TILE_PARAMS_BODY=$(printf '%s\n' \
     "min_keep_fraction=$KCD_TILE_MIN_KEEP_FRACTION" \
     "oversize_factor=$KCD_TILE_OVERSIZE_FACTOR" \
     "keep_negative=$KCD_TILE_KEEP_NEGATIVE" \
+    "category_names=$KCD_TILE_CATEGORY_NAMES" \
     "writer_passthrough=$WRITER_FINGERPRINT")
 TILE_HASH=$(printf '%s' "$TILE_PARAMS_BODY" | sha1sum | cut -c1-8)
 
@@ -92,13 +96,14 @@ if [ -f "$UNIVERSAL_TILES" ] && [ "${KCD_FORCE_RETILE:-0}" != "1" ]; then
     fi
 fi
 
-# Tile against the single 'sealion' category — source_category
-# survives via the kit's passthrough whitelist for downstream
-# apply_scheme. (TODO post-Phase 2: pass the 9-name union once
-# class_schemes.yaml is rewritten for full names.)
+# Tile against the v2 norm bundle's 9 categories. coco_export filters
+# annotations whose source category name isn't in --category_names
+# (coco_export.py:92-93), so this list MUST match the source bundle's
+# category vocabulary or all annotations get dropped silently.
+# apply_scheme collapses these 9 to the scheme target downstream.
 "$PYTHON_BIN" -m kwcoco_detector_kit tile \
     "$KCD_UNIVERSAL_TRAIN_KWCOCO" "$UNIVERSAL_TILES" \
-    --mode multiscale \
+    --mode "$KCD_TILE_MODE" \
     --tile_size "$KCD_TILE_SIZE" \
     --source_scales "$KCD_TILE_SOURCE_SCALES" \
     --stride_frac "$KCD_TILE_STRIDE_FRAC" \
@@ -106,7 +111,7 @@ fi
     --min_keep_fraction "$KCD_TILE_MIN_KEEP_FRACTION" \
     --oversize_factor "$KCD_TILE_OVERSIZE_FACTOR" \
     --keep_negative "$KCD_TILE_KEEP_NEGATIVE" \
-    --category_names sealion
+    --category_names "$KCD_TILE_CATEGORY_NAMES"
 
 echo
 echo "Done. Tile cache: $UNIVERSAL_TILES"

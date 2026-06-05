@@ -112,6 +112,14 @@ export KCD_TILE_MIN_GT_AREA_FRAC="${KCD_TILE_MIN_GT_AREA_FRAC:-0.0005}"
 export KCD_TILE_MIN_KEEP_FRACTION="${KCD_TILE_MIN_KEEP_FRACTION:-0.20}"
 export KCD_TILE_OVERSIZE_FACTOR="${KCD_TILE_OVERSIZE_FACTOR:-1.2}"
 export KCD_TILE_KEEP_NEGATIVE="${KCD_TILE_KEEP_NEGATIVE:-true}"
+# Categories preserved in the tile output. For the v2 norm bundle
+# (9-cat full names), this MUST be the 9-name union — otherwise the
+# coco_export step filters all annotations out
+# (kwcoco_detector_kit/data/coco_export.py:92-93 drops anns whose
+# source category name is not in this list). apply_scheme then
+# collapses per-scheme downstream.
+export KCD_TILE_CATEGORY_NAMES="${KCD_TILE_CATEGORY_NAMES:-bull,subadult_male,female,juvenile,pup,northern_fur_seal,negative,dead_pup,dead_nonpup}"
+export KCD_TILE_MODE="${KCD_TILE_MODE:-multiscale}"
 
 # -- Pretrained checkpoints ----------------------------------------------
 

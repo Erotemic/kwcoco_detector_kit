@@ -184,6 +184,7 @@ print('v{}:{}'.format(
 ))
 " 2>/dev/null || echo 'unknown')
 TILE_PARAMS_BODY=$(printf '%s\n' \
+    "tile_mode=${KCD_TILE_MODE:-multiscale}" \
     "tile_size=$KCD_TILE_SIZE" \
     "source_scales=$KCD_TILE_SOURCE_SCALES" \
     "stride_frac=$KCD_TILE_STRIDE_FRAC" \
@@ -191,6 +192,7 @@ TILE_PARAMS_BODY=$(printf '%s\n' \
     "min_keep_fraction=$KCD_TILE_MIN_KEEP_FRACTION" \
     "oversize_factor=$KCD_TILE_OVERSIZE_FACTOR" \
     "keep_negative=$KCD_TILE_KEEP_NEGATIVE" \
+    "category_names=${KCD_TILE_CATEGORY_NAMES:-sealion}" \
     "writer_passthrough=$WRITER_FINGERPRINT")
 TILE_HASH=$(printf '%s' "$TILE_PARAMS_BODY" | sha1sum | cut -c1-8)
 TILE_DIR="$KCD_TILE_CACHE_DPATH/_universal/$TILE_HASH"

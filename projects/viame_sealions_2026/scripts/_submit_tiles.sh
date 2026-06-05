@@ -28,12 +28,15 @@ kcd_require_path "kit follow_job.py" "$FOLLOW_SCRIPT" || exit 1
 
 mkdir -p "$LOG_DPATH"
 
-# Tile build is CPU + I/O bound; no GPU. Modest defaults; users can
-# override per-host (arisia has 64+ cores; namek has 16).
+# Tile build is CPU + I/O bound; no GPU. Modest defaults so we're a
+# good neighbor on the shared cluster — bump per-shell if you have the
+# node to yourself (KCD_CPUS_PER_TASK=16 KCD_MEM=64G bash submit_...sh).
+# The HDD is the actual bottleneck for sealions tile output; throwing
+# more CPUs at it past ~8 hits contention diminishing returns.
 KCD_GRES="${KCD_GRES:-none}"
-KCD_CPUS_PER_TASK="${KCD_CPUS_PER_TASK:-16}"
-KCD_MEM="${KCD_MEM:-64G}"
-KCD_TIME_LIMIT="${KCD_TIME_LIMIT:-08:00:00}"
+KCD_CPUS_PER_TASK="${KCD_CPUS_PER_TASK:-8}"
+KCD_MEM="${KCD_MEM:-24G}"
+KCD_TIME_LIMIT="${KCD_TIME_LIMIT:-12:00:00}"
 
 # Dummy KCD_NUM_GPUS so _sbatch_train.sh's pre-checks pass. The
 # KCD_GRES=none above overrides the actual sbatch GPU request.

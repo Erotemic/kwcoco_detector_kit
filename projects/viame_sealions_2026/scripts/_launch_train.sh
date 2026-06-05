@@ -40,14 +40,14 @@ KCD_ROOT="$KCD_RUNS_DPATH/$KCD_RUN_NAME"
 # they're already small full-image bundles and the model's eval-time
 # transforms handle the resize.
 UNIVERSAL_DIR="$KCD_TRAINING_READY_DIR"
-# Universal training source: prefer the explicit KCD_UNIVERSAL_TRAIN_KWCOCO
-# (post-2026-06-05 default = unpacked/train_norm_v2.kwcoco.zip), fall
-# back to the legacy training_ready_v1 path if unset. Both can resolve
-# to the same TILE_HASH if you make sure the bundle has the right
-# categories — the hash is keyed off geometry, not source identity.
+# Universal sources: post-2026-06-05 default to the v2 *_norm bundles
+# (unpacked/{train,vali,test}_norm_v2.kwcoco.zip) via paths.sh. The
+# fall-back to KCD_TRAINING_READY_DIR/<split>.kwcoco.zip stays for
+# legacy sandboxes; override KCD_UNIVERSAL_*_KWCOCO to point at any
+# 9-cat norm bundle.
 UNIVERSAL_TRAIN_KWCOCO="${KCD_UNIVERSAL_TRAIN_KWCOCO:-$UNIVERSAL_DIR/train.kwcoco.zip}"
-UNIVERSAL_VALI_KWCOCO="$UNIVERSAL_DIR/vali.kwcoco.zip"
-UNIVERSAL_TEST_KWCOCO="$UNIVERSAL_DIR/test.kwcoco.zip"
+UNIVERSAL_VALI_KWCOCO="${KCD_UNIVERSAL_VALI_KWCOCO:-$UNIVERSAL_DIR/vali.kwcoco.zip}"
+UNIVERSAL_TEST_KWCOCO="${KCD_UNIVERSAL_TEST_KWCOCO:-$UNIVERSAL_DIR/test.kwcoco.zip}"
 kcd_require_path "universal train.kwcoco.zip" "$UNIVERSAL_TRAIN_KWCOCO"
 kcd_require_path "universal vali.kwcoco.zip" "$UNIVERSAL_VALI_KWCOCO"
 kcd_require_path "universal test.kwcoco.zip" "$UNIVERSAL_TEST_KWCOCO"

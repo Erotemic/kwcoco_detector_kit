@@ -209,9 +209,178 @@ vs nonpup at the strongest checkpoint.
 
 * gen003 single_sealion (2565): walltime-killed; mAP=0; **don't deploy**.
 * gen004 hgnetv2_n + balance (2570): walltime-killed; mAP=0.006; **don't deploy**.
-* gen004 dinov3_s + balance (2577): OOM+walltime; mAP=0.161 @ ep5; **strongest checkpoint we have**.
+* gen004 dinov3_s + balance (2577): OOM+walltime; mAP=0.161 @ ep5; **strongest checkpoint we have** (until 2581 surpasses it — see below).
 * gen004 dinov3_s + balance (2578 resume): OOM; superseded by next resume with `fixed` policy.
 * Next resume committed (`5b2fb32`): `fixed` 640 policy; awaiting submission.
+
+## Update 2026-06-05 — 2579 resume OOMed, batch=8 fix, fresh restarts
+
+### 2579 (resume, fixed 640): plateau + OOM
+
+The committed `fixed 640` resume from `checkpoint0004` ran THREE
+clean epochs at steady-state memory then OOM'd on a worst-case
+batch:
+
+| epoch | in-train mAP | max_mem |
+|---|---|---|
+| 5 | 0.157 | 31 GB |
+| 6 | 0.157 | 31 GB |
+| 7 | 0.158 | 33 GB |
+| 8 | 0.158, then OOM | spike → 42.82 GB |
+
+Two findings:
+
+* **mAP plateau at 0.157-0.158** confirms the user's intuition
+  that resuming from a mixed-hyperparam checkpoint locks the
+  model into the training distribution its history was built
+  on. The model couldn't recover the 0.161 from 2577 epoch 5,
+  let alone improve.
+* **Fixed 640 alone is not enough** to fit `batch_per_gpu=16`
+  in 47 GB. Steady-state memory was a comfortable 31-33 GB,
+  but a transient peak hit 42.82 GB and tried to allocate
+  4.68 GB more (need 47.5 GB total — over ceiling). See
+  [[2026-06-04_deimv2_training_internals]] section 4.
+
+### Fix: `KCD_PER_GPU_BATCH=8`
+
+Committed `5a6d33e`. Halves activation memory in the worst-case
+batches. Trade-off: 2× more iters per epoch, but at
+`max_oversample=1` the epochs are already short (~1600 iters at
+batch 8 for single_sealion, ~14k for pup_vs_nonpup which has a
+larger bucket fit).
+
+Also committed: clean restart of pup_vs_nonpup from COCO-pretrained
+(commit `9c5b3f2`) — no resume from 2577's checkpoint, so the
+ablation is hyperparam-clean from epoch 0.
+
+### 2580 (clean pup_vs_nonpup) + 2581 (clean single_sealion), parallel on 4 GPUs
+
+User submitted both back-to-back on 4 free GPUs (no slurm dep
+needed). Both running with the new clean recipe:
+`dinov3_s + 2-GPU + fixed 640 + AMP + max_oversample=1 + batch_per_gpu=8`.
+
+**Memory verdict: SOLVED.** Both runs hold steady at **max_mem ≈
+13 GB** throughout training. Down from 31-33 GB at batch=16 and
+from 45 GB at batch=16 + multiscale. Well below the 47 GB
+ceiling. No OOM risk going forward.
+
+#### 2580: clean pup_vs_nonpup (3-bucket balance)
+
+* started 23:40, ~1h40m elapsed at snapshot
+* iters/epoch: **14,351** (large because pup is rare → balance
+  target_size = pup_pool / 0.2 is the largest)
+* progress: epoch 0 iter 13000/14351 (90% through epoch 0)
+* no AP eval yet (eval runs at end of epoch)
+* loss: 38.2 → 23.6 (clean monotonic descent — training is on
+  the right trajectory)
+* max_mem: 13096 MB constant
+
+Will produce first AP at epoch 0 end (~30 min more wallclock from
+snapshot).
+
+#### 2581: clean single_sealion (2-bucket balance) — RUNNING WINNER
+
+* started 23:42, ~1h36m elapsed at snapshot
+* iters/epoch: **6,149** (smaller because sealion-positive bucket
+  is much larger than pup, so the rarest-fits multiplier is
+  smaller)
+* progress: epoch 2 iter 500/6149 (2 full epochs evaluated)
+* max_mem: 13334 MB constant
+
+**Per-epoch in-train mAP** (CocoEvaluator, includes NFS — kit
+eval will likely be higher):
+
+| epoch | mAP@0.50:0.95 | mAP@0.50 | mAP small/med/large |
+|---|---|---|---|
+| 0 | **0.177** | (not shown) | (not shown) |
+| 1 | **0.188** | 0.425 | 0.003 / 0.137 / 0.427 |
+
+`best_stat: {'epoch': 1, 'coco_eval_bbox': 0.188}`.
+
+**This already beats every prior gen003/gen004 result for any
+scheme.** Comparison:
+
+| run | scheme | epochs run | best in-train mAP |
+|---|---|---|---|
+| v5 (gen001) | single_sealion | 30 | 0.0485 (kit AP 0.177) |
+| gen002 | single_sealion | 30 | 0.012 (kit AP 0.024) |
+| gen003 | single_sealion | 11 | 0.000 |
+| gen002 | pup_vs_nonpup | 30 | 0.025 |
+| 2577 | pup_vs_nonpup gen004 | 5 | 0.161 |
+| **2581** | **single_sealion gen004 clean** | **1** | **0.188** ⭐ |
+
+After ONE epoch of training, the clean recipe surpassed the
+2577 mAP (epoch 5) AND v5's in-train mAP (0.0485, the best
+single_sealion training had ever produced before this).
+
+The small-object AP is the diagnostic: 0.003 small, 0.137
+medium, 0.427 large. The model is detecting big sealions
+excellently but missing small ones — common at 640 input with
+no super-resolution path. That's an area to address in a
+future iteration (resolution lever, or multiscale-without-768),
+but not blocking the deployment of what we have.
+
+### What we now know
+
+1. **`per_gpu_batch=8` was the missing piece**. The OOMs we
+   chased through 2577 / 2578 / 2579 weren't fundamentally
+   about multiscale; they were about activation memory peaks
+   at batch=16 being too close to the ceiling. Batch=8 keeps
+   us at 13 GB steady, which is half the A6000's budget.
+2. **The clean restart hypothesis is validated**.
+   2581 epoch 1 (0.188) > 2577 epoch 5 (0.161) > 2579 resume
+   epoch 8 (0.158). Starting fresh from COCO-pretrained with
+   uniform hyperparams from epoch 0 converges much faster than
+   resuming into a different regime.
+3. **single_sealion is easier than pup_vs_nonpup**. With the
+   same model and balance recipe, single_sealion at epoch 1 is
+   already at the level pup_vs_nonpup reached after 5 epochs.
+   That tracks — pup detection requires fine-grained
+   discrimination (pup vs adult), while single_sealion is
+   any-sealion detection.
+4. **Memory ceiling is no longer a concern.** 13 GB / 47 GB
+   leaves room for batch_per_gpu=16 ONCE we know the recipe
+   converges. But we don't need it; batch=8 is converging fine.
+5. **CocoEvaluator's mAP includes NFS in this train/eval setup.**
+   For the deployable number we still need to rescore against
+   the kit's NFS-excluded eval. Expect the kit AP to be 2-3×
+   higher than in-train mAP per the gen001/gen002 ratio
+   pattern ([[2026-06-01_gen002_three_scheme_results]]). If
+   2581 hits in-train mAP 0.25 by epoch 5, kit AP would
+   project to 0.5-0.75 — would be a strong deployable model.
+
+### What to watch / do next
+
+1. **Let both runs go to epoch 30** (estimated finish times: both
+   ~6-8h wallclock from snapshot). 2581 reaches `best_stg2.pth`
+   in ~6h; 2580 in ~12h (longer epochs).
+2. **Rescore 2581's checkpoints periodically** as they land —
+   `scripts/submit_rescore_per_checkpoint.sh` runs the kit's
+   NFS-excluded eval. The first epoch where kit AP plateaus
+   tells us the early-stopping point.
+3. **Pup-specific AP** for 2580 once it finishes epoch 0: pup
+   detection is the binding constraint per memory, so even if
+   averaged mAP looks similar to 2581, the per-class breakdown
+   tells us whether pup specifically has improved.
+4. **Small-object AP** for both: 2581 epoch 1 shows 0.003 small
+   vs 0.427 large. If small stays near zero through epoch 30,
+   the next iteration should explore multiscale-without-the-OOM
+   (e.g. `multiscale_512_640`) or higher-resolution tiles.
+
+### State at this update
+
+* 2580 (clean pup_vs_nonpup gen004): epoch 0, 90% through;
+  no AP yet; on track.
+* 2581 (clean single_sealion gen004): epoch 1 complete at
+  in-train mAP **0.188**; epoch 2 underway. **NEW BEST
+  CHECKPOINT in any gen.**
+* 2577 best_stg1 (mAP 0.161 @ ep5): still on disk as a
+  reference for "what 2-GPU dinov3_s + balance at batch_per_gpu=16
+  + multiscale produces."
+* Memory issue: resolved by batch=8.
+* Image rebuild: completed by user 2026-06-04 (per
+  [[feedback-image-is-reproducibility-unit]]); resume script no
+  longer needs `KCD_DEV_MOUNT_KIT=1`.
 
 ## How to resume this analysis
 

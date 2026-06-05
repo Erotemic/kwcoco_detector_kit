@@ -1,28 +1,29 @@
 #!/usr/bin/env python3
 """
-Remap the all_collapsed kwcoco splits to a target class scheme.
+Remap the v2 *_norm kwcoco splits to a target class scheme.
 
-The existing training_ready_v1/{train,vali,test}.kwcoco.zip bundles
-collapse every positive class to "sealion" but preserve the original
-class name on each annotation in the ``source_category`` field
-(e.g. 'B', 'F', 'J', 'P', 'NFS', ...). This script reads a scheme from
-docs/class_schemes.yaml, applies its source -> target name mapping to
-each annotation's ``source_category``, drops annotations whose source
-class is in the scheme's ``drop`` list, and writes new kwcoco files
-under ``training_ready_v1/by_scheme/<scheme>/``.
+The v2 *_norm.kwcoco.zip bundles (produced by
+/data/Public/VIAME/viame_sealions_2026/scripts/sealion_pipeline.py)
+expose source annotations with full normalized category names
+(bull, subadult_male, female, juvenile, pup, northern_fur_seal,
+negative, dead_pup, dead_nonpup). This script reads a scheme from
+docs/class_schemes.yaml, applies its source-name -> target-name
+mapping, drops annotations whose source name is in the scheme's
+``drop`` list, and writes new per-scheme kwcoco files.
 
-The output kwcoco bundles use 1-indexed integer category IDs in the
-order the scheme declared the target classes (see
-``docs/class_schemes.yaml`` — kwcoco_detector_kit's tile/MSCOCO
-pipeline preserves that order, and the trained model's class index
-matches it).
+The output kwcoco bundles use 1-indexed integer category IDs in
+the order the scheme declared the target classes (see
+``docs/class_schemes.yaml`` — the kit's tile/MSCOCO pipeline
+preserves that order, and the trained model's class index matches
+it).
 
 Usage:
 
     python3 scripts/build_scheme_kwcoco.py --scheme pup_vs_nonpup
     python3 scripts/build_scheme_kwcoco.py --scheme pup_vs_nonpup --dry-run
     python3 scripts/build_scheme_kwcoco.py --scheme lifestage_6cls \\
-        --src-dir training_ready_v1 --out-dir training_ready_v1/by_scheme/lifestage_6cls
+        --src-dir /data/Public/VIAME/viame_sealions_2026/unpacked \\
+        --out-dir /data/Public/VIAME/viame_sealions_2026/unpacked/by_scheme/lifestage_6cls
 """
 from __future__ import annotations
 
@@ -37,7 +38,14 @@ import yaml
 
 DEFAULT_REPO = Path(__file__).resolve().parent.parent
 DEFAULT_SCHEMES = DEFAULT_REPO / "docs" / "class_schemes.yaml"
-DEFAULT_SRC = DEFAULT_REPO / "training_ready_v1"
+# Source defaults to the v2 *_norm bundles under the canonical corpus
+# tree. Override with --src-dir if you're operating on a different
+# layout (e.g. a local sandbox).
+DEFAULT_SRC = Path("/data/Public/VIAME/viame_sealions_2026/unpacked")
+# Per-split file naming. The v2 *_norm bundles use the *_norm_v2.kwcoco.zip
+# suffix; older fixtures (e.g. training_ready_v1) used the bare names.
+# Caller can override via --src-template if needed.
+DEFAULT_SRC_TEMPLATE = "{split}_norm_v2.kwcoco.zip"
 SPLITS = ("train", "vali", "test")
 
 
@@ -123,12 +131,21 @@ def remap_split(
             pass
         dst.add_image(**new_img)
 
+    # Look up source category names via the source kwcoco. Post-2026-06-05
+    # the schemes key their mapping by full normalized category names
+    # (bull, subadult_male, ...) which match the v2 *_norm bundle's
+    # categories directly. The old letter-code path (annotations with a
+    # `source_category` field) is gone because the corpus build
+    # normalizes raw labels before writing the kwcoco — there is no
+    # need to re-look them up at scheme-apply time.
+    src_cat_by_id = {cat["id"]: cat["name"] for cat in src.dataset.get("categories", [])}
+
     stats = collections.Counter()
     dropped = collections.Counter()
     kept_per_target = collections.Counter()
     n_unknown = 0
     for ann in src.dataset.get("annotations", []):
-        src_cat = ann.get("source_category")
+        src_cat = src_cat_by_id.get(ann.get("category_id"))
         if src_cat in drop:
             dropped[src_cat] += 1
             continue
@@ -140,7 +157,8 @@ def remap_split(
             continue
         new_ann = {k: v for k, v in ann.items() if k != "id"}
         new_ann["category_id"] = name_to_new_cid[mapping[src_cat]]
-        # Keep source_category for traceability.
+        # Record the source class name on the remapped annotation for
+        # traceability — handy when debugging per-class metrics.
         new_ann["source_category"] = src_cat
         dst.add_annotation(**new_ann)
         stats[mapping[src_cat]] += 1
@@ -174,7 +192,9 @@ def main() -> int:
     parser.add_argument("--schemes-file", type=Path, default=DEFAULT_SCHEMES,
                         help=f"path to schemes YAML (default: {DEFAULT_SCHEMES})")
     parser.add_argument("--src-dir", type=Path, default=DEFAULT_SRC,
-                        help=f"dir with train/vali/test.kwcoco.zip (default: {DEFAULT_SRC})")
+                        help=f"dir with {DEFAULT_SRC_TEMPLATE.format(split='<split>')} files (default: {DEFAULT_SRC})")
+    parser.add_argument("--src-template", default=DEFAULT_SRC_TEMPLATE,
+                        help=f"per-split filename template; {{split}} is replaced with each of {SPLITS} (default: {DEFAULT_SRC_TEMPLATE})")
     parser.add_argument("--out-dir", type=Path, default=None,
                         help="output dir (default: <src-dir>/by_scheme/<scheme>)")
     parser.add_argument("--splits", nargs="*", default=list(SPLITS),
@@ -205,7 +225,7 @@ def main() -> int:
         "splits": {},
     }
     for split in args.splits:
-        src_fpath = args.src_dir / f"{split}.kwcoco.zip"
+        src_fpath = args.src_dir / args.src_template.format(split=split)
         dst_fpath = out_dir / f"{split}.kwcoco.zip"
         if not src_fpath.exists():
             print(f"  [skip] {split}: source missing ({src_fpath})", file=sys.stderr)

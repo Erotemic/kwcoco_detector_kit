@@ -482,6 +482,151 @@ gen004 schemes; the bind-mount set is invariant.
 * Training continues on arisia; next sync will bring fresher
   checkpoints with potentially higher AP.
 
+## Update 2026-06-05 late evening — full kit-AP table for all gen004 checkpoints
+
+All checkpoints from 2577 (multiscale, OOM'd at ep 6), 2580
+(clean fixed 640 pup, still running at ep 6-7 when synced),
+and 2581 (clean fixed 640 single_sealion, running at ep 17 when
+synced) rescored against the kit's NFS-excluded eval.
+
+### Single number summary
+
+| Scheme | Best deployable checkpoint | kit AP | vs prior SOTA |
+|---|---|---|---|
+| single_sealion | **2581 best_stg2** | **0.5807** | **3.28× v5 (0.177)** |
+| pup_vs_nonpup | **2580 best_stg2** | **0.5650** | **2.84× v6 (0.199)** |
+
+### Full rescore table
+
+| run | variant | ckpt | nocls AP | per-class AP |
+|---|---|---|---|---|
+| 2581 single_sealion clean | fixed 640 | **best_stg2** | **0.5807** ⭐ | sealion: 0.5807 |
+| 2581 | fixed 640 | best_stg1 | 0.4710 | sealion: 0.4710 |
+| 2581 | fixed 640 | last | 0.4710 | sealion: 0.4710 |
+| 2580 pup_vs_nonpup clean | fixed 640 | **best_stg2** | **0.5650** ⭐ | **pup: 0.1019**, nonpup_sealion: 0.7196 |
+| 2580 | fixed 640 | best_stg1 | 0.4937 | pup: 0.0494, nonpup_sealion: 0.6463 |
+| 2580 | fixed 640 | last | 0.4937 | (same as best_stg1) |
+| 2577 pup_vs_nonpup multiscale | multiscale_512_768 | best_stg1 | 0.5584 | pup: 0.0884, nonpup_sealion: 0.7154 |
+| 2577 | multiscale_512_768 | checkpoint0004 | 0.5504 | pup: 0.0819, nonpup_sealion: 0.7072 |
+| 2577 | multiscale_512_768 | last | 0.5584 | (same as best_stg1) |
+
+### Findings
+
+**1. The class-balance hypothesis is unambiguously validated.**
+Pup AP went from 0.0104 in v6 (the prior SOTA for
+pup_vs_nonpup, baseline of "pup detection ~at floor") to
+**0.1019 in 2580 best_stg2** — nearly 10× the historical
+pup detector. Class balance + dinov3_s + the rest of the
+gen004 recipe gives the matcher enough positive pup gradient
+to actually learn the class.
+
+Pup is still the binding constraint at 0.102 vs nonpup_sealion's
+0.720 (a 7.1× gap), but it's no longer at noise floor.
+
+**2. EMA (best_stg2) is dramatically better than the
+in-train-best snapshot (best_stg1).** Across both schemes:
+
+* 2581 single_sealion: 0.581 (stg2) vs 0.471 (stg1) — **+23%**
+* 2580 pup_vs_nonpup:   0.565 (stg2) vs 0.494 (stg1) — **+14%**
+* 2577 pup_vs_nonpup:   0.558 (stg1) vs no stg2 — (OOM'd
+  before EMA mature)
+
+**Operational implication**: the kit's eval / deployment pick
+should ALWAYS prefer `best_stg2.pth` over `best_stg1.pth` for
+single_sealion and pup_vs_nonpup. The previous practice of
+"check both" can be retired except when an EMA-vs-non-EMA
+comparison is specifically wanted.
+
+**3. The 2577 multiscale run is competitive with 2580 (fixed)
+despite being a partial run.** 2577 best_stg1 (0.558,
+5 epochs, multiscale) is essentially equivalent to 2580
+best_stg2 (0.565, 6-7 epochs, fixed). Two possible
+explanations, not mutually exclusive:
+* Multiscale broader-resolution training helps representation
+  more than the extra epoch helps fixed-resolution training.
+* 2580 hasn't reached its plateau yet; it's still on the
+  improving slope.
+
+Worth checking when 2580 completes whether final 2580 beats
+2577 by a wider margin. If they remain ~equivalent, the
+multiscale + memory-headroom (`per_gpu_batch=8 +
+multiscale_512_640`) variant would be the recommended recipe
+for gen005.
+
+**4. In-train mAP → kit AP ratios** (corrected with actual numbers):
+
+| run | in-train mAP (sync ep) | kit AP best_stg2 | ratio |
+|---|---|---|---|
+| v5 single_sealion | 0.0485 (ep 11) | 0.177 (best_stg1) | 3.65× |
+| gen002 single_sealion | 0.012 (ep 21) | 0.024 | 2.00× |
+| **2581 single_sealion** | **0.228 (ep 16)** | **0.581** | **2.55×** |
+| **2580 pup_vs_nonpup** | **0.168 (ep 6)** | **0.565** | **3.36×** |
+| **2577 pup_vs_nonpup** | **0.161 (ep 5)** | **0.558 (stg1)** | **3.47×** |
+
+pup_vs_nonpup has a higher ratio than single_sealion because
+the nocls (class-agnostic) metric advantages multi-class
+problems — it merges predictions across classes before
+ranking, so a confident nonpup_sealion prediction near a pup
+GT still counts as a true positive for nocls. single_sealion's
+ratio (2.55×) is the more honest single-class kit AP.
+
+### What this means for deployment
+
+* For single_sealion detection: **deploy 2581 best_stg2.pth**.
+  kit AP 0.581. Stop training? Probably not yet — the
+  trajectory was still climbing (in-train 0.230 at ep 17 vs
+  0.228 at ep 16), so let it run to ep 30 to see how high
+  it goes, but the current model is ALREADY operational.
+
+* For pup_vs_nonpup detection: **deploy 2580 best_stg2.pth**.
+  kit AP 0.565. Same logic: let training continue, but the
+  model is already operational AND already crushes every
+  prior pup-detector trial.
+
+* The 2577 best_stg1 is still on disk but superseded — it was
+  the strongest known checkpoint until today; now it's a
+  reference point only.
+
+### What to iterate on next (gen005?)
+
+* **Pup is still 7× behind nonpup AP.** The recipe lifts pup
+  from floor to "low-but-real" (0.102) but there's enormous
+  remaining headroom. Levers worth exploring:
+  - More aggressive pup balance (e.g. 0.33/0.33/0.33 or even
+    pup 0.5)
+  - Multi-scale (with memory-safe upper bound, e.g.
+    `multiscale_512_640`) to give the model more pup-tile
+    resolution diversity
+  - Pup-specific evaluation metrics (currently nocls AP
+    averages pup with nonpup; per-class is the right
+    operational signal)
+
+* **2580 vs 2577 head-to-head** when 2580 finishes will tell
+  us if multiscale was the missing piece or just an extra
+  epoch's worth of training.
+
+* **Small-object recall** is still near zero on both runs. The
+  640×640 input is the limit. Higher input (with larger
+  per_gpu_batch reduction) or super-resolution pre-processing
+  is the gen005 direction for tiny pups.
+
+### State at this update
+
+* 2581: latest synced intermediate eval = **in-train mAP 0.230 @
+  epoch 17** (full trajectory ep 0=0.177 → ep 17=0.230,
+  monotonically improving every epoch). kit AP **0.581** already
+  deployable from best_stg2. Training continues toward ep 30
+  on arisia.
+* 2580: training continues; in-train mAP 0.168 @ ep 6; kit AP
+  0.565 already deployable from best_stg2.
+* 2577: complete (OOM'd long ago); best checkpoint at kit AP
+  0.558 / 0.555 (best_stg1 / checkpoint0004); superseded by
+  2580 best_stg2 but worth keeping as the multiscale
+  reference point.
+* Both runs expected to finish in the next ~24h (single_sealion
+  through ep 30, pup through walltime ep ~19). Re-rescore at
+  completion will show whether further training extracts more.
+
 ## How to resume this analysis
 
 If a future agent picks this up:

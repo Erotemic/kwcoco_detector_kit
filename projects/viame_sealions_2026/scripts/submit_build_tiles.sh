@@ -14,13 +14,23 @@
 # Override here only if you're intentionally building a different
 # cache variant.
 #
-# Submit:
-#   bash projects/viame_sealions_2026/scripts/submit_build_tiles.sh
+# Usage:
+#   bash projects/viame_sealions_2026/scripts/submit_build_tiles.sh        # submit
+#   bash projects/viame_sealions_2026/scripts/submit_build_tiles.sh -n     # dry run (preview, no sbatch)
 #
 # Override walltime/resources from the shell if needed:
 #   KCD_TIME_LIMIT=12:00:00 KCD_CPUS_PER_TASK=32 KCD_MEM=128G \
 #       bash projects/viame_sealions_2026/scripts/submit_build_tiles.sh
 set -euo pipefail
+
+DRY_RUN=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -n|--dry-run) DRY_RUN=1; shift ;;
+        -*) echo "ERROR: unknown flag $1" >&2; exit 2 ;;
+        *)  break ;;
+    esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/paths.sh"
@@ -56,6 +66,12 @@ echo "  tile params:"
 printf '%s\n' "$TILE_PARAMS_BODY" | sed 's/^/    /'
 echo "  TILE_HASH:   $TILE_HASH"
 echo "  run name:    $KCD_RUN_NAME"
+echo "  expected output: $KCD_TILE_CACHE_DPATH/_universal/$TILE_HASH/tiles.kwcoco.zip"
 echo
+
+if [ "$DRY_RUN" -eq 1 ]; then
+    echo "DRY RUN — not submitting. Drop -n to actually submit."
+    exit 0
+fi
 
 exec bash "$SCRIPT_DIR/_submit_tiles.sh"

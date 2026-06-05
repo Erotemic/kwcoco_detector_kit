@@ -185,6 +185,61 @@ per GPU is too aggressive. Batch 8 is the sweet spot — model
 fits with headroom, the shorter epoch from max_oversample=1
 absorbs the 2× iter overhead.
 
+## 6. The "VRAM growth" misread — max_mem is a peak watermark
+
+Observation 2026-06-05: 2580 (batch 8) showed `max mem` climbing
+from ~13 GB at epoch 0 to **37 GB** by epoch 6. 2581 showed the
+same climb, hitting **42 GB** by epoch 16. Initial reading was
+"memory leak, OOM imminent." That was wrong.
+
+`torch.cuda.max_memory_allocated()` — which DEIMv2's
+MetricLogger reports as `max mem` — is a **monotonically
+non-decreasing watermark since process start**. It tracks the
+single highest point the allocator ever held. It is **never
+automatically reset across iterations**. So:
+
+* Iter 0 reports `max mem = 13 GB` because the model + optimizer
+  + first few batches fit in 13 GB.
+* Iter 5000 might run a worst-case batch (many objects + heavy
+  Mosaic + augmentation outliers) that peaks at 28 GB.
+* Iter 50000 might run an even rarer worst-case at 42 GB.
+* The 42 GB number sticks forever, even if every subsequent
+  batch fits in 18 GB.
+
+What this means in practice:
+
+* **Growth in `max mem` over time ≠ memory leak.** A real leak
+  would OOM eventually, regardless of batch variability. 2581
+  ran 16 epochs at "42 GB" without OOMing, which proves the
+  steady-state is much lower.
+* **The 42 GB watermark IS a real signal**: somewhere in
+  training, ONE batch consumed 42 GB. Worth knowing as the
+  worst-case so we know our headroom (47 - 42 = 5 GB above
+  the realized peak).
+* **Watermarks at half-epoch eval boundaries can spike**: the
+  CocoEvaluator allocates fresh state for each eval pass. If
+  eval happens to overlap a leftover training tensor before GC,
+  brief peaks can hit. Then the watermark sticks.
+
+Practical guidance for future agents reading these logs:
+
+* If `max mem` climbs but training keeps going (no OOM),
+  treat the growth as "watermark of worst-case batch" not "leak."
+* If you want to know the steady-state working memory, look at
+  the LATEST iter's `loss: ... time: ... data: ... max mem: X`
+  — but X is still the watermark, not the per-iter footprint.
+  The true steady state needs `torch.cuda.memory_allocated()`
+  (current, not max) sampled inline; the kit doesn't emit
+  this today.
+* A leak diagnosis needs `max mem` to climb while `time/iter`
+  also degrades (allocator overhead). 2581's per-iter time
+  stayed steady at ~0.4 s/iter throughout, which is the
+  smoking gun against a leak.
+
+Fix the misread by adding a per-iter `mem_current` field to
+the kit's MetricLogger extension someday. Until then: don't
+panic at climbing max_mem if there's no actual OOM.
+
 ## 5. Other knobs to know about
 
 **`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`** —

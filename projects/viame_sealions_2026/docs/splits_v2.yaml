@@ -1,0 +1,107 @@
+# Sea lion splits v2 - replaces unpacked/splits_v1.json.
+#
+# v1 problem: test (2009/2019/2024 contiguous 25% chunks) had ZERO NFS
+# images because NFS clusters in 2011/2014/2016/2022/2023. We could not
+# measure how distracted models were by NFS on held-out data.
+#
+# v2 design (OPT_G_14pct): see docs/journals/2026-06-05_splits_v2_design.md
+#
+# Strategy:
+#   1. Keep 2009/2019/2024 as test years for continuity, but grow chunks
+#      to 35-40% to hit user's 10-15% test target. Their NFS is sparse
+#      (1, 1, 11 imgs) and tightly clustered, so larger chunks pull
+#      common-class imagery without draining additional NFS to test.
+#   2. Add two tiny chunks (15 imgs each) that truncate the NFS clusters
+#      in 2014 and 2022 - captures 5 + 11 NFS for test, leaves 25 + 21
+#      NFS in train from those years.
+#   3. Add 2021 chunk (UAS-platform transition year) for stronger
+#      generalization signal across flight platforms.
+#
+# Result: 1,161 test imgs (14.1% of corpus), 5 independent test-year NFS
+# clusters (2009/2014/2021/2022/2024). Train retains 138 NFS imgs /
+# 27,676 NFS annots = 89.7% of corpus NFS for learning.
+#
+# Each test_chunk is a CONTIGUOUS range of images within a year, sorted
+# by image name. The boundary image names are the definition;
+# expected_size is a tripwire that fails LOUDLY if the upstream image
+# set changes (e.g. corpus rebuild adds/removes images).
+
+version: 2
+
+# Hard-coded test windows.
+test_chunks:
+  - year: '2009'
+    first_image: '20090627_SSLC1936_C.JPG'
+    last_image:  '20090708_SSLC3974_C.JPG'
+    expected_size: 346
+    rationale: |
+      40% chunk for continuity with v1. All 9 classes. 1 NFS image
+      (2009 only has 2 NFS total).
+
+  - year: '2014'
+    first_image: '20140628_SSLP1914_C.jpg'
+    last_image:  '20140628_SSLS0145_C.jpg'
+    expected_size: 15
+    rationale: |
+      Tiny chunk capturing 5 NFS images from the older flight
+      campaign. Leaves 25 NFS in train from this year.
+
+  - year: '2019'
+    first_image: '20190624_SEA LION ISLANDS_SSLC0412.jpg'
+    last_image:  '20190628_MARMOT_SSLC0507.jpg'
+    expected_size: 336
+    rationale: |
+      35% chunk for continuity. All 9 classes. 1 NFS image (only 1 in
+      2019 total).
+
+  - year: '2021'
+    first_image: '20210626_HAZY_SSLC0196.jpg'
+    last_image:  '20210629_KODIAK_CAPE CHINIAK_SSLC1214.jpg'
+    expected_size: 196
+    rationale: |
+      20% chunk from 2021 - the UAS-platform transition year. Strong
+      generalization signal across flight platforms. 2 NFS in test.
+
+  - year: '2022'
+    first_image: '20220627_AMAK+ROCKS_SSLS0226.jpg'
+    last_image:  '20220627_BOGOSLOF_SSLC0462.jpg'
+    expected_size: 15
+    rationale: |
+      Tiny chunk capturing 11 NFS images from the newer flight
+      campaign. Leaves 21 NFS in train from this year.
+
+  - year: '2024'
+    first_image: '20240703_HOOK POINT_SLC00144_BB.jpg'
+    last_image:  '20240718_OTTER_DJI0356_BB.jpg'
+    expected_size: 253
+    rationale: |
+      40% chunk for continuity. All 9 classes. Captures all 11 NFS
+      in 2024 (clustered at end of year). 2-3 DN.
+
+# Validation split: take 15% of each year's learn pool independently,
+# seeded. Year-stratified so vali year-distribution matches train.
+vali:
+  seed: 20260605
+  frac: 0.15
+  stratify_by: year
+
+# Class-coverage assertions - failures abort the build before any
+# bundle is written.
+test_class_coverage_required:
+  northern_fur_seal: 25    # >= 25 NFS imgs in test (we expect 29-31)
+  dead_nonpup: 5           # >= 5 DN imgs (rare; corpus has 49)
+  dead_pup: 20             # >= 20 DP imgs
+  all_9_classes_present: true
+
+test_size_bounds:
+  min_images: 1000
+  max_images: 1300
+  expected_images: 1161
+
+# Provenance: the source kwcoco bundle this manifest was designed
+# against. The tool asserts the source's total image count matches to
+# catch silent corpus changes.
+source:
+  all_norm_path: /data/Public/VIAME/viame_sealions_2026/unpacked/all_norm.kwcoco.zip
+  expected_total_images: 8218
+  expected_total_annotations: 475651

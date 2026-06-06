@@ -40,9 +40,14 @@ KCD_ROOT="$KCD_RUNS_DPATH/$KCD_RUN_NAME"
 # they're already small full-image bundles and the model's eval-time
 # transforms handle the resize.
 UNIVERSAL_DIR="$KCD_TRAINING_READY_DIR"
-UNIVERSAL_TRAIN_KWCOCO="$UNIVERSAL_DIR/train.kwcoco.zip"
-UNIVERSAL_VALI_KWCOCO="$UNIVERSAL_DIR/vali.kwcoco.zip"
-UNIVERSAL_TEST_KWCOCO="$UNIVERSAL_DIR/test.kwcoco.zip"
+# Universal sources: post-2026-06-05 default to the v2 *_norm bundles
+# (unpacked/{train,vali,test}_norm_v2.kwcoco.zip) via paths.sh. The
+# fall-back to KCD_TRAINING_READY_DIR/<split>.kwcoco.zip stays for
+# legacy sandboxes; override KCD_UNIVERSAL_*_KWCOCO to point at any
+# 9-cat norm bundle.
+UNIVERSAL_TRAIN_KWCOCO="${KCD_UNIVERSAL_TRAIN_KWCOCO:-$UNIVERSAL_DIR/train.kwcoco.zip}"
+UNIVERSAL_VALI_KWCOCO="${KCD_UNIVERSAL_VALI_KWCOCO:-$UNIVERSAL_DIR/vali.kwcoco.zip}"
+UNIVERSAL_TEST_KWCOCO="${KCD_UNIVERSAL_TEST_KWCOCO:-$UNIVERSAL_DIR/test.kwcoco.zip}"
 kcd_require_path "universal train.kwcoco.zip" "$UNIVERSAL_TRAIN_KWCOCO"
 kcd_require_path "universal vali.kwcoco.zip" "$UNIVERSAL_VALI_KWCOCO"
 kcd_require_path "universal test.kwcoco.zip" "$UNIVERSAL_TEST_KWCOCO"
@@ -179,6 +184,7 @@ print('v{}:{}'.format(
 ))
 " 2>/dev/null || echo 'unknown')
 TILE_PARAMS_BODY=$(printf '%s\n' \
+    "tile_mode=${KCD_TILE_MODE:-multiscale}" \
     "tile_size=$KCD_TILE_SIZE" \
     "source_scales=$KCD_TILE_SOURCE_SCALES" \
     "stride_frac=$KCD_TILE_STRIDE_FRAC" \
@@ -186,6 +192,7 @@ TILE_PARAMS_BODY=$(printf '%s\n' \
     "min_keep_fraction=$KCD_TILE_MIN_KEEP_FRACTION" \
     "oversize_factor=$KCD_TILE_OVERSIZE_FACTOR" \
     "keep_negative=$KCD_TILE_KEEP_NEGATIVE" \
+    "category_names=${KCD_TILE_CATEGORY_NAMES:-sealion}" \
     "writer_passthrough=$WRITER_FINGERPRINT")
 TILE_HASH=$(printf '%s' "$TILE_PARAMS_BODY" | sha1sum | cut -c1-8)
 TILE_DIR="$KCD_TILE_CACHE_DPATH/_universal/$TILE_HASH"
@@ -235,31 +242,32 @@ echo "  lr:           head=$KCD_LR  backbone=$KCD_BACKBONE_LR"
 echo "  use_amp:      $KCD_USE_AMP"
 
 echo
-echo "=== 1. Multi-scale tile (universal — scheme-agnostic) ==="
+echo "=== 1. Verify universal tile cache exists ==="
+# Tile-build is its own slurm+docker job since 2026-06-05. This
+# script no longer auto-builds — that path was tangled with training
+# resource requests (GPUs you don't need, NCCL config that doesn't
+# apply, walltime mismatched to tile-build cost). Fail fast here so
+# the user sees the cause and runs the build job.
 TILE_VALID=0
-if [ -f "$UNIVERSAL_TILES" ] && [ "${KCD_FORCE_RETILE:-0}" != "1" ]; then
+if [ -f "$UNIVERSAL_TILES" ]; then
     sz=$(stat -c%s "$UNIVERSAL_TILES" 2>/dev/null || echo 0)
     [ "$sz" -gt 102400 ] && TILE_VALID=1
 fi
-if [ "$TILE_VALID" = "1" ]; then
-    echo "  Reusing $UNIVERSAL_TILES (KCD_FORCE_RETILE=1 to redo)."
-else
-    # Always tile against the single 'sealion' category of the
-    # universal source. source_category survives via the kit's
-    # passthrough whitelist, so the apply-scheme step can collapse
-    # however the scheme dictates.
-    "$PYTHON_BIN" -m kwcoco_detector_kit tile \
-        "$UNIVERSAL_TRAIN_KWCOCO" "$UNIVERSAL_TILES" \
-        --mode multiscale \
-        --tile_size "$KCD_TILE_SIZE" \
-        --source_scales "$KCD_TILE_SOURCE_SCALES" \
-        --stride_frac "$KCD_TILE_STRIDE_FRAC" \
-        --min_gt_area_frac "$KCD_TILE_MIN_GT_AREA_FRAC" \
-        --min_keep_fraction "$KCD_TILE_MIN_KEEP_FRACTION" \
-        --oversize_factor "$KCD_TILE_OVERSIZE_FACTOR" \
-        --keep_negative "$KCD_TILE_KEEP_NEGATIVE" \
-        --category_names sealion
+if [ "$TILE_VALID" != "1" ]; then
+    echo "ERROR: universal tile cache missing or corrupt." >&2
+    echo "  expected: $UNIVERSAL_TILES" >&2
+    echo "  TILE_HASH: $TILE_HASH (params in $TILE_DIR/tile_params.txt)" >&2
+    echo "  source bundle: $UNIVERSAL_TRAIN_KWCOCO" >&2
+    echo "" >&2
+    echo "  Build the cache first:" >&2
+    echo "    bash $KCD_REPO_ROOT/scripts/submit_build_tiles.sh" >&2
+    echo "" >&2
+    echo "  The build runs as its own slurm+docker job (no GPU, ~2-4h)." >&2
+    echo "  Submit_train_* jobs can fan out from it via" >&2
+    echo "    KCD_DEPENDS_ON=<build_jobid> bash submit_train_<...>.sh" >&2
+    exit 1
 fi
+echo "  Reusing $UNIVERSAL_TILES."
 
 # Optional: build WebDataset shards from the universal tile bundle.
 # Scheme-AGNOSTIC — one shard set serves every scheme. The reader
@@ -413,6 +421,7 @@ export_mscoco(src='$TRAIN_KWCOCO', dst='$UNBALANCED_MSCOCO',
             "$UNBALANCED_MSCOCO" "$BALANCED_MSCOCO" \
             --target_distribution "$KCD_BALANCE_TARGET_JSON" \
             ${KCD_BALANCE_TARGET_SIZE:+--target_size "$KCD_BALANCE_TARGET_SIZE"} \
+            ${KCD_BALANCE_MAX_OVERSAMPLE:+--max_oversample "$KCD_BALANCE_MAX_OVERSAMPLE"} \
             --seed "${KCD_BALANCE_SEED:-0}"
     else
         echo "  Reusing $BALANCED_MSCOCO (KCD_FORCE_REBALANCE=1 to redo)."

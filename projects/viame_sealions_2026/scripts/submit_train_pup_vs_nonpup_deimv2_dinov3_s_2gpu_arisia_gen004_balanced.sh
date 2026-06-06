@@ -52,11 +52,31 @@ export KCD_SCHEME=pup_vs_nonpup
 export KCD_CATEGORY_NAMES=pup,nonpup_sealion
 export KCD_VARIANT=deimv2_dinov3_s
 export KCD_NUM_GPUS=2
-export KCD_PER_GPU_BATCH=16          # total batch = 32
+# per_gpu_batch=8 (total batch 16). Reason: even with AMP +
+# fixed 640, 2579 OOM'd at epoch 8 — memory was steady at
+# 31-33 GB but transient peaks hit 42.82 GB and tried to
+# allocate ~5 GB more (47 GB ceiling). Halving batch halves the
+# worst-case activation memory in those spikes and gives us
+# ~7-10 GB headroom. Trade-off: 2x more iters per epoch, ~half
+# the per-iter throughput. With max_oversample=1 keeping epochs
+# short (~1600 iters at batch 8), wallclock stays manageable.
+# Keep LR at 5e-4 since we're past warmup; the flat phase is
+# not sensitive to precise LR scaling.
+export KCD_PER_GPU_BATCH=8           # total batch = 16
 export KCD_VAL_BATCH_MULT=1
 export KCD_NUM_EPOCHS=30
 export KCD_INPUT_HW='[640, 640]'
-export KCD_TRAIN_POLICY=multiscale_512_768
+# fixed 640, NOT multiscale_512_768. Reason: the original plan
+# used multiscale_512_768 and 2577 reached in-train mAP 0.161 at
+# epoch 5 — but OOM'd at epoch 6 because 768x768 batches exceed
+# the 47 GB VRAM budget when stacked on dinov3_s (5G) + AdamW (10G)
+# + EMA (5G) + grads/activations (peak 25G at 768). The resume
+# at 2578 confirmed the same OOM with AMP on. See
+# [[2026-06-04_deimv2_training_internals]] for the OOM math.
+# This clean restart drops the multiscale upper bound; the
+# checkpoint history is uniform 640 throughout, making the run
+# directly comparable to the single_sealion gen004 companion.
+export KCD_TRAIN_POLICY=fixed
 export KCD_LR=5e-4
 export KCD_BACKBONE_LR=2.5e-5
 export KCD_USE_AMP=true
@@ -85,6 +105,11 @@ export KCD_USE_WEBDATASET=0
 # Keeping the same target so the n-vs-s and 1-vs-2-GPU comparison
 # isolates capacity + batch + resolution from data composition.
 export KCD_BALANCE_TARGET_JSON='{"<empty>": 0.4, "pup": 0.2, "nonpup_sealion": 0.4}'
+# Cap pup repetition at 1× per epoch (see Run 1 comment for
+# rationale). Matches the ablation so the comparison between
+# Run 1 and Run 2 isolates capacity / batch / resolution from
+# data composition.
+export KCD_BALANCE_MAX_OVERSAMPLE=1
 
 # ============================================================
 # Slurm resource budget (performance-only — env-overridable)

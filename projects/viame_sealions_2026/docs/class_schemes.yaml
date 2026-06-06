@@ -1,8 +1,8 @@
 # Class-collapse schemes for sea lion detector training.
 #
-# Each scheme maps the raw VIAME single-letter codes (B, S, F, J, P, NFS, O,
-# DP, DN) to a target category name. `drop` lists source codes that are
-# excluded entirely from the training/val/test kwcoco. `dropped_reason`
+# Each scheme maps source category names (from the v2 *_norm.kwcoco.zip
+# bundles) to a target category name. `drop` lists source names that
+# are excluded entirely from the training/val/test kwcoco. `drop_reasons`
 # documents why.
 #
 # Per-scheme fields:
@@ -10,9 +10,9 @@
 #                       the trained model (i-th name -> class index i).
 #                       Reordering is a breaking change for any trained
 #                       checkpoint.
-#   mapping             raw VIAME code -> target class name.
-#   drop                raw VIAME codes excluded from the training data
-#                       entirely (no annotation written).
+#   mapping             source category name -> target class name.
+#   drop                source category names excluded from the training
+#                       data entirely (no annotation written).
 #   distractor_classes  OPTIONAL list of target class names that are kept
 #                       in the model's class set (so it learns to
 #                       discriminate them) but excluded from class-
@@ -22,12 +22,19 @@
 #                       and runs an extra scoring pass with these classes
 #                       pruned from both GT and predictions.
 #
-# Source distribution (89,955 annotations total across 2021-2024 redacted
-# imagery on namek):
-#   F=20500, J=19478, P=18634, NFS=15965, B=5947, O=5909, S=3202, DP=301, DN=19
+# Source distribution (475,651 annotations total across train+vali+test
+# of v2 splits on the full 2007-2024 corpus). For per-class counts see
+# docs/splits_v2_design.md and unpacked/coco_annot_stats/.
 #
-# This file is intentionally declarative — the registry CLI reads it but does
-# not write it. Add a new scheme by adding a top-level entry.
+# 2026-06-05: rewrote keys from letter codes (B/S/F/J/P/NFS/O/DP/DN) to
+# full normalized names. The letter-code system was a training_ready_v1
+# artifact (annotations collapsed to a single 'sealion' category with
+# the letter code stashed in a source_category field). The v2 *_norm
+# bundles produced by /data/Public/VIAME/viame_sealions_2026/scripts/
+# sealion_pipeline.py expose categories as first-class kwcoco categories
+# with full names (CLASS_ALIASES is the source of truth for the
+# normalization), so the scheme tooling now reads category names
+# directly.
 
 schemes:
 
@@ -41,44 +48,39 @@ schemes:
     # for any already-trained checkpoint.
     target_order: [sealion]
     mapping:
-      B:   sealion
-      S:   sealion
-      F:   sealion
-      J:   sealion
-      P:   sealion
-      DP:  sealion
-    drop: [NFS, O, DN]
+      bull:           sealion
+      subadult_male:  sealion
+      female:         sealion
+      juvenile:       sealion
+      pup:            sealion
+      dead_pup:       sealion
+    drop: [northern_fur_seal, negative, dead_nonpup]
     drop_reasons:
-      NFS: different species; not a target. This scheme has no slot
-           for NFS as a separate class, so we drop the annotations
-           entirely. A future variant could carry NFS as a distractor
-           class (cf. lifestage_6cls.distractor_classes) — but that's
-           the 2-class scheme, not this one.
-      O:   background-only annotations; not a positive target
-      DN:  only 19 instances, too few to be useful
-    notes: |
-      Current training_ready_v1/all_collapsed.kwcoco.zip implements this
-      scheme. Localization-only baseline.
+      northern_fur_seal: |
+        Different species; not a target. This scheme has no slot for
+        NFS as a separate class, so we drop the annotations entirely.
+        A future variant could carry NFS as a distractor class (cf.
+        lifestage_6cls.distractor_classes) — but that's the 6-class
+        scheme, not this one.
+      negative:    background hard-negative annotations; not a positive target
+      dead_nonpup: only 49 instances across the full corpus, too few to be useful
 
   pup_vs_nonpup:
     description: Two-class operational split — pup vs adult/juvenile sealion.
     num_classes: 2
     target_order: [pup, nonpup_sealion]
     mapping:
-      P: pup
-      B: nonpup_sealion
-      S: nonpup_sealion
-      F: nonpup_sealion
-      J: nonpup_sealion
-    drop: [NFS, O, DP, DN]
+      pup:           pup
+      bull:          nonpup_sealion
+      subadult_male: nonpup_sealion
+      female:        nonpup_sealion
+      juvenile:      nonpup_sealion
+    drop: [northern_fur_seal, negative, dead_pup, dead_nonpup]
     drop_reasons:
-      NFS: different species, kept as future hard-negative source
-      O:   background-only annotations
-      DP:  rare and ambiguous between pup vs dead non-pup; revisit
-      DN:  only 19 instances
-    notes: |
-      Pup count is the highest-value biological signal; small-object recall
-      on the `pup` class is the headline metric for this scheme.
+      northern_fur_seal: different species, kept as future hard-negative source
+      negative:          background-only annotations
+      dead_pup:          rare and ambiguous between pup vs dead non-pup; revisit
+      dead_nonpup:       only 49 instances across the full corpus, too few
 
   lifestage_6cls:
     description: Full operational age-sex classifier plus species distractor.
@@ -92,18 +94,14 @@ schemes:
     # learned.
     distractor_classes: [northern_fur_seal]
     mapping:
-      B:   bull
-      S:   subadult_male
-      F:   female
-      J:   juvenile
-      P:   pup
-      NFS: northern_fur_seal
-    drop: [O, DP, DN]
+      bull:              bull
+      subadult_male:     subadult_male
+      female:            female
+      juvenile:          juvenile
+      pup:               pup
+      northern_fur_seal: northern_fur_seal
+    drop: [negative, dead_pup, dead_nonpup]
     drop_reasons:
-      O:   background-only annotations
-      DP:  301 instances split across classes hurts more than helps; revisit
-      DN:  only 19 instances
-    notes: |
-      subadult_male is the weakest class (3,202 instances) — watch its
-      per-class AP. NFS provides a species-boundary signal even though it is
-      not the operational target.
+      negative:    background-only annotations
+      dead_pup:    ambiguous; revisit if a per-class fine-tune is worthwhile
+      dead_nonpup: only 49 instances corpus-wide

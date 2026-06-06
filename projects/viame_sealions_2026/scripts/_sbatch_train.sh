@@ -305,16 +305,26 @@ _kcd_cleanup() {
     # and by cidfile. --rm on docker run means most paths leave
     # nothing to clean, but the docker daemon won't honor --rm if
     # the container is mid-stop or got orphaned; belt and suspenders.
+    # Speed matters: slurm's default KillWait is 30s. If our cleanup
+    # takes >30s, bash gets SIGKILL'd before docker stop returns,
+    # leaving the container running orphaned (--rm only fires when
+    # the container exits, not when the docker run client dies).
+    # We saw this with 48h walltime hits — container at 2 days old
+    # in docker ps with no slurm job, GPUs pinned.
+    #
+    # docker kill (SIGKILL the container) is the safe choice here.
+    # The container is being terminated either way; giving it time
+    # to flush state is nice but not worth losing the cleanup race.
     if [ -f "$KCD_CIDFILE" ]; then
         local cid
         cid="$(cat "$KCD_CIDFILE" 2>/dev/null)"
         if [ -n "$cid" ]; then
-            docker stop -t 30 "$cid" >/dev/null 2>&1
+            docker kill "$cid" >/dev/null 2>&1
             docker rm -f "$cid" >/dev/null 2>&1
         fi
         rm -f "$KCD_CIDFILE"
     fi
-    docker stop -t 5 "$KCD_CONTAINER_NAME" >/dev/null 2>&1
+    docker kill "$KCD_CONTAINER_NAME" >/dev/null 2>&1
     docker rm -f "$KCD_CONTAINER_NAME" >/dev/null 2>&1
 
     # Leak diagnostics on every exit path.
@@ -351,7 +361,7 @@ docker run --rm \
     "${EXTRA_MOUNT_FLAGS[@]}" \
     -w "$KCD_REPO_ROOT" \
     "$KCD_IMAGE" \
-    bash "$KCD_REPO_ROOT/scripts/_launch_train.sh"
+    bash "$KCD_REPO_ROOT/scripts/${KCD_LAUNCH_SCRIPT:-_launch_train.sh}"
 
 echo
 echo "Done. Output under: $KCD_ROOT"

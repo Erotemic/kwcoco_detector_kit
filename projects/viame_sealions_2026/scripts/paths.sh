@@ -79,6 +79,48 @@ export KCD_KIT_DPATH="${KCD_KIT_DPATH:-$HOME/code/kwcoco_detector_kit}"
 export KCD_TRAINING_READY_DIR="${KCD_TRAINING_READY_DIR:-$KCD_DATA_DPATH/training_ready_v1}"
 export KCD_SCHEMES_DIR="${KCD_SCHEMES_DIR:-$KCD_TRAINING_READY_DIR/by_scheme}"
 
+# Universal (un-collapsed) training source for the tile step. Since
+# 2026-06-05 this points at the new splits_v2 norm bundle. The tile
+# step is scheme-agnostic — it consumes the 9-category source and the
+# downstream apply_scheme step collapses per-scheme. v1 path
+# ($KCD_TRAINING_READY_DIR/train.kwcoco.zip) was the wrong subset
+# (1314 imgs, 2021-2024 only) — see
+# docs/journals/2026-06-05_corpus_audit_wrong_bundle.md.
+export KCD_UNIVERSAL_TRAIN_KWCOCO="${KCD_UNIVERSAL_TRAIN_KWCOCO:-$KCD_DATA_DPATH/unpacked/train_norm_v2.kwcoco.zip}"
+export KCD_UNIVERSAL_VALI_KWCOCO="${KCD_UNIVERSAL_VALI_KWCOCO:-$KCD_DATA_DPATH/unpacked/vali_norm_v2.kwcoco.zip}"
+export KCD_UNIVERSAL_TEST_KWCOCO="${KCD_UNIVERSAL_TEST_KWCOCO:-$KCD_DATA_DPATH/unpacked/test_norm_v2.kwcoco.zip}"
+
+# -- Canonical tile params (DINOv3-S recipe) -----------------------------
+#
+# Defining defaults HERE means submit_build_tiles.sh and submit_train_*.sh
+# resolve the same TILE_HASH and share one cache. Submit scripts that
+# need different params (e.g. an HGNetv2 320 ablation) override the
+# specific vars and get their own cache subdir under
+# $KCD_TILE_CACHE_DPATH/_universal/<hash>/.
+#
+# Scales: 1.0, 0.5 only (down from 1.0,0.5,0.25,0.125). At 0.25 only
+# 7% of pup annotations survive the min_gt_area_frac filter, and 0%
+# at 0.125 — those scales produced "tile contains a visible pup but
+# no GT" pairs which trained the model to ignore real pups. See
+# docs/journals/2026-06-05_splits_v2_design.md and the size analysis
+# in coco_annot_stats/. DEIMv2's FPN provides internal multi-scale
+# features so we don't need to pre-tile a deep pyramid.
+export KCD_TILE_SIZE="${KCD_TILE_SIZE:-640}"
+export KCD_TILE_SOURCE_SCALES="${KCD_TILE_SOURCE_SCALES:-1.0,0.5}"
+export KCD_TILE_STRIDE_FRAC="${KCD_TILE_STRIDE_FRAC:-0.5}"
+export KCD_TILE_MIN_GT_AREA_FRAC="${KCD_TILE_MIN_GT_AREA_FRAC:-0.0005}"
+export KCD_TILE_MIN_KEEP_FRACTION="${KCD_TILE_MIN_KEEP_FRACTION:-0.20}"
+export KCD_TILE_OVERSIZE_FACTOR="${KCD_TILE_OVERSIZE_FACTOR:-1.2}"
+export KCD_TILE_KEEP_NEGATIVE="${KCD_TILE_KEEP_NEGATIVE:-true}"
+# Categories preserved in the tile output. For the v2 norm bundle
+# (9-cat full names), this MUST be the 9-name union — otherwise the
+# coco_export step filters all annotations out
+# (kwcoco_detector_kit/data/coco_export.py:92-93 drops anns whose
+# source category name is not in this list). apply_scheme then
+# collapses per-scheme downstream.
+export KCD_TILE_CATEGORY_NAMES="${KCD_TILE_CATEGORY_NAMES:-bull,subadult_male,female,juvenile,pup,northern_fur_seal,negative,dead_pup,dead_nonpup}"
+export KCD_TILE_MODE="${KCD_TILE_MODE:-multiscale}"
+
 # -- Pretrained checkpoints ----------------------------------------------
 
 # DEIMv2-DINOv3-S COCO-finetuned (50.9 AP on COCO). Foundation backbone

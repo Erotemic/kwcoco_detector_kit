@@ -943,6 +943,31 @@ class DEIMv2Trainer:
             "--nproc_per_node", str(int(num_gpus)),
             str(train_py), "-c", str(cfg_fpath),
         ]
+
+        # DEIMv2 train.py's argparse defines --use-amp as
+        # action='store_true', which defaults the arg value to False
+        # (NOT None) when absent. train.py then forwards args.__dict__
+        # into YAMLConfig as kwargs with `v is not None` filtering --
+        # False passes that filter and overrides the YAML's
+        # use_amp: true via the kwarg merge. Net effect: every kit
+        # run trained at FP32 regardless of KCD_USE_AMP. Caught
+        # 2026-06-03 when job 2577 OOM'd at 45.76 GB/47.4 GB on
+        # GPU 1 -- AMP would have halved activation memory.
+        # Fix: read use_amp from the YAML we generated and forward
+        # --use-amp when it's true. No DEIMv2 patch required.
+        try:
+            import yaml
+            with open(cfg_fpath) as _f:
+                _yaml_top = yaml.safe_load(_f) or {}
+            if _yaml_top.get("use_amp", False):
+                args.append("--use-amp")
+        except Exception as _e:
+            print(
+                f"[deimv2.launch] WARN: could not introspect use_amp "
+                f"from {cfg_fpath}: {_e}; AMP will follow train.py's "
+                f"default (off).",
+                flush=True,
+            )
         if resume:
             # DEIMv2's train.py asserts that tuning (-t) and resume (-r)
             # are mutually exclusive: the resume checkpoint already

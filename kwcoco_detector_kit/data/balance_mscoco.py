@@ -72,10 +72,29 @@ class BalanceMSCOCOConfig(scfg.DataConfig):
         type=int,
         help=(
             "Total number of image entries in the output MSCOCO. "
-            "Defaults to len(src.images) so output size matches input. "
-            "When buckets need to be oversampled to hit the target "
-            "distribution, the same image is referenced multiple times "
-            "(with new ids)."
+            "When set explicitly, overrides max_oversample. Defaults: "
+            "if max_oversample is also unset, output size matches "
+            "len(src.images) (legacy behavior, may heavily oversample "
+            "the rarest bucket); otherwise computed from max_oversample."
+        ),
+    )
+
+    max_oversample = scfg.Value(
+        None, type=int,
+        help=(
+            "Cap on per-sample repetition for the rarest bucket. "
+            "When set (and target_size is not), target_size becomes "
+            "max_oversample × min(len(bucket_b) / target_fraction_b "
+            "for each b in target_distribution). The rarest bucket "
+            "is repeated at most max_oversample times; more-common "
+            "buckets are subsampled to match the target distribution. "
+            "For typical detection class-balance use, max_oversample=1 "
+            "is recommended: each positive tile seen once per epoch, "
+            "negatives subsampled, epochs faster, augmentation provides "
+            "stochastic diversity across repeats in later epochs. "
+            "max_oversample=3 is a reasonable middle ground when the "
+            "rarest bucket is very small and the model needs more "
+            "exposure to per-epoch."
         ),
     )
 
@@ -165,18 +184,37 @@ def _compute_per_bucket_counts(
     return floors
 
 
-def _sample_with_replacement(
-    pool: List[int], k: int, rng,
+def _sample_with_cap(
+    pool: List[int], k: int, max_repeats: Optional[int], rng,
 ) -> List[int]:
-    """Draw k items from pool with replacement. Pool must be non-empty."""
+    """Draw k items from pool with each item picked at most
+    max_repeats times.
+
+    * max_repeats=None: pure with-replacement (legacy behavior).
+    * max_repeats=1: without-replacement, k must be <= len(pool).
+    * max_repeats=K: each item picked 0..K times, k must be <= K*len(pool).
+    """
+    import numpy as np
     if not pool:
         raise ValueError("pool is empty")
-    # rng.choice with replace=True is O(k); list-indexing keeps it
-    # numpy-array-friendly without forcing the caller to import numpy.
-    import numpy as np
     arr = np.asarray(pool)
-    idxs = rng.randint(0, len(arr), size=k)
-    return arr[idxs].tolist()
+    n = len(arr)
+    if max_repeats is None:
+        idxs = rng.randint(0, n, size=k)
+        return arr[idxs].tolist()
+    if k > max_repeats * n:
+        raise ValueError(
+            f"cannot pick {k} items from pool of {n} with "
+            f"max_repeats={max_repeats}; the cap allows only "
+            f"{max_repeats * n}. Lower max_oversample or pick a "
+            f"target_distribution that doesn't ask for so many."
+        )
+    # Build a virtual extended pool of size max_repeats * n by repeating
+    # the index list, then sample k *without* replacement. Each original
+    # index appears at most max_repeats times in the result.
+    extended = np.tile(np.arange(n), max_repeats)
+    chosen = rng.choice(len(extended), size=k, replace=False)
+    return arr[extended[chosen]].tolist()
 
 
 def run(config: BalanceMSCOCOConfig):
@@ -221,18 +259,52 @@ def run(config: BalanceMSCOCOConfig):
             f"{sorted(k for k, v in buckets.items() if v)}."
         )
 
-    # Default size = original. The output then has the same length
-    # as the input but a different class composition.
-    if config.target_size is None or int(config.target_size) <= 0:
-        target_size = len(mscoco.get("images", []))
-    else:
+    target_distribution = _normalize_distribution(target_distribution)
+
+    # Choose target_size. Three modes:
+    #
+    #   1. target_size set explicitly: use it (overrides max_oversample).
+    #   2. max_oversample set: target_size = K × min(len_b / f_b).
+    #      The rarest bucket is repeated at most K times; common
+    #      buckets are subsampled to match the target ratio.
+    #   3. Neither set: legacy default = len(src.images). May
+    #      heavily oversample the rarest bucket — kept for backwards
+    #      compatibility but typically NOT what you want for class
+    #      balancing (see max_oversample help).
+    # effective_max_repeats: enforced by the sampler. None means
+    # unlimited (legacy with-replacement). When target_size is set
+    # explicitly we leave the cap off because the caller is taking
+    # responsibility for the size and the cap could make the size
+    # infeasible (e.g. target_size > len(pool) + max_oversample).
+    effective_max_repeats: Optional[int] = None
+    if config.target_size is not None and int(config.target_size) > 0:
         target_size = int(config.target_size)
+    elif config.max_oversample is not None:
+        K = int(config.max_oversample)
+        if K <= 0:
+            raise ValueError(
+                f"max_oversample must be > 0; got {K}"
+            )
+        # Per-bucket "natural fit": the largest target_size at which
+        # this bucket is NOT oversampled (every entry contributes at
+        # most once). natural_b = len(bucket_b) / target_fraction_b.
+        # The overall natural fit is the min across buckets — the
+        # rarest one is the binding constraint.
+        natural = min(
+            len(buckets[b]) / target_distribution[b]
+            for b in target_distribution
+            if target_distribution[b] > 0
+        )
+        target_size = max(1, int(K * natural))
+        effective_max_repeats = K
+    else:
+        target_size = len(mscoco.get("images", []))
+
     if target_size <= 0:
         raise ValueError(
             f"target_size must be positive; got {target_size}"
         )
 
-    target_distribution = _normalize_distribution(target_distribution)
     per_bucket = _compute_per_bucket_counts(target_distribution, target_size)
 
     rng = np.random.RandomState(int(config.seed))
@@ -253,7 +325,9 @@ def run(config: BalanceMSCOCOConfig):
     for bucket, n in per_bucket.items():
         if n <= 0:
             continue
-        picks = _sample_with_replacement(buckets[bucket], n, rng)
+        picks = _sample_with_cap(
+            buckets[bucket], n, effective_max_repeats, rng,
+        )
         bucket_picks[bucket] = len(picks)
         for src_img_id in picks:
             new_img = dict(src_images[src_img_id])
@@ -280,6 +354,10 @@ def run(config: BalanceMSCOCOConfig):
                 "source": str(src_fpath),
                 "target_distribution": target_distribution,
                 "target_size": int(target_size),
+                "max_oversample": (
+                    int(config.max_oversample)
+                    if config.max_oversample is not None else None
+                ),
                 "per_bucket_counts": {k: int(v) for k, v in per_bucket.items()},
                 "actual_bucket_picks": {k: int(v) for k, v in bucket_picks.items()},
                 "seed": int(config.seed),

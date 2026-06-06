@@ -4,10 +4,14 @@ Apply a scheme's class-collapse to a single kwcoco file.
 
 Mirror of build_scheme_kwcoco.py but operating on one arbitrary input/
 output pair instead of a fixed train/vali/test triple. Used by
-_launch_train.sh to convert a scheme-agnostic tile bundle (tiled once
-from training_ready_v1/train.kwcoco.zip, with `source_category`
-preserved on every annotation) into a per-scheme bundle the sweep
-consumes.
+_launch_train.sh to convert the scheme-agnostic universal tile bundle
+(and the un-tiled vali / test v2 *_norm bundles) into per-scheme
+inputs the sweep consumes.
+
+Post-2026-06-05: the underlying remap_split reads category names
+directly from src.cats[ann.category_id].name (the v2 *_norm bundles
+expose categories as first-class kwcoco categories). The
+source_category annotation field is no longer required.
 
 Usage:
 
@@ -45,7 +49,7 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--src", type=Path, required=True,
-                        help="input kwcoco file (must have source_category on each annotation)")
+                        help="input kwcoco file (categories named per the scheme's mapping keys)")
     parser.add_argument("--dst", type=Path, required=True,
                         help="output kwcoco file (per-scheme)")
     parser.add_argument("--scheme", required=True,

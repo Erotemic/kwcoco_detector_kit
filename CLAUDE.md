@@ -19,8 +19,9 @@ that aren't obvious from grepping the source.
   `pyproject.toml`) does not collect project tests automatically — run
   them from inside the project subtree.
 - **Docker image is the reproducibility unit**: training jobs run via
-  `kwcoco-detector-kit:ogdino-cu132-arisia` (built by
-  `docker/opengroundingdino/build.sh`). The image bakes the DEIMv2
+  `kwcoco-detector-kit:ogdino-cu132-arisia` (built on arisia by
+  `docker/opengroundingdino/build_arisia_cuda132.sh`; other hosts use
+  `build_auto.sh` to pick a CUDA profile). The image bakes the DEIMv2
   submodule, runtime deps, kwutil, the `tests/` tree, and runs pytest
   at build time (`RUN_TESTS=1` default) so regressions don't ship.
 

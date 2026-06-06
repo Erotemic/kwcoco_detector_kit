@@ -335,6 +335,141 @@ def test_composes_with_cocodetection_path(tmp_path):
     assert abs(n_positive - 10) <= 1
 
 
+def test_max_oversample_1_undersamples_majority(tmp_path):
+    """max_oversample=1: rarest bucket repeated 1×, more-common
+    buckets are subsampled to match the target distribution.
+
+    Source: 3 pup + 30 nonpup + 50 empty (total 83).
+    Target: {empty: 0.4, pup: 0.2, nonpup: 0.4}.
+    Rarest bucket per natural fit: pup / 0.2 = 15. So target_size=15.
+    Allocations: empty=6, pup=3, nonpup=6.
+    Every pup is used exactly once; nonpup is subsampled 20%; empty
+    is subsampled 12%.
+    """
+    pytest.importorskip("kwimage")
+    from kwcoco_detector_kit.data.balance_mscoco import (
+        BalanceMSCOCOConfig, run,
+    )
+
+    src_fpath, _ = _build_mscoco_with_buckets(
+        tmp_path / "src",
+        n_positive_per_class=3, n_empty=50,
+        category_names=("pup", "nonpup"),
+    )
+    # Bump nonpup to 30 so pup is the rarest.
+    src = json.loads(src_fpath.read_text())
+    next_id = max(img["id"] for img in src["images"]) + 1
+    next_ann_id = max((a["id"] for a in src["annotations"]), default=0) + 1
+    for k in range(27):
+        src["images"].append({
+            "id": next_id, "file_name": f"assets/extra_nonpup_{k}.jpg",
+            "width": 64, "height": 64,
+        })
+        src["annotations"].append({
+            "id": next_ann_id, "image_id": next_id,
+            "category_id": 1, "bbox": [10, 10, 20, 20],
+            "area": 400.0, "iscrowd": 0,
+        })
+        next_id += 1
+        next_ann_id += 1
+    src_fpath.write_text(json.dumps(src))
+
+    dst = tmp_path / "balanced.json"
+    cfg = BalanceMSCOCOConfig.cli(argv=False, data=dict(
+        src=str(src_fpath), dst=str(dst),
+        target_distribution='{"<empty>": 0.4, "pup": 0.2, "nonpup": 0.4}',
+        max_oversample=1, seed=0,
+    ), strict=True)
+    run(cfg)
+
+    out = json.loads(dst.read_text())
+    info = out["info"]["balance_mscoco"]
+    # Natural fit: pup pool=3, f=0.2 → 15. nonpup=30/0.4=75. empty=50/0.4=125.
+    # min=15, so target_size = 1 * 15 = 15.
+    assert info["target_size"] == 15
+    assert info["max_oversample"] == 1
+    assert len(out["images"]) == 15
+
+    # Per-bucket counts: 0.4 × 15 = 6 / 3 / 6 (largest remainder
+    # rounding picks 6 for empty and nonpup, 3 for pup).
+    counts = info["per_bucket_counts"]
+    assert counts["<empty>"] == 6
+    assert counts["pup"] == 3
+    assert counts["nonpup"] == 6
+
+    # Each pup image should be picked exactly once (no oversampling)
+    # — 3 unique src ids in 3 picks.
+    pup_src_ids = [img["balance_src_image_id"] for img in out["images"]
+                   if img["balance_bucket"] == "pup"]
+    assert len(set(pup_src_ids)) == len(pup_src_ids) == 3, (
+        f"max_oversample=1 should pick each pup once; got "
+        f"{pup_src_ids} (duplicates indicate oversampling)."
+    )
+
+
+def test_max_oversample_3_repeats_rarest_at_most_3x(tmp_path):
+    """max_oversample=3: rarest bucket repeated up to 3×."""
+    pytest.importorskip("kwimage")
+    from kwcoco_detector_kit.data.balance_mscoco import (
+        BalanceMSCOCOConfig, run,
+    )
+
+    src_fpath, _ = _build_mscoco_with_buckets(
+        tmp_path / "src",
+        n_positive_per_class=2, n_empty=100,
+        category_names=("pup",),
+    )
+    dst = tmp_path / "balanced.json"
+    cfg = BalanceMSCOCOConfig.cli(argv=False, data=dict(
+        src=str(src_fpath), dst=str(dst),
+        target_distribution='{"<empty>": 0.5, "pup": 0.5}',
+        max_oversample=3, seed=0,
+    ), strict=True)
+    run(cfg)
+
+    out = json.loads(dst.read_text())
+    info = out["info"]["balance_mscoco"]
+    # Natural fit: pup pool=2, f=0.5 → 4. empty=100/0.5=200. min=4.
+    # target_size = 3 * 4 = 12. pup=6, empty=6.
+    assert info["target_size"] == 12
+    assert info["max_oversample"] == 3
+
+    pup_src_ids = [img["balance_src_image_id"] for img in out["images"]
+                   if img["balance_bucket"] == "pup"]
+    # 6 picks from a pool of 2 → each src id appears ~3 times.
+    from collections import Counter
+    pup_counts = Counter(pup_src_ids)
+    assert max(pup_counts.values()) <= 3 + 1, (
+        f"max_oversample=3 should cap repetition near 3×; got "
+        f"{dict(pup_counts)}"
+    )
+
+
+def test_target_size_overrides_max_oversample(tmp_path):
+    """When both target_size and max_oversample are set, target_size
+    wins. Pins the documented precedence."""
+    pytest.importorskip("kwimage")
+    from kwcoco_detector_kit.data.balance_mscoco import (
+        BalanceMSCOCOConfig, run,
+    )
+
+    src_fpath, _ = _build_mscoco_with_buckets(
+        tmp_path / "src", n_positive_per_class=3, n_empty=10,
+    )
+    dst = tmp_path / "balanced.json"
+    cfg = BalanceMSCOCOConfig.cli(argv=False, data=dict(
+        src=str(src_fpath), dst=str(dst),
+        target_distribution='{"<empty>": 0.5, "pup": 0.5}',
+        target_size=42, max_oversample=1, seed=0,
+    ), strict=True)
+    run(cfg)
+
+    out = json.loads(dst.read_text())
+    info = out["info"]["balance_mscoco"]
+    assert info["target_size"] == 42, "target_size must override max_oversample"
+    assert info["max_oversample"] == 1
+
+
 def test_rejects_unknown_bucket(tmp_path):
     """target_distribution with a bucket name that doesn't exist in
     the source must raise — silent drops are a reproducibility

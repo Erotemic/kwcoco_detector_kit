@@ -13,6 +13,11 @@ cd "$(dirname "$0")/../.."
 AUTO_IMAGE_TAG="${AUTO_IMAGE_TAG:-kwcoco-detector-kit:ogdino-auto}"
 TAG_VARIANT="${TAG_VARIANT:-1}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
+# Raise the build containers' open-file limit. uv compiles bytecode in
+# parallel across all cores; on high-core hosts that exhausts the default
+# nofile soft limit (1024) and fails `uv pip install` with "Too many open
+# files (os error 24)".
+BUILD_ULIMIT_NOFILE="${BUILD_ULIMIT_NOFILE:-1048576:1048576}"
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-1}"
 
 _version_ge() {
@@ -142,6 +147,7 @@ fi
 cmd=(
     docker build
     -f docker/opengroundingdino/Dockerfile
+    --ulimit "nofile=$BUILD_ULIMIT_NOFILE"
     --build-arg "BASE_IMAGE=$BASE_IMAGE"
     --build-arg "PYTHON_VERSION=$PYTHON_VERSION"
     --build-arg "TORCH_INDEX_URL=$TORCH_INDEX_URL"

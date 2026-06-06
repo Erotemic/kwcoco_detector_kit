@@ -28,6 +28,11 @@ PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
 # build. Include 8.6 too (e.g. "8.6;12.0") only if you intend to run the
 # same image on Ampere hosts — it enlarges the build but adds portability.
 TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-12.0}"
+# uv parallelizes bytecode compilation across all cores. On this 128-core
+# EPYC box that opens far more files at once than the default nofile soft
+# limit (1024), which fails the `uv pip install` step with "Too many open
+# files (os error 24)". Raise the limit for the build containers.
+BUILD_ULIMIT_NOFILE="${BUILD_ULIMIT_NOFILE:-1048576:1048576}"
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-1}"
 
 cd "$(dirname "$0")/../.."
@@ -56,6 +61,7 @@ echo
 
 docker build \
     -f docker/opengroundingdino/Dockerfile \
+    --ulimit nofile="$BUILD_ULIMIT_NOFILE" \
     --build-arg BASE_IMAGE="$BASE_IMAGE" \
     --build-arg PYTHON_VERSION="$PYTHON_VERSION" \
     --build-arg TORCH_INDEX_URL="$TORCH_INDEX_URL" \

@@ -13,6 +13,9 @@ TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/nightly/cu1
 TORCH_PRE="${TORCH_PRE:-1}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
 TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.6}"
+# Raise the build containers' open-file limit so uv's parallel bytecode
+# compilation doesn't fail with "Too many open files" on high-core hosts.
+BUILD_ULIMIT_NOFILE="${BUILD_ULIMIT_NOFILE:-1048576:1048576}"
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-1}"
 
 cd "$(dirname "$0")/../.."
@@ -35,6 +38,7 @@ ensure_submodule tpl/DEIMv2 tpl/DEIMv2/train.py
 
 docker build \
     -f docker/opengroundingdino/Dockerfile \
+    --ulimit nofile="$BUILD_ULIMIT_NOFILE" \
     --build-arg BASE_IMAGE="$BASE_IMAGE" \
     --build-arg PYTHON_VERSION="$PYTHON_VERSION" \
     --build-arg TORCH_INDEX_URL="$TORCH_INDEX_URL" \

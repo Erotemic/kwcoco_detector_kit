@@ -462,6 +462,9 @@ echo "  KCD_DISTRACTOR_CLASSES = ${KCD_DISTRACTOR_CLASSES:-<unset>}"
     --num_epochs "$KCD_NUM_EPOCHS" \
     --batch_size "$TOTAL_BATCH" \
     --val_batch_size "$TOTAL_VAL_BATCH" \
+    ${KCD_DO_EXPORT:+--do_export "$KCD_DO_EXPORT"} \
+    ${KCD_DO_EVAL:+--do_eval "$KCD_DO_EVAL"} \
+    ${KCD_DO_BENCH:+--do_bench "$KCD_DO_BENCH"} \
     ${KCD_RESUME_CKPT:+--resume "$KCD_RESUME_CKPT"} \
     ${KCD_FORCE_TRAIN:+--force_train "$KCD_FORCE_TRAIN"} \
     ${KCD_FORCE_EXPORT:+--force_export "$KCD_FORCE_EXPORT"} \

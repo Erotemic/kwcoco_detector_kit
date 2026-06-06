@@ -347,13 +347,8 @@ def _read_image_rgb(coco_img):
     # docstring's "uint8 ndarray" promise that the multiscale full-scale path
     # (which writes the array without an intervening imresize) relies on.
     if arr.dtype != np.uint8:
-        a = arr.astype(np.float32)
-        mx = float(a.max()) if a.size else 1.0
-        if mx <= 1.0:
-            a = a * 255.0
-        elif mx > 255.0:            # e.g. uint16
-            a = a * (255.0 / mx)
-        arr = a.clip(0, 255).astype(np.uint8)
+        import kwimage
+        arr = kwimage.ensure_uint255(arr)
     return np.ascontiguousarray(arr)
 
 

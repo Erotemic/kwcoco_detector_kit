@@ -184,6 +184,7 @@ def run_kwcoco_eval(
     tiled_overlap: float = 0.25,
     tiled_nms_thresh: float = 0.5,
     tiled_keep_full: bool = True,
+    device: str = "cpu",
 ) -> Path:
     """Score every image in `test_kwcoco` with the trained model; eval.
 
@@ -218,7 +219,7 @@ def run_kwcoco_eval(
         print(f"  reusing existing eval metrics: {metrics_fpath}")
         return metrics_fpath
 
-    predictor = trainer.build_predictor(workdir, device="cpu")
+    predictor = trainer.build_predictor(workdir, device=str(device))
 
     if bool(tiled_eval):
         # Windowed inference: slide native-resolution windows over each full

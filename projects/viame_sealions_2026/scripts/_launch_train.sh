@@ -472,6 +472,7 @@ echo "  KCD_DISTRACTOR_CLASSES = ${KCD_DISTRACTOR_CLASSES:-<unset>}"
     ${KCD_TILED_EVAL_WINDOW:+--tiled_eval_window "$KCD_TILED_EVAL_WINDOW"} \
     ${KCD_TILED_EVAL_OVERLAP:+--tiled_eval_overlap "$KCD_TILED_EVAL_OVERLAP"} \
     ${KCD_TILED_EVAL_NMS_THRESH:+--tiled_eval_nms_thresh "$KCD_TILED_EVAL_NMS_THRESH"} \
+    ${KCD_EVAL_DEVICE:+--eval_device "$KCD_EVAL_DEVICE"} \
     ${KCD_WDS_SHARDS_DPATH:+--train_wds_shards_dpath "$KCD_WDS_SHARDS_DPATH"} \
     ${KCD_WDS_EPOCH_LENGTH:+--train_wds_epoch_length "$KCD_WDS_EPOCH_LENGTH"} \
     ${KCD_WDS_SOURCE_TO_TARGET:+--train_wds_source_to_target "$KCD_WDS_SOURCE_TO_TARGET"} \

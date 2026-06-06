@@ -191,6 +191,12 @@ class SweepConfig(scfg.DataConfig):
         True, isflag=True,
         help="tiled-eval: also run one whole-image pass and merge it in "
              "(protects large-object recall).")
+    eval_device = scfg.Value(
+        "cpu",
+        help="device for the eval inference predictor ('cpu' or 'cuda'). "
+             "Default 'cpu' preserves prior behavior; set 'cuda' for tiled "
+             "eval, which runs many windows per image and is impractical on "
+             "CPU at scale.")
     keep_going = scfg.Value(True, isflag=True, help="continue past failed cells")
     do_export = scfg.Value(True, isflag=True, help="run ONNX export per cell")
     do_eval = scfg.Value(True, isflag=True, help="run kwcoco eval per cell")
@@ -453,7 +459,7 @@ def _run_eval(trainer, *, workdir: Path, test_kwcoco: str, kcd_root: Path,
               force: bool = False, distractor_classes=None,
               tiled_eval: bool = False, tiled_window=None,
               tiled_overlap: float = 0.25, tiled_nms_thresh: float = 0.5,
-              tiled_keep_full: bool = True) -> Path:
+              tiled_keep_full: bool = True, device: str = "cpu") -> Path:
     from kwcoco_detector_kit.eval.kwcoco_eval import run_kwcoco_eval
     return run_kwcoco_eval(
         trainer=trainer,
@@ -470,6 +476,7 @@ def _run_eval(trainer, *, workdir: Path, test_kwcoco: str, kcd_root: Path,
         tiled_overlap=tiled_overlap,
         tiled_nms_thresh=tiled_nms_thresh,
         tiled_keep_full=tiled_keep_full,
+        device=device,
     )
 
 
@@ -591,6 +598,7 @@ def run(config):
                         tiled_overlap=float(config.tiled_eval_overlap),
                         tiled_nms_thresh=float(config.tiled_eval_nms_thresh),
                         tiled_keep_full=bool(config.tiled_eval_keep_full),
+                        device=str(config.eval_device),
                     )
                 except Exception as ex:
                     row["status"] = "fail_eval"

@@ -166,6 +166,31 @@ class SweepConfig(scfg.DataConfig):
             "predictions don't count as positive sea-lion detections."
         ),
     )
+    tiled_eval = scfg.Value(
+        False, isflag=True,
+        help=(
+            "Run EVAL with windowed (tiled) inference instead of resizing each "
+            "whole image to the model input. Slides a native-resolution window "
+            "(default = model eval_spatial_size, i.e. the training tile size) "
+            "over each full image and merges per-window detections with NMS. "
+            "Closes the train/eval resolution gap for small objects (pups), "
+            "where whole-image resize shrinks them below detectability. Costs "
+            "more eval time (one forward pass per window) but does not change "
+            "training. See eval/tiled_predictor.py."
+        ),
+    )
+    tiled_eval_window = scfg.Value(
+        None, type=int,
+        help="tiled-eval window size (square, source px). Default: model eval_spatial_size.",
+    )
+    tiled_eval_overlap = scfg.Value(
+        0.25, help="tiled-eval fractional window overlap in [0, 0.9].")
+    tiled_eval_nms_thresh = scfg.Value(
+        0.5, help="tiled-eval cross-window NMS IoU threshold.")
+    tiled_eval_keep_full = scfg.Value(
+        True, isflag=True,
+        help="tiled-eval: also run one whole-image pass and merge it in "
+             "(protects large-object recall).")
     keep_going = scfg.Value(True, isflag=True, help="continue past failed cells")
     do_export = scfg.Value(True, isflag=True, help="run ONNX export per cell")
     do_eval = scfg.Value(True, isflag=True, help="run kwcoco eval per cell")
@@ -425,7 +450,10 @@ def _run_export(trainer, *, workdir: Path, cell, force: bool = False) -> Path:
 
 def _run_eval(trainer, *, workdir: Path, test_kwcoco: str, kcd_root: Path,
               candidate_id: str, category_names, score_thresh: float = 0.001,
-              force: bool = False, distractor_classes=None) -> Path:
+              force: bool = False, distractor_classes=None,
+              tiled_eval: bool = False, tiled_window=None,
+              tiled_overlap: float = 0.25, tiled_nms_thresh: float = 0.5,
+              tiled_keep_full: bool = True) -> Path:
     from kwcoco_detector_kit.eval.kwcoco_eval import run_kwcoco_eval
     return run_kwcoco_eval(
         trainer=trainer,
@@ -437,6 +465,11 @@ def _run_eval(trainer, *, workdir: Path, test_kwcoco: str, kcd_root: Path,
         score_thresh=score_thresh,
         force=force,
         distractor_classes=distractor_classes,
+        tiled_eval=tiled_eval,
+        tiled_window=tiled_window,
+        tiled_overlap=tiled_overlap,
+        tiled_nms_thresh=tiled_nms_thresh,
+        tiled_keep_full=tiled_keep_full,
     )
 
 
@@ -553,6 +586,11 @@ def run(config):
                         category_names=_parse_category_names(config.category_names),
                         force=bool(config.force_eval),
                         distractor_classes=distractors,
+                        tiled_eval=bool(config.tiled_eval),
+                        tiled_window=config.tiled_eval_window,
+                        tiled_overlap=float(config.tiled_eval_overlap),
+                        tiled_nms_thresh=float(config.tiled_eval_nms_thresh),
+                        tiled_keep_full=bool(config.tiled_eval_keep_full),
                     )
                 except Exception as ex:
                     row["status"] = "fail_eval"

@@ -179,6 +179,11 @@ def run_kwcoco_eval(
     score_thresh: float = 0.001,
     force: bool = False,
     distractor_classes=None,
+    tiled_eval: bool = False,
+    tiled_window=None,
+    tiled_overlap: float = 0.25,
+    tiled_nms_thresh: float = 0.5,
+    tiled_keep_full: bool = True,
 ) -> Path:
     """Score every image in `test_kwcoco` with the trained model; eval.
 
@@ -214,6 +219,29 @@ def run_kwcoco_eval(
         return metrics_fpath
 
     predictor = trainer.build_predictor(workdir, device="cpu")
+
+    if bool(tiled_eval):
+        # Windowed inference: slide native-resolution windows over each full
+        # image and merge, instead of resizing the whole image to the model
+        # input. Closes the train/eval resolution gap for small objects (see
+        # eval/tiled_predictor.py). The window defaults to the model's
+        # eval_spatial_size (= training tile size).
+        from kwcoco_detector_kit.eval.tiled_predictor import TiledPredictor
+        window = tiled_window
+        if window is not None and not (isinstance(window, (list, tuple)) and len(window) == 2):
+            window = (int(window), int(window))
+        predictor = TiledPredictor(
+            predictor,
+            window=window,
+            overlap=float(tiled_overlap),
+            nms_thresh=float(tiled_nms_thresh),
+            keep_full=bool(tiled_keep_full),
+        )
+        print(
+            f"  eval: TILED inference window={predictor._window} "
+            f"overlap={tiled_overlap} nms={tiled_nms_thresh} "
+            f"keep_full={tiled_keep_full}"
+        )
 
     true = kwcoco.CocoDataset.coerce(str(test_kwcoco))
     pred = kwcoco.CocoDataset()

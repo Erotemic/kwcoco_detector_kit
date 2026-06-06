@@ -79,10 +79,53 @@ mAP against arisia's 640px 2589 at matched epochs. If AP-small lifts
 materially, resolution is confirmed as the lever and we scale further /
 add tiled eval.
 
-## Open question to resolve before the big run
+## RESOLVED: the official selection metric is ALSO whole-image at 640
 
-Does the kit's sweep eval (the one producing the official detection AP
-selection metric) also run whole-image at 640? If yes, both the COCO
-mAP shown here and the official selection number are gated by the same
-mismatch, and tiled eval becomes the cheapest global win — independent
-of the Blackwell resolution experiment.
+Traced the kit's `sweep` eval path (2026-06-06):
+
+- `sweep` → `pareto_sweep._run_eval` → `eval/kwcoco_eval.run_kwcoco_eval`.
+- `kwcoco_eval.py:171-359` loops over each test image, reads the whole
+  image (`coco_img.imdelay().finalize()`), and calls
+  `predictor.predict_image(arr, (W, H))` **once per whole image**.
+- `trainers/deimv2.py:717-750` `predict_image()` resizes the whole image
+  to `eval_spatial_size` (= the train `input_hw`, currently 640×640) and
+  runs a **single forward pass**. There is NO sliding-window / tiled
+  inference anywhere in the predict or eval path (the only
+  "sliding-window" code is in `data/tile.py`, the *training* tile builder).
+- The NFS-excluded selection metric (`detect_metrics.NFS.json`, produced
+  by `_rerun_eval_dropping_distractors`, kwcoco_eval.py:100-168) is
+  computed from exactly these whole-image-at-640 detections.
+
+So the **official detection-AP selection criterion is gated by the same
+train/eval mismatch** — not just the DEIMv2 internal COCO mAP. Every
+gen001-gen005 selection number understates small-object (pup) capability.
+
+### Two independent, both-worth-doing fixes
+
+1. **Tiled / windowed eval (kit change, machine-agnostic) — highest
+   leverage.** Slide a 640 window over the full image at inference, merge
+   with cross-tile NMS, matching the training tile resolution. Does not
+   exist yet; `predict_image` would need a windowed wrapper (the geometry
+   already exists in `data/tile.py:262` `_slider_positions`). This is the
+   structural fix: at whole-image-640 a 46px pup is ~7px; in a 640 window
+   at native scale it stays 46px.
+
+2. **Higher-resolution train+eval (Blackwell lever).** `eval_spatial_size`
+   is synchronized to train `input_hw`, so training at 1280 also evals
+   whole-image at 1280 — a 46px pup becomes ~15px instead of ~7px. Helps,
+   but is a *partial* fix on its own because whole-image inference of a
+   multi-thousand-px aerial still downsamples. Best combined with (1).
+
+### Rebuilding tiles on aiq-gpu: use the new `tile-corpus` builder
+
+Commit `0d3f3e1` added `kwcoco-detector-kit tile-corpus <src> <dst>
+--spec spec.yaml`, which composes multiple `tile` passes (full_only @
+`full_dim`, quadrant NxN, multiscale) into one unioned training bundle
+with absolute image paths. This is the clean way to build a richer,
+higher-resolution training corpus on aiq-gpu (we have SSD headroom).
+Tile robustness fixes `5d168d8` / `9c61218` (contiguous uint8 RGB,
+`ensure_uint255`) are in the current image — a rebuild picks them up.
+The current cache `b9540ace` is `multiscale, scales=1.0,0.5,
+tile_size=640`; a Blackwell corpus would add a `full_only @1280` pass
+and/or `quadrant` to cover the apparent-scale range a higher-res model
+sees.

@@ -192,15 +192,26 @@ def _imwrite(fpath: Path, image, ext: str, jpeg_quality: int):
     """Write image with cv2's flat params= form (failure #3 — imwrite_params is not a kwarg)."""
     import kwimage
 
-    if ext.lower() in (".jpg", ".jpeg"):
-        import cv2
+    try:
+        if ext.lower() in (".jpg", ".jpeg"):
+            import cv2
 
-        kwimage.imwrite(
-            str(fpath), image,
-            params=[int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)],
-        )
-    else:
-        kwimage.imwrite(str(fpath), image)
+            kwimage.imwrite(
+                str(fpath), image,
+                params=[int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)],
+            )
+        else:
+            kwimage.imwrite(str(fpath), image)
+    except Exception as ex:
+        import numpy as np
+        shp = getattr(image, "shape", None)
+        dt = getattr(image, "dtype", None)
+        contig = getattr(getattr(image, "flags", None), "c_contiguous", None)
+        raise IOError(
+            f"tile write failed for {fpath}: {type(ex).__name__}: {ex}; "
+            f"image shape={shp} dtype={dt} c_contiguous={contig} "
+            f"(expected contiguous uint8 HxWx3 — see _read_image_rgb)"
+        ) from ex
 
 
 def _clip_bbox_xywh(bbox, x0, y0, x1, y1, min_keep_fraction):
@@ -330,7 +341,15 @@ def _read_image_rgb(coco_img):
         arr = np.repeat(arr[..., None], 3, axis=-1)
     if arr.shape[2] == 4:
         arr = arr[..., :3]
-    return arr
+    # Coerce to 8-bit so the JPEG/PNG writer never gets a float/uint16 array
+    # (the no-gdal `finalize()` fallback can return float), and make it
+    # C-contiguous so cv2's writer never rejects a slice view. This keeps the
+    # docstring's "uint8 ndarray" promise that the multiscale full-scale path
+    # (which writes the array without an intervening imresize) relies on.
+    if arr.dtype != np.uint8:
+        import kwimage
+        arr = kwimage.ensure_uint255(arr)
+    return np.ascontiguousarray(arr)
 
 
 def _dump_kwcoco(out: dict, dst_fpath: Path):

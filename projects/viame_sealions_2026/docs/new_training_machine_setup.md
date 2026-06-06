@@ -442,6 +442,13 @@ docker run --rm --gpus all kwcoco-detector-kit:ogdino-cu132-aiq \
   2>/dev/null || echo "NOTE: run a 1-step train smoke instead if import path differs"
 ```
 
+> **"Too many open files (os error 24)" during the build.** uv compiles
+> bytecode in parallel across all 128 cores, exhausting the default
+> `nofile` soft limit (1024). The build scripts now pass
+> `--ulimit nofile=1048576:1048576` to `docker build` to fix this. If
+> your daemon rejects that hard limit, lower it:
+> `BUILD_ULIMIT_NOFILE=65536:65536 bash docker/opengroundingdino/build_aiq_cuda132_blackwell.sh`.
+
 ### A.2 Storage layout
 
 `/data` is a **37T HDD RAID** — fine for the corpus imagery (read-once,

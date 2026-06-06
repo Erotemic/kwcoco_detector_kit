@@ -191,6 +191,13 @@ def _resize_image_to_scale(image, scale: float):
 def _imwrite(fpath: Path, image, ext: str, jpeg_quality: int):
     """Write image with cv2's flat params= form (failure #3 — imwrite_params is not a kwarg)."""
     import kwimage
+    import numpy as np
+
+    # cv2's writer rejects non-contiguous arrays. Tiles are frequently numpy
+    # slice views of a larger image (multiscale cuts fixed-size tiles straight
+    # from the scaled source with no intervening imresize), so force a
+    # contiguous copy here — covers every caller/mode.
+    image = np.ascontiguousarray(image)
 
     try:
         if ext.lower() in (".jpg", ".jpeg"):

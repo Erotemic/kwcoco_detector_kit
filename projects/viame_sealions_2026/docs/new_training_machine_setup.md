@@ -73,7 +73,7 @@ cd ~/code   # or wherever you keep checkouts
 
 # Full clone with both submodules (DEIMv2 + kwcoco_dataloader)
 git clone --recurse-submodules \
-    git@github.com:Kitware/kwcoco_detector_kit.git
+    https://github.com/Erotemic/kwcoco_detector_kit.git
 
 cd kwcoco_detector_kit
 
@@ -389,3 +389,128 @@ has the same TILE_HASH, just rsync the cache instead of rebuilding:
 rsync -avhP arisia:/data/users/jon.crall/kcd_sealion/tile_cache/_universal/<TILE_HASH>/ \
     /data/users/$USER/kcd_sealion/tile_cache/_universal/<TILE_HASH>/
 ```
+
+---
+
+## Appendix A — host profile: aiq-gpu
+
+Recorded 2026-06-06. This is a dedicated (non-shared) box, much more
+powerful than arisia.
+
+| Component | aiq-gpu | arisia (for contrast) |
+|-----------|---------|-----------------------|
+| GPU | 4× RTX PRO 6000 Blackwell Max-Q | 4× (Ampere) |
+| VRAM/GPU | **96 GB** (97887 MiB) | ~40 GB |
+| Compute cap | **12.0 (sm_120)** | 8.6 |
+| Driver | 595.58.03 | 595.58.03 |
+| CUDA toolkit | 13.2 (nvcc on PATH) | 13.2 |
+| CPU | AMD EPYC 9554, 64C/128T | — |
+| RAM | 251 GB | — |
+| Fast storage | `nvme0n1` 1.7T (`/`, 1.3T free), `nvme1n1` 3.5T (unmounted SSD) | SSD |
+| Bulk storage | `/data` = `md0` 37T HDD RAID (26T free) | — |
+
+### A.1 Build the Docker image
+
+aiq-gpu's CUDA/driver match arisia's cu132 profile exactly, but the
+Blackwell GPUs are **sm_120**, not Ampere sm_86. Use the dedicated
+Blackwell build script (it sets `TORCH_CUDA_ARCH_LIST=12.0`):
+
+```bash
+cd ~/code/kwcoco_detector_kit
+bash docker/opengroundingdino/build_aiq_cuda132_blackwell.sh
+```
+
+`build_auto.sh` now also auto-detects the arch list from
+`nvidia-smi --query-gpu=compute_cap`, so this works too and produces
+the same kernels:
+
+```bash
+bash docker/opengroundingdino/build_auto.sh   # detects sm_120 automatically
+```
+
+Smoke-test that the compiled ops actually have a Blackwell kernel:
+
+```bash
+docker run --rm --gpus all kwcoco-detector-kit:ogdino-cu132-aiq python3 -c \
+  "import torch; print(torch.__version__, torch.cuda.get_device_capability())"
+# expect: (12, 0)
+
+# Exercise the custom MultiScaleDeformableAttention op (the one most
+# likely to be missing an sm_120 kernel if the arch list was wrong):
+docker run --rm --gpus all kwcoco-detector-kit:ogdino-cu132-aiq \
+  python3 -c "import torch; from MultiScaleDeformableAttention import ms_deform_attn_forward; print('msda op OK')" \
+  2>/dev/null || echo "NOTE: run a 1-step train smoke instead if import path differs"
+```
+
+### A.2 Storage layout
+
+`/data` is a **37T HDD RAID** — fine for the corpus imagery (read-once,
+sequential) but slow for the random-access tile cache. The fast storage
+is the NVMe drives. Two options:
+
+- **Simplest:** put everything under the root NVMe. The tile cache is
+  ~114 GB and `/` has 1.3 TB free, so it fits with room to spare.
+
+  ```bash
+  export KCD_DATA_ROOT=/data/users/$USER          # if /data/users is on /
+  # OR keep work area on root NVMe explicitly:
+  mkdir -p /opt/kcd/$USER/kcd_sealion/tile_cache
+  export KCD_TRAINING_ROOT=/opt/kcd/$USER/kcd_sealion
+  ```
+
+- **Most headroom:** mount the spare 3.5T `nvme1n1` SSD and put the
+  tile cache + runs there.
+
+  ```bash
+  sudo mkfs.ext4 /dev/nvme1n1        # ONLY if blank — check `lsblk -f` first
+  sudo mkdir -p /ssd-data
+  sudo mount /dev/nvme1n1 /ssd-data
+  sudo chown $USER:$USER /ssd-data
+  mkdir -p /ssd-data/kcd_sealion/tile_cache
+  export KCD_TRAINING_ROOT=/ssd-data/kcd_sealion
+  ```
+
+Put the **corpus imagery on `/data`** (HDD RAID, plenty of space):
+
+```bash
+export KCD_DATA_DPATH=/data/Public/VIAME/viame_sealions_2026
+```
+
+### A.3 Rsync the tile cache + corpus from arisia
+
+Since aiq-gpu's tile params will resolve to the same TILE_HASH
+(`paths.sh` defaults are host-independent), copy the prebuilt cache
+rather than recomputing:
+
+```bash
+# On aiq-gpu — corpus bundles + imagery to the HDD RAID
+rsync -avhP arisia:/data/Public/VIAME/viame_sealions_2026/unpacked/ \
+    /data/Public/VIAME/viame_sealions_2026/unpacked/
+
+# Tile cache to the fast NVMe (adjust dest to wherever KCD_TRAINING_ROOT points)
+rsync -avhP arisia:/data/users/jon.crall/kcd_sealion/tile_cache/_universal/ \
+    "$KCD_TRAINING_ROOT/tile_cache/_universal/"
+
+# Pretrained checkpoints
+rsync -avhP arisia:/data/users/jon.crall/pretrained_models/ \
+    /data/users/$USER/pretrained_models/
+```
+
+### A.4 Right-sizing for 96 GB Blackwell GPUs
+
+arisia's gen005 recipe uses `per_gpu_batch=8` at 640 px because its
+~40 GB cards OOM higher (dinov3_s peaks ~11 GB at batch 8, but Mosaic
+augmentation and EMA push the watermark up). aiq-gpu has **96 GB/GPU
+and 4 dedicated GPUs**, so there's large headroom to test:
+
+- **Bigger per-GPU batch** (16 → 32+) for faster epochs / better BN-free
+  stability. Scale LR with batch.
+- **Higher input resolution** (640 → 896/1024) — pups are the binding
+  constraint (median ~46 px) and resolution directly helps small-object
+  recall. This is the most promising lever to test here.
+- **Larger backbone** (dinov3_s → dinov3_b/l) if S-tier saturates.
+- **No shared-node budget caps** — drop the `KCD_CPUS_PER_TASK=2`/
+  `KCD_MEM=24G` arisia courtesy limits; the EPYC has 128 threads.
+
+These are candidates to discuss before committing a run — the cluster's
+value is testing the resolution/capacity axis that arisia couldn't fit.

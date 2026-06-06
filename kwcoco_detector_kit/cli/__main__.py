@@ -123,6 +123,7 @@ def _register_module(name, module):
 # Register each module's CLI under its kebab-case command name.
 def _register_subcommands():
     import kwcoco_detector_kit.data.tile as _tile
+    import kwcoco_detector_kit.data.tile_corpus as _tile_corpus
     import kwcoco_detector_kit.data.merge as _merge
     import kwcoco_detector_kit.data.mine as _mine
     import kwcoco_detector_kit.data.tile_store as _tile_store
@@ -140,6 +141,7 @@ def _register_subcommands():
     import kwcoco_detector_kit.predict as _predict
 
     _register_module("tile", _tile)
+    _register_module("tile-corpus", _tile_corpus)
     _register_module("merge", _merge)
     _register_module("mine", _mine)
     _register_module("convert-store", _tile_store)   # Phase 3

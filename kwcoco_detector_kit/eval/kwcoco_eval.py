@@ -383,18 +383,34 @@ def run_kwcoco_eval(
             f"  eval: dropped {dropped_unknown_label} detections with "
             f"label outside [0, {n_labels})"
         )
+    # The phases after the scoring loop are silent and can be slow — tiled
+    # eval writes many detections/image, so the dump + bbox-filter copies
+    # are O(n_predictions). Announce each with a timer so "scoring 100%"
+    # isn't followed by a long unexplained stall.
+    import time as _t2
+    _npred = pred.n_annots
+    print(f"  eval: writing {_npred} predictions -> {Path(pred.fpath).name} "
+          f"(large for tiled eval; this can take a while) ...", flush=True)
+    _m = _t2.perf_counter()
     pred.dump()
+    print(f"  eval: wrote predictions in {_t2.perf_counter() - _m:.0f}s", flush=True)
 
+    print("  eval: filtering to bbox-only detections (true + pred) ...", flush=True)
+    _m = _t2.perf_counter()
     true_filtered, true_kept, true_dropped = filter_bbox_only_kwcoco(
         test_kwcoco, eval_root / "true_bbox_only.kwcoco.zip")
     pred_filtered, pred_kept, pred_dropped = filter_bbox_only_kwcoco(
         pred.fpath, eval_root / "pred_boxes_bbox_only.kwcoco.zip")
+    print(f"  eval: bbox filter done in {_t2.perf_counter() - _m:.0f}s", flush=True)
     if true_dropped or pred_dropped:
         print(
             "  eval bbox filter: "
             f"true kept={true_kept} dropped={true_dropped}; "
             f"pred kept={pred_kept} dropped={pred_dropped}"
         )
+
+    print(f"  eval: computing detection metrics over {_npred} predictions "
+          f"(kwcoco eval: assign + AP) ...", flush=True)
 
     cmd = [
         sys.executable, "-m", "kwcoco", "eval",

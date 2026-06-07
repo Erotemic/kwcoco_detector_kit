@@ -266,23 +266,14 @@ def run_kwcoco_eval(
         pred.add_image(**new, id=img["id"])
 
     dropped_unknown_label = 0
+    import ubelt as ub
     _gids = list(true.images())
-    _n_imgs = len(_gids)
-    # Print often enough that progress is visible early (tiled eval can be
-    # seconds/image): every ~2% but at most every 10 images, and always the
-    # first 3 so a slow first-image warmup doesn't look like a hang. Each line
-    # carries elapsed/rate/ETA so "is it moving" is answerable at a glance.
-    import time as _time
-    _progress_every = max(1, min(10, _n_imgs // 50))
-    _t0 = _time.time()
-    for _i, gid in enumerate(_gids):
-        if _i < 3 or _i % _progress_every == 0 or _i == _n_imgs - 1:
-            _el = _time.time() - _t0
-            _rate = (_i / _el) if (_i and _el > 0) else 0.0
-            _eta = ((_n_imgs - _i) / _rate) if _rate > 0 else 0.0
-            print(f"  eval: scoring image {_i + 1}/{_n_imgs}  "
-                  f"({_el:.0f}s elapsed, {_rate:.1f} img/s, eta {_eta:.0f}s)",
-                  flush=True)
+    # ProgIter handles cadence/rate/eta. verbose=3 -> newline-per-update
+    # (clearline off) so the stream tees/logs cleanly instead of rewriting
+    # one line. Tiled eval can be seconds/image, so a steady heartbeat
+    # confirms liveness.
+    for gid in ub.ProgIter(_gids, total=len(_gids), desc="eval: scoring",
+                           verbose=3):
         coco_img = true.coco_image(gid)
         try:
             arr = coco_img.imdelay().finalize()

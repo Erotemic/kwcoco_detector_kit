@@ -197,6 +197,13 @@ class SweepConfig(scfg.DataConfig):
              "Default 'cpu' preserves prior behavior; set 'cuda' for tiled "
              "eval, which runs many windows per image and is impractical on "
              "CPU at scale.")
+    tiled_eval_batch = scfg.Value(
+        64, help="tiled-eval: windows scored per GPU forward pass. Raise to "
+                 "fill GPU memory (eval is often <2GB at 16); lower if OOM.")
+    eval_read_workers = scfg.Value(
+        4, help="background threads that decode upcoming eval images so the "
+                "GPU isn't starved by HDD/JPEG decode between inference "
+                "spikes. 0 = sequential read.")
     keep_going = scfg.Value(True, isflag=True, help="continue past failed cells")
     do_export = scfg.Value(True, isflag=True, help="run ONNX export per cell")
     do_eval = scfg.Value(True, isflag=True, help="run kwcoco eval per cell")
@@ -459,7 +466,8 @@ def _run_eval(trainer, *, workdir: Path, test_kwcoco: str, kcd_root: Path,
               force: bool = False, distractor_classes=None,
               tiled_eval: bool = False, tiled_window=None,
               tiled_overlap: float = 0.25, tiled_nms_thresh: float = 0.5,
-              tiled_keep_full: bool = True, device: str = "cpu") -> Path:
+              tiled_keep_full: bool = True, tiled_batch: int = 64,
+              read_workers: int = 4, device: str = "cpu") -> Path:
     from kwcoco_detector_kit.eval.kwcoco_eval import run_kwcoco_eval
     return run_kwcoco_eval(
         trainer=trainer,
@@ -476,6 +484,8 @@ def _run_eval(trainer, *, workdir: Path, test_kwcoco: str, kcd_root: Path,
         tiled_overlap=tiled_overlap,
         tiled_nms_thresh=tiled_nms_thresh,
         tiled_keep_full=tiled_keep_full,
+        tiled_batch=tiled_batch,
+        read_workers=read_workers,
         device=device,
     )
 
@@ -598,6 +608,8 @@ def run(config):
                         tiled_overlap=float(config.tiled_eval_overlap),
                         tiled_nms_thresh=float(config.tiled_eval_nms_thresh),
                         tiled_keep_full=bool(config.tiled_eval_keep_full),
+                        tiled_batch=int(config.tiled_eval_batch),
+                        read_workers=int(config.eval_read_workers),
                         device=str(config.eval_device),
                     )
                 except Exception as ex:

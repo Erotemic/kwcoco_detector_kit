@@ -25,6 +25,42 @@ def _valid_detection_bbox(bbox) -> bool:
     return all(v is not None for v in bbox)
 
 
+def _iter_prefetched(items, read_fn, workers, ahead=None):
+    """Yield ``(item, read_fn(item))`` in order, decoding ahead on threads.
+
+    Keeps up to ``ahead`` reads in flight so slow per-item I/O (JPEG decode
+    off HDD) overlaps with whatever the consumer does between yields (GPU
+    inference). Order is preserved. ``workers<=0`` falls back to a plain
+    sequential read with no threads.
+    """
+    if workers is None or workers <= 0:
+        for it in items:
+            yield it, read_fn(it)
+        return
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor
+    if ahead is None:
+        ahead = 2 * workers
+    ahead = max(ahead, 1)
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        pending = deque()
+        src = iter(items)
+        for _ in range(ahead):
+            try:
+                nxt = next(src)
+            except StopIteration:
+                break
+            pending.append((nxt, ex.submit(read_fn, nxt)))
+        while pending:
+            item, fut = pending.popleft()
+            try:
+                nxt = next(src)
+                pending.append((nxt, ex.submit(read_fn, nxt)))
+            except StopIteration:
+                pass
+            yield item, fut.result()
+
+
 def filter_bbox_only_kwcoco(src_fpath, dst_fpath) -> Tuple[Path, int, int]:
     """Write a copy of ``src_fpath`` with non-detection annotations removed.
 
@@ -184,6 +220,8 @@ def run_kwcoco_eval(
     tiled_overlap: float = 0.25,
     tiled_nms_thresh: float = 0.5,
     tiled_keep_full: bool = True,
+    tiled_batch: int = 64,
+    read_workers: int = 4,
     device: str = "cpu",
 ) -> Path:
     """Score every image in `test_kwcoco` with the trained model; eval.
@@ -237,11 +275,12 @@ def run_kwcoco_eval(
             overlap=float(tiled_overlap),
             nms_thresh=float(tiled_nms_thresh),
             keep_full=bool(tiled_keep_full),
+            batch_size=int(tiled_batch),
         )
         print(
             f"  eval: TILED inference window={predictor._window} "
             f"overlap={tiled_overlap} nms={tiled_nms_thresh} "
-            f"keep_full={tiled_keep_full}"
+            f"keep_full={tiled_keep_full} batch={tiled_batch}"
         )
 
     true = kwcoco.CocoDataset.coerce(str(test_kwcoco))
@@ -268,17 +307,27 @@ def run_kwcoco_eval(
     dropped_unknown_label = 0
     import ubelt as ub
     _gids = list(true.images())
+
+    # Decode is HDD/JPEG-bound and leaves the GPU idle between inference
+    # spikes. Prefetch upcoming images on worker threads (libjpeg/gdal
+    # release the GIL during decode) so the next image is ready when the
+    # current one finishes scoring — fills the idle gaps without changing
+    # scoring order. read_workers<=0 disables (sequential read).
+    def _read(_gid):
+        try:
+            return true.coco_image(_gid).imdelay().finalize()
+        except Exception as ex:  # surfaced in the loop, same as before
+            return ex
+
     # ProgIter handles cadence/rate/eta. verbose=3 -> newline-per-update
     # (clearline off) so the stream tees/logs cleanly instead of rewriting
     # one line. Tiled eval can be seconds/image, so a steady heartbeat
     # confirms liveness.
-    for gid in ub.ProgIter(_gids, total=len(_gids), desc="eval: scoring",
-                           verbose=3):
-        coco_img = true.coco_image(gid)
-        try:
-            arr = coco_img.imdelay().finalize()
-        except Exception as ex:
-            print(f"  eval: failed to read gid {gid}: {ex}")
+    _iter = _iter_prefetched(_gids, _read, int(read_workers))
+    for gid, arr in ub.ProgIter(_iter, total=len(_gids), desc="eval: scoring",
+                                verbose=3):
+        if isinstance(arr, BaseException):
+            print(f"  eval: failed to read gid {gid}: {arr}")
             continue
         H, W = arr.shape[:2]
         detections = predictor.predict_image(arr, (W, H))

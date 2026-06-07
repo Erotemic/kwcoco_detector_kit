@@ -47,6 +47,33 @@ while IFS= read -r v; do
     [ -n "$val" ] && ENV_FLAGS+=(-e "$v=$val")
 done < <(compgen -v | grep -E '^KCD_' | sort -u)
 
+# Some hosts put the tile cache / training root on a separate disk that's
+# symlinked into /data (aiq-gpu: .../kcd_sealion/ssd-data -> /home/.../ssd-data).
+# The literal path is visible through the /data mount, but the symlink TARGET
+# isn't mounted, so it dangles inside the container (mkdir -p fails). Mount
+# each symlinked backing path at its real location so the link resolves.
+EXTRA_MOUNTS=()
+_kcd_mount_real() {
+    local p real
+    p="$1"
+    [ -z "$p" ] && return 0
+    real="$(readlink -f "$p" 2>/dev/null || true)"
+    [ -z "$real" ] && return 0
+    [ "$real" = "$p" ] && return 0          # not symlinked; already covered
+    case "$real/" in
+        "$KCD_DATA_ROOT"/*|"$KCD_DATA_DPATH"/*) return 0 ;;  # under a mounted root
+    esac
+    # de-dup
+    local m
+    for m in "${EXTRA_MOUNTS[@]:-}"; do
+        [ "$m" = "$real:$real" ] && return 0
+    done
+    EXTRA_MOUNTS+=(-v "$real:$real")
+    echo "  symlink mount: $p -> $real"
+}
+_kcd_mount_real "${KCD_TILE_CACHE_DPATH:-}"
+_kcd_mount_real "${KCD_TRAINING_ROOT:-}"
+
 # Dev-mount host code over the baked image copies (no rebuild needed).
 DEV_MOUNTS=()
 if [ "${KCD_DEV_MOUNT_KIT:-0}" = "1" ]; then
@@ -74,6 +101,7 @@ docker run --rm \
     -v "$KCD_DATA_ROOT:$KCD_DATA_ROOT" \
     -v "$KCD_DATA_DPATH:$KCD_DATA_DPATH" \
     -v "$KCD_REPO_ROOT:$KCD_REPO_ROOT" \
+    "${EXTRA_MOUNTS[@]}" \
     "${DEV_MOUNTS[@]}" \
     -w "$KCD_REPO_ROOT" \
     "$KCD_IMAGE" \

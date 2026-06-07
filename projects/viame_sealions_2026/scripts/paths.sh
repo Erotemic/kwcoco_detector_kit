@@ -208,3 +208,69 @@ kcd_require_init_checkpoint() {
         return 1
     fi
 }
+
+# Compute the universal tile-cache hash for the current KCD_TILE_* config.
+# MUST match the body hashed in _launch_train.sh / _launch_tiles.sh exactly.
+# The writer fingerprint needs the kit python; if it can't be imported
+# (e.g. a host shell without the kit installed) this echoes nothing so
+# callers fall back rather than computing a WRONG hash. In-container the
+# kit is always importable, so this is exact there.
+kcd_tile_hash() {
+    local fp body
+    fp="$(python3 -c "from kwcoco_detector_kit.data import tile; print('v{}:{}'.format(getattr(tile,'_TILE_WRITER_VERSION',1), ','.join(sorted(tile._PASSTHROUGH_ANN_FIELDS))))" 2>/dev/null)" || return 0
+    [ -z "$fp" ] && return 0
+    body="$(printf '%s\n' \
+        "tile_mode=${KCD_TILE_MODE:-multiscale}" \
+        "tile_size=${KCD_TILE_SIZE}" \
+        "source_scales=${KCD_TILE_SOURCE_SCALES}" \
+        "stride_frac=${KCD_TILE_STRIDE_FRAC}" \
+        "min_gt_area_frac=${KCD_TILE_MIN_GT_AREA_FRAC}" \
+        "min_keep_fraction=${KCD_TILE_MIN_KEEP_FRACTION}" \
+        "oversize_factor=${KCD_TILE_OVERSIZE_FACTOR}" \
+        "keep_negative=${KCD_TILE_KEEP_NEGATIVE}" \
+        "category_names=${KCD_TILE_CATEGORY_NAMES:-sealion}" \
+        "writer_passthrough=${fp}")"
+    printf '%s' "$body" | sha1sum | cut -c1-8
+}
+
+# Host-side pre-flight for a TRAINING run: the corpus bundles and the tile
+# cache. Reliable bundle checks (plain paths) always run; the tile-cache
+# check is exact when kcd_tile_hash can be computed, else best-effort
+# (cache root must exist; the container does the authoritative check).
+# Skips the tile-cache check for WebDataset runs. Call BEFORE docker/sbatch.
+kcd_require_train_inputs() {
+    local rc=0
+    kcd_require_path "universal train bundle" "${KCD_UNIVERSAL_TRAIN_KWCOCO:-}" || rc=1
+    kcd_require_path "universal vali bundle"  "${KCD_UNIVERSAL_VALI_KWCOCO:-}"  || rc=1
+    kcd_require_path "universal test bundle"  "${KCD_UNIVERSAL_TEST_KWCOCO:-}"  || rc=1
+    [ "${KCD_USE_WEBDATASET:-0}" = "1" ] && return "$rc"
+
+    local uni="${KCD_TILE_CACHE_DPATH:-}/_universal"
+    local hash
+    hash="$(kcd_tile_hash)"
+    if [ -n "$hash" ]; then
+        if [ ! -f "$uni/$hash/tiles.kwcoco.zip" ]; then
+            echo "ERROR: tile cache for this config not found:" >&2
+            echo "  expected: $uni/$hash/tiles.kwcoco.zip" >&2
+            echo "  KCD_TILE_CACHE_DPATH=${KCD_TILE_CACHE_DPATH:-<unset>}" >&2
+            if [ -d "$uni" ]; then
+                echo "  hashes present under cache root: $(ls "$uni" 2>/dev/null | tr '\n' ' ')" >&2
+                echo "  -> wrong KCD_TILE_CACHE_DPATH (e.g. point it at the SSD), or" >&2
+                echo "     build/rsync this hash." >&2
+            else
+                echo "  cache root missing; set KCD_TILE_CACHE_DPATH (e.g. the SSD) or build it:" >&2
+                echo "    bash projects/viame_sealions_2026/scripts/submit_build_tiles.sh" >&2
+            fi
+            rc=1
+        fi
+    elif [ ! -d "$uni" ]; then
+        echo "ERROR: tile cache root not found: $uni" >&2
+        echo "  set KCD_TILE_CACHE_DPATH (e.g. the SSD) or build it:" >&2
+        echo "    bash projects/viame_sealions_2026/scripts/submit_build_tiles.sh" >&2
+        rc=1
+    else
+        echo "NOTE: kit not importable on host; exact tile-hash check deferred" >&2
+        echo "  to the container (cache root $uni exists)." >&2
+    fi
+    return "$rc"
+}

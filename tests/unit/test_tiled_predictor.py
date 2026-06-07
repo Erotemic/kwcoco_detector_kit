@@ -112,22 +112,25 @@ def test_max_dets_caps_top_k_by_score():
     img = np.zeros((256, 256, 3), dtype=np.uint8)  # 16 windows -> 16 dets
     dets = pred.predict_image(img, (256, 256))
     assert len(dets) == 2  # capped
-    # all kept are the max score the fake emits (0.9), and sorted desc
-    assert all(d["score"] == 0.9 for d in dets)
+    # all kept are the max score the fake emits (0.9); float32 round-trip
+    assert all(abs(d["score"] - 0.9) < 1e-4 for d in dets)
 
 
 def test_reduce_window_floor_and_topk():
+    import kwimage
+    from kwcoco_detector_kit.eval.tiled_predictor import _to_detections
     base = _FakeWindowDetector((64, 64))
     pred = TiledPredictor(base, per_window_nms=False,
                           pre_nms_score_thresh=0.05, pre_nms_topk=2)
-    dets = [
+    det = _to_detections([
         {"label": 0, "score": 0.001, "bbox_xyxy": [0, 0, 5, 5]},     # below floor
         {"label": 0, "score": 0.9, "bbox_xyxy": [100, 100, 110, 110]},
         {"label": 0, "score": 0.6, "bbox_xyxy": [200, 200, 210, 210]},
         {"label": 0, "score": 0.3, "bbox_xyxy": [300, 300, 310, 310]},  # dropped by topk=2
-    ]
-    out = pred._reduce_window(dets)
-    assert sorted(d["score"] for d in out) == [0.6, 0.9]
+    ])
+    out = pred._reduce_window(det)
+    got = sorted(round(float(s), 2) for s in out.scores)
+    assert got == [0.6, 0.9]
 
 
 def test_nms_indices_suppresses_overlap():

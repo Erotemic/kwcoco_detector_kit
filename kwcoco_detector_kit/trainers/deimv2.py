@@ -787,8 +787,10 @@ class DEIMv2Predictor:
                 own pixel frame, matching predict_image's contract.
 
         Returns:
-            list (len == len(images_np)) of detection lists, same dict shape
-            as predict_image.
+            list (len == len(images_np)) of ``kwimage.Detections`` — one per
+            crop, columnar (boxes/scores/class_idxs as arrays). Built straight
+            from the model output tensors with no per-detection Python dicts,
+            so the windowed evaluator can offset/merge/NMS them vectorized.
         """
         import kwimage
         import numpy as np
@@ -814,20 +816,17 @@ class DEIMv2Predictor:
         batch = torch.from_numpy(np.stack(chws, axis=0)).to(self._device)
         sz = torch.tensor(sizes, dtype=torch.int64, device=self._device)
         labels, boxes, scores = self._forward(batch, sz)
-        results: List[List[dict]] = []
+        # One .cpu() per tensor (not per detection) — columnar transfer.
+        boxes_np = boxes.detach().cpu().numpy()
+        scores_np = scores.detach().cpu().numpy()
+        labels_np = labels.detach().cpu().numpy()
+        results = []
         for bi in range(len(images_np)):
-            b = boxes[bi].cpu().numpy()
-            s = scores[bi].cpu().numpy()
-            l = labels[bi].cpu().numpy()
-            dets: List[dict] = []
-            for k in range(b.shape[0]):
-                x1, y1, x2, y2 = [float(v) for v in b[k]]
-                dets.append({
-                    "label": int(l[k]),
-                    "bbox_xyxy": [x1, y1, x2, y2],
-                    "score": float(s[k]),
-                })
-            results.append(dets)
+            results.append(kwimage.Detections(
+                boxes=kwimage.Boxes(boxes_np[bi].astype(np.float32), "ltrb"),
+                scores=scores_np[bi].astype(np.float32),
+                class_idxs=labels_np[bi].astype(np.int64),
+            ))
         return results
 
 

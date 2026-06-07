@@ -82,6 +82,70 @@ def _per_class_nms_numpy(detections: List[dict], iou_thresh: float) -> List[dict
     return kept
 
 
+def _to_detections(obj):
+    """Coerce a predictor result (kwimage.Detections OR list-of-dicts) to a
+    kwimage.Detections. New columnar predict_batch returns Detections; the
+    per-window predict_image fallback and keep_full still return dicts."""
+    import kwimage
+    if isinstance(obj, kwimage.Detections):
+        return obj
+    if not obj:
+        return kwimage.Detections(
+            boxes=kwimage.Boxes(np.zeros((0, 4), np.float32), "ltrb"),
+            scores=np.zeros(0, np.float32), class_idxs=np.zeros(0, np.int64))
+    boxes = np.array([d["bbox_xyxy"] for d in obj], dtype=np.float32)
+    scores = np.array([d["score"] for d in obj], dtype=np.float32)
+    labels = np.array([d["label"] for d in obj], dtype=np.int64)
+    return kwimage.Detections(boxes=kwimage.Boxes(boxes, "ltrb"),
+                              scores=scores, class_idxs=labels)
+
+
+@profile
+def _nms_detections(det, iou_thresh: float):
+    """Per-class NMS on a kwimage.Detections via torchvision.ops.batched_nms.
+
+    Operates on the columnar arrays the Detections already holds — no
+    list-of-dicts -> np.array conversion (that conversion, not the NMS, was
+    the bespoke overhead). Returns the reduced Detections.
+    """
+    n = len(det)
+    if n <= 1:
+        return det
+    boxes = np.ascontiguousarray(det.boxes.to_ltrb().data, dtype=np.float32)
+    scores = np.ascontiguousarray(det.scores, dtype=np.float32)
+    idxs = np.ascontiguousarray(det.class_idxs, dtype=np.int64)
+    try:
+        import torch
+        from torchvision.ops import batched_nms
+        keep = batched_nms(torch.from_numpy(boxes), torch.from_numpy(scores),
+                           torch.from_numpy(idxs), float(iou_thresh)).cpu().numpy()
+    except Exception:
+        # numpy per-class greedy fallback
+        keep_list = []
+        for c in np.unique(idxs):
+            sel = np.where(idxs == c)[0]
+            local = _nms_indices(boxes[sel], scores[sel], iou_thresh)
+            keep_list.extend(sel[local].tolist())
+        keep = np.array(sorted(keep_list), dtype=np.int64)
+    return det.take(keep)
+
+
+def _detections_to_dicts(det) -> List[dict]:
+    """Final boundary conversion (over the small capped set only)."""
+    boxes = det.boxes.to_ltrb().data
+    scores = det.scores
+    labels = det.class_idxs
+    out: List[dict] = []
+    for i in range(len(det)):
+        x1, y1, x2, y2 = boxes[i]
+        out.append({
+            "label": int(labels[i]),
+            "score": float(scores[i]),
+            "bbox_xyxy": [float(x1), float(y1), float(x2), float(y2)],
+        })
+    return out
+
+
 def _nms_indices(boxes: np.ndarray, scores: np.ndarray, iou_thresh: float) -> List[int]:
     """Indices surviving greedy NMS. ``boxes`` is Nx4 xyxy."""
     if boxes.shape[0] == 0:
@@ -225,55 +289,57 @@ class TiledPredictor:
 
     @profile
     def _merge_and_nms(self, raw: dict) -> List[dict]:
-        """CPU phase: per-window reduce -> offset -> merge -> global NMS ->
-        cap. ``batched_nms`` releases the GIL, so this runs in parallel with
-        the next image's _infer_windows when the eval loop pipelines it.
+        """CPU phase, fully columnar (kwimage.Detections): per-window reduce ->
+        vectorized box offset -> concat -> global NMS -> cap, building dicts
+        only for the small final set. The heavy ops are array math + the
+        GIL-releasing batched_nms, so this runs truly parallel to the next
+        image's _infer_windows when the eval loop pipelines it.
         """
+        import kwimage
         _t = time.perf_counter()
-        merged: List[dict] = []
-        for (x0, y0), dets in zip(raw["offsets"], raw["window_dets"]):
-            for det in self._reduce_window(dets):
-                x1, y1, x2, y2 = det["bbox_xyxy"]
-                merged.append({
-                    "label": int(det["label"]),
-                    "score": float(det["score"]),
-                    "bbox_xyxy": [x1 + x0, y1 + y0, x2 + x0, y2 + y0],
-                })
-        if raw.get("full_dets"):
-            for det in raw["full_dets"]:
-                merged.append({
-                    "label": int(det["label"]),
-                    "score": float(det["score"]),
-                    "bbox_xyxy": [float(v) for v in det["bbox_xyxy"]],
-                })
-        out = _per_class_nms(merged, self._nms_thresh)
-        if self._max_dets is not None and len(out) > self._max_dets:
-            out.sort(key=lambda d: d["score"], reverse=True)
-            out = out[:self._max_dets]
+        parts = []
+        for (x0, y0), det in zip(raw["offsets"], raw["window_dets"]):
+            det = self._reduce_window(_to_detections(det))
+            if len(det):
+                parts.append(det.translate((x0, y0)))  # vectorized
+        full = raw.get("full_dets")
+        if full is not None:
+            full = _to_detections(full)
+            if len(full):
+                parts.append(full)
+        if not parts:
+            return []
+        merged = parts[0] if len(parts) == 1 else kwimage.Detections.concatenate(parts)
+        merged = _nms_detections(merged, self._nms_thresh)
+        if self._max_dets is not None and len(merged) > self._max_dets:
+            order = np.argsort(merged.scores)[::-1][:self._max_dets]
+            merged = merged.take(np.ascontiguousarray(order))
+        out = _detections_to_dicts(merged)
         self.t_nms += time.perf_counter() - _t
         return out
 
     @profile
-    def _reduce_window(self, dets):
-        """Score-floor -> per-window NMS -> top-K, on one window's detections."""
+    def _reduce_window(self, det):
+        """Score-floor -> per-window NMS -> top-K, on one window's Detections."""
         if self._pre_nms_score_thresh > 0.0:
-            dets = [d for d in dets if float(d["score"]) >= self._pre_nms_score_thresh]
-        if self._per_window_nms and len(dets) > 1:
-            dets = _per_class_nms(dets, self._nms_thresh)
-        if self._pre_nms_topk is not None and len(dets) > self._pre_nms_topk:
-            dets = sorted(dets, key=lambda d: float(d["score"]), reverse=True)[:self._pre_nms_topk]
-        return dets
+            det = det.compress(det.scores >= self._pre_nms_score_thresh)
+        if self._per_window_nms and len(det) > 1:
+            det = _nms_detections(det, self._nms_thresh)
+        if self._pre_nms_topk is not None and len(det) > self._pre_nms_topk:
+            order = np.argsort(det.scores)[::-1][:self._pre_nms_topk]
+            det = det.take(np.ascontiguousarray(order))
+        return det
 
     @profile
     def _score_crops(self, crops):
-        """Yield a detection list per crop, batching base.predict_batch calls."""
+        """Yield a kwimage.Detections per crop, batching predict_batch calls."""
         if not self._can_batch:
             for crop in crops:
                 ch, cw = int(crop.shape[0]), int(crop.shape[1])
                 _t = time.perf_counter()
                 dets = self._base.predict_image(crop, (cw, ch))
                 self.t_infer += time.perf_counter() - _t
-                yield dets
+                yield _to_detections(dets)
             return
         for i in range(0, len(crops), self._batch_size):
             chunk = crops[i:i + self._batch_size]
@@ -281,5 +347,5 @@ class TiledPredictor:
             _t = time.perf_counter()
             results = self._base.predict_batch(chunk, sizes)
             self.t_infer += time.perf_counter() - _t
-            for dets in results:
-                yield dets
+            for det in results:
+                yield det

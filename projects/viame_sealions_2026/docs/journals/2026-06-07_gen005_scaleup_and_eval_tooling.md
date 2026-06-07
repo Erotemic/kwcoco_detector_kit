@@ -76,3 +76,12 @@ so steady-state footprint is visible per log line. DEIMv2 commit 3f5c5ef
   would speed it with negligible AP@0.5 impact — opt-in, tradeoff TBD.
 * Decide whether X's result justifies keeping the capacity, or S is the
   efficient operating point and the data is the ceiling.
+* **Bad source image** (skipped gracefully by eval, note for fixup):
+  `unpacked/burlynb/Public/Redacted_Imagery/2019/20190627_CAPE FAIRFIELD_SSLC0635.jpg`
+  — "not recognized as being in a supported file format" (gid 5230 in
+  test). One more beyond the 3 truncated JPEGs in the corpus build report.
+  Eval drops it (1160/1161 scored); fix at the corpus level later.
+* **Image provenance baked** (commit this round): the image now writes
+  /etc/kcd_provenance.json with kit + submodule git SHAs + dockerfile
+  hash + build time, surfaced in eval metrics + docker LABELs. Reinforces
+  rebuild-over-dev-mount: provenance is only truthful for a real build.

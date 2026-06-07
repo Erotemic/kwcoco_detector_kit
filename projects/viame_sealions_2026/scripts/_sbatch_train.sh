@@ -136,6 +136,31 @@ if [ -n "${KCD_EXTRA_MOUNTS:-}" ]; then
     done
 fi
 
+# Auto-resolve symlinked backing stores (e.g. aiq-gpu's tile cache:
+# .../kcd_sealion/ssd-data -> /home/.../ssd-data). The /data mount makes
+# the symlink visible but not its target, so it dangles in the container
+# (mkdir -p fails). readlink -f the cache/training roots and mount any
+# real path that lands outside the already-mounted data roots. Same logic
+# as _run_standalone.sh — no manual KCD_EXTRA_MOUNTS needed.
+_kcd_auto_mount_real() {
+    local p real m
+    p="$1"
+    [ -z "$p" ] && return 0
+    real="$(readlink -f "$p" 2>/dev/null || true)"
+    [ -z "$real" ] && return 0
+    [ "$real" = "$p" ] && return 0          # not symlinked; already covered
+    case "$real/" in
+        "$KCD_DATA_ROOT"/*|"$KCD_DATA_DPATH"/*) return 0 ;;
+    esac
+    for m in "${EXTRA_MOUNT_FLAGS[@]:-}"; do
+        [ "$m" = "$real:$real" ] && return 0
+    done
+    EXTRA_MOUNT_FLAGS+=(-v "$real:$real")
+    echo "AUTO SYMLINK MOUNT: $p -> $real" >&2
+}
+_kcd_auto_mount_real "${KCD_TILE_CACHE_DPATH:-}"
+_kcd_auto_mount_real "${KCD_TRAINING_ROOT:-}"
+
 # Shared shm size scales with gpu count: DataLoader workers' ipc.
 shm_gb=$(( 16 + 8 * KCD_NUM_GPUS ))
 

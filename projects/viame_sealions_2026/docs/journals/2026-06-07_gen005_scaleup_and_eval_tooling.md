@@ -17,7 +17,29 @@ Pup AP is settled at **0.838** with tiled eval (vs 0.123 whole-image —
 see [2026-06-06_gen005_small_object_floor.md](2026-06-06_gen005_small_object_floor.md)).
 Hardware-independent and train-length-independent (plateaus early).
 
+FINAL fully-trained (ep29) rescore confirms: whole-image 0.557 / pup
+0.135, **tiled 0.861 / pup 0.840** — and the max_dets=1000 cap is lossless
+(capped pup 0.840 == uncapped 0.838 within noise).
+
 **single_sealion** (arisia): still training (~epoch 10/30).
+
+## Eval is NMS-bound, not GPU-bound (multi-GPU eval would not help)
+
+The per-phase instrumentation settled the question. On the final pup
+tiled rescore (1161 imgs, 75 min scoring):
+
+    predict 4488s = window_infer 1122s (GPU, fp16, 25%)
+                  + nms_merge   3213s (the cross-window NMS, 71%!)
+                  + crop/offset  153s
+
+The bottleneck was the **per-class NMS merge** — a pure-Python/numpy
+greedy O(n^2) loop over ~16k detections/image — NOT GPU inference. So the
+multi-GPU eval idea is moot (inference was 25%). Fix: torchvision.ops.
+batched_nms (same algorithm, C++/CUDA) with np.array+from_numpy conversion
+— ~3x on dense/overlapping boxes, identical output. Further levers if
+needed: pre-NMS score floor or per-window top-K (cut N before the merge),
+and a smaller max_dets (the kwcoco-eval AP pass is O(n_predictions): dump
+103s + filter 127s + AP over 1.16M at cap=1000).
 
 **Scale-up: dinov3_x (50.3M, COCO 57.8)** — launched on aiq-gpu via slurm
 (job 3), 640 tiles, tiled eval. One lever changed: backbone S->X. Training

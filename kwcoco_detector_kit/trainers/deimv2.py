@@ -798,22 +798,31 @@ class DEIMv2Predictor:
 
         if not images_np:
             return []
-        chws = []
+        crops_u8 = []
         sizes = []
         for img, osz in zip(images_np, orig_sizes):
             if img.ndim == 2:
                 img = np.repeat(img[..., None], 3, axis=-1)
             if img.shape[2] == 4:
                 img = img[..., :3]
-            try:
-                resized = kwimage.imresize(img, dsize=(self._eval_w, self._eval_h),
+            # Skip the resize when the crop is already eval-sized — for tiled
+            # eval (window == eval_spatial_size) this is an identity op, and
+            # imresize over ~64k windows otherwise dominated predict_batch.
+            if img.shape[0] != self._eval_h or img.shape[1] != self._eval_w:
+                try:
+                    img = kwimage.imresize(img, dsize=(self._eval_w, self._eval_h),
                                            interpolation="area")
-            except NotImplementedError:
-                resized = kwimage.imresize(img, dsize=(self._eval_w, self._eval_h),
+                except NotImplementedError:
+                    img = kwimage.imresize(img, dsize=(self._eval_w, self._eval_h),
                                            interpolation="linear")
-            chws.append((resized.astype(np.float32) / 255.0).transpose(2, 0, 1))
+            crops_u8.append(np.ascontiguousarray(img, dtype=np.uint8))
             sizes.append([int(osz[0]), int(osz[1])])
-        batch = torch.from_numpy(np.stack(chws, axis=0)).to(self._device)
+        # Upload uint8 (4x smaller transfer than float32) and do the
+        # /255 + HWC->CHW conversion on the GPU — offloads the per-window
+        # float convert that was pegging the main thread (CPU) and starving
+        # the GPU between forward passes.
+        batch_u8 = torch.from_numpy(np.stack(crops_u8, axis=0)).to(self._device)
+        batch = batch_u8.permute(0, 3, 1, 2).to(torch.float32).div_(255.0)
         sz = torch.tensor(sizes, dtype=torch.int64, device=self._device)
         labels, boxes, scores = self._forward(batch, sz)
         # One .cpu() per tensor (not per detection) — columnar transfer.

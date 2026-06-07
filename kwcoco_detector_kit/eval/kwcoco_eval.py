@@ -221,6 +221,7 @@ def run_kwcoco_eval(
     tiled_nms_thresh: float = 0.5,
     tiled_keep_full: bool = True,
     tiled_batch: int = 64,
+    tiled_max_dets=None,
     read_workers: int = 4,
     device: str = "cpu",
 ) -> Path:
@@ -276,11 +277,13 @@ def run_kwcoco_eval(
             nms_thresh=float(tiled_nms_thresh),
             keep_full=bool(tiled_keep_full),
             batch_size=int(tiled_batch),
+            max_dets=(int(tiled_max_dets) if tiled_max_dets else None),
         )
         print(
             f"  eval: TILED inference window={predictor._window} "
             f"overlap={tiled_overlap} nms={tiled_nms_thresh} "
-            f"keep_full={tiled_keep_full} batch={tiled_batch}"
+            f"keep_full={tiled_keep_full} batch={tiled_batch} "
+            f"max_dets={predictor._max_dets}"
         )
 
     true = kwcoco.CocoDataset.coerce(str(test_kwcoco))

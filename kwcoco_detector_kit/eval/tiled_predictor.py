@@ -106,6 +106,7 @@ class TiledPredictor:
         nms_thresh: float = 0.5,
         keep_full: bool = True,
         batch_size: int = 16,
+        max_dets: Optional[int] = None,
     ):
         self._base = base
         if window is None:
@@ -114,6 +115,13 @@ class TiledPredictor:
         self._overlap = float(max(0.0, min(overlap, 0.9)))
         self._nms_thresh = float(nms_thresh)
         self._keep_full = bool(keep_full)
+        # Cap detections per image (top-K by score, after the cross-window
+        # NMS merge). Tiled eval over many windows emits ~thousands of mostly
+        # low-score detections/image (~16k for the sea-lion test set), which
+        # bloats the pred bundle dump AND the downstream kwcoco-eval AP pass
+        # (both O(n_detections)). A generous cap kills the junk tail with
+        # negligible AP@0.5 impact. None = no cap (kit-agnostic default).
+        self._max_dets = int(max_dets) if max_dets else None
         # Run windows through the base in batches when it supports a batched
         # forward (DEIMv2 does). One GPU call per `batch_size` windows turns a
         # ~64k-sequential-pass test set from hours into minutes. Falls back to
@@ -174,6 +182,9 @@ class TiledPredictor:
 
         _t = time.perf_counter()
         out = _per_class_nms(merged, self._nms_thresh)
+        if self._max_dets is not None and len(out) > self._max_dets:
+            out.sort(key=lambda d: d["score"], reverse=True)
+            out = out[:self._max_dets]
         self.t_nms += time.perf_counter() - _t
         return out
 

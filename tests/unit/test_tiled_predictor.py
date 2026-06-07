@@ -104,6 +104,18 @@ def test_batched_path_used_and_equivalent():
     assert key(a) == key(b)                       # identical detections
 
 
+def test_max_dets_caps_top_k_by_score():
+    # Many distinct windows -> many detections; max_dets keeps the top-K
+    # by score after NMS.
+    base = _FakeBatchDetector((64, 64))
+    pred = TiledPredictor(base, overlap=0.0, keep_full=False, max_dets=2)
+    img = np.zeros((256, 256, 3), dtype=np.uint8)  # 16 windows -> 16 dets
+    dets = pred.predict_image(img, (256, 256))
+    assert len(dets) == 2  # capped
+    # all kept are the max score the fake emits (0.9), and sorted desc
+    assert all(d["score"] == 0.9 for d in dets)
+
+
 def test_nms_indices_suppresses_overlap():
     boxes = np.array([
         [0, 0, 10, 10],

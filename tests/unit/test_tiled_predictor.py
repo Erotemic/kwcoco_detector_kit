@@ -116,6 +116,20 @@ def test_max_dets_caps_top_k_by_score():
     assert all(d["score"] == 0.9 for d in dets)
 
 
+def test_reduce_window_floor_and_topk():
+    base = _FakeWindowDetector((64, 64))
+    pred = TiledPredictor(base, per_window_nms=False,
+                          pre_nms_score_thresh=0.05, pre_nms_topk=2)
+    dets = [
+        {"label": 0, "score": 0.001, "bbox_xyxy": [0, 0, 5, 5]},     # below floor
+        {"label": 0, "score": 0.9, "bbox_xyxy": [100, 100, 110, 110]},
+        {"label": 0, "score": 0.6, "bbox_xyxy": [200, 200, 210, 210]},
+        {"label": 0, "score": 0.3, "bbox_xyxy": [300, 300, 310, 310]},  # dropped by topk=2
+    ]
+    out = pred._reduce_window(dets)
+    assert sorted(d["score"] for d in out) == [0.6, 0.9]
+
+
 def test_nms_indices_suppresses_overlap():
     boxes = np.array([
         [0, 0, 10, 10],

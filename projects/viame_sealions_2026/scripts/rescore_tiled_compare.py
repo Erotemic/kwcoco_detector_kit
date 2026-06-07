@@ -53,7 +53,8 @@ def _read_nocls_ap(metrics_fpath: Path):
 
 def _score_one(trainer, *, workdir, test_kwcoco, out_root, candidate_id,
                category_names, distractors, tiled, device, window, overlap,
-               batch=64, read_workers=4, max_dets=0, force=True):
+               batch=64, read_workers=4, max_dets=0, pre_nms_score_thresh=None,
+               pre_nms_topk=0, force=True):
     from kwcoco_detector_kit.eval.kwcoco_eval import run_kwcoco_eval
     metrics = run_kwcoco_eval(
         trainer=trainer,
@@ -69,6 +70,8 @@ def _score_one(trainer, *, workdir, test_kwcoco, out_root, candidate_id,
         tiled_overlap=overlap,
         tiled_batch=batch,
         tiled_max_dets=(max_dets or None),
+        tiled_pre_nms_score_thresh=pre_nms_score_thresh,
+        tiled_pre_nms_topk=(pre_nms_topk or None),
         read_workers=read_workers,
         device=device,
     )
@@ -106,6 +109,14 @@ def main() -> int:
                    help="threads decoding upcoming images (0=sequential)")
     p.add_argument("--max_dets", type=int, default=0,
                    help="cap detections/image after NMS (top-K by score; 0=no cap). Tiled eval emits ~thousands/image; a generous cap (e.g. 1000) hugely speeds the dump+AP with negligible AP@0.5 change")
+    p.add_argument("--pre_nms_score_thresh", type=float, default=None,
+                   help="per-window score floor before the merge (default: the "
+                        "eval score_thresh, lossless). Raise (e.g. 0.05) to cut "
+                        "the merge further at a small AP@0.5 cost.")
+    p.add_argument("--pre_nms_topk", type=int, default=0,
+                   help="keep top-K detections/window before the merge (0=off)")
+    p.add_argument("--skip_wholeimage", action="store_true",
+                   help="skip the whole-image baseline pass; only run tiled")
     p.add_argument("--force_wholeimage", action="store_true",
                    help="recompute the whole-image baseline even if its "
                         "detect_metrics.json already exists (default: reuse it)")
@@ -134,19 +145,27 @@ def main() -> int:
     print(f"device       : {args.device}  window: {args.window or 'eval_spatial_size'}  overlap: {args.overlap}")
     print()
 
-    print("=== pass 1/2: WHOLE-IMAGE (baseline) ===")
-    whole = _score_one(trainer, workdir=workdir, test_kwcoco=test_kwcoco,
-                       out_root=out_root, candidate_id="wholeimage",
-                       category_names=category_names, distractors=distractors,
-                       tiled=False, device=args.device, window=None, overlap=args.overlap,
-                       batch=args.batch, read_workers=args.read_workers, max_dets=args.max_dets,
-                       force=bool(args.force_wholeimage))
-    print("\n=== pass 2/2: TILED (windowed) ===")
+    whole = None
+    if args.skip_wholeimage:
+        print("=== whole-image baseline SKIPPED (--skip_wholeimage) ===")
+    else:
+        print("=== pass: WHOLE-IMAGE (baseline) ===")
+        whole = _score_one(trainer, workdir=workdir, test_kwcoco=test_kwcoco,
+                           out_root=out_root, candidate_id="wholeimage",
+                           category_names=category_names, distractors=distractors,
+                           tiled=False, device=args.device, window=None, overlap=args.overlap,
+                           batch=args.batch, read_workers=args.read_workers, max_dets=args.max_dets,
+                           pre_nms_score_thresh=args.pre_nms_score_thresh,
+                           pre_nms_topk=args.pre_nms_topk,
+                           force=bool(args.force_wholeimage))
+    print("\n=== pass: TILED (windowed) ===")
     tiled = _score_one(trainer, workdir=workdir, test_kwcoco=test_kwcoco,
                       out_root=out_root, candidate_id="tiled",
                       category_names=category_names, distractors=distractors,
                       tiled=True, device=args.device, window=args.window, overlap=args.overlap,
-                      batch=args.batch, read_workers=args.read_workers, max_dets=args.max_dets)
+                      batch=args.batch, read_workers=args.read_workers, max_dets=args.max_dets,
+                      pre_nms_score_thresh=args.pre_nms_score_thresh,
+                      pre_nms_topk=args.pre_nms_topk)
 
     def _pair(metrics_fpath):
         m = Path(metrics_fpath)
@@ -159,7 +178,7 @@ def main() -> int:
                 sidecar = _read_nocls_ap(sc)
         return ap, sidecar
 
-    w_ap, w_nfs = _pair(whole)
+    w_ap, w_nfs = _pair(whole) if whole is not None else (None, None)
     t_ap, t_nfs = _pair(tiled)
 
     def _fmt(x):

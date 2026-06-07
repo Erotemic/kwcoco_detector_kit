@@ -222,6 +222,9 @@ def run_kwcoco_eval(
     tiled_keep_full: bool = True,
     tiled_batch: int = 64,
     tiled_max_dets=None,
+    tiled_pre_nms_score_thresh=None,
+    tiled_pre_nms_topk=None,
+    tiled_per_window_nms: bool = True,
     read_workers: int = 4,
     device: str = "cpu",
 ) -> Path:
@@ -270,6 +273,12 @@ def run_kwcoco_eval(
         window = tiled_window
         if window is not None and not (isinstance(window, (list, tuple)) and len(window) == 2):
             window = (int(window), int(window))
+        # Default the per-window score floor to the eval's own score_thresh
+        # (lossless: the eval drops < score_thresh anyway, this just applies
+        # it earlier to shrink the merge).
+        pre_floor = (float(tiled_pre_nms_score_thresh)
+                     if tiled_pre_nms_score_thresh is not None
+                     else float(score_thresh))
         predictor = TiledPredictor(
             predictor,
             window=window,
@@ -278,12 +287,18 @@ def run_kwcoco_eval(
             keep_full=bool(tiled_keep_full),
             batch_size=int(tiled_batch),
             max_dets=(int(tiled_max_dets) if tiled_max_dets else None),
+            pre_nms_score_thresh=pre_floor,
+            pre_nms_topk=(int(tiled_pre_nms_topk) if tiled_pre_nms_topk else None),
+            per_window_nms=bool(tiled_per_window_nms),
         )
         print(
             f"  eval: TILED inference window={predictor._window} "
             f"overlap={tiled_overlap} nms={tiled_nms_thresh} "
             f"keep_full={tiled_keep_full} batch={tiled_batch} "
-            f"max_dets={predictor._max_dets}"
+            f"max_dets={predictor._max_dets} | pre-merge: "
+            f"score>={predictor._pre_nms_score_thresh} "
+            f"per_window_nms={predictor._per_window_nms} "
+            f"topk={predictor._pre_nms_topk}"
         )
 
     true = kwcoco.CocoDataset.coerce(str(test_kwcoco))

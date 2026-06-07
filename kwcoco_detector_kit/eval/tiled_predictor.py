@@ -132,6 +132,9 @@ class TiledPredictor:
         keep_full: bool = True,
         batch_size: int = 16,
         max_dets: Optional[int] = None,
+        pre_nms_score_thresh: float = 0.0,
+        pre_nms_topk: Optional[int] = None,
+        per_window_nms: bool = True,
     ):
         self._base = base
         if window is None:
@@ -140,6 +143,17 @@ class TiledPredictor:
         self._overlap = float(max(0.0, min(overlap, 0.9)))
         self._nms_thresh = float(nms_thresh)
         self._keep_full = bool(keep_full)
+        # Per-window reduction BEFORE the global cross-window merge — this is
+        # what keeps the merge cheap. Each window emits ~300 raw detections;
+        # most are low-score junk. Applied in order per window:
+        #   1. score floor  (lossless at the eval's score_thresh)
+        #   2. per-window NMS (dedupe within the window — cheap, ~300 boxes;
+        #      the global pass then only resolves cross-window overlaps)
+        #   3. top-K by score (cap per window)
+        # so the global NMS sees a fraction of the ~16k/image it used to.
+        self._pre_nms_score_thresh = float(pre_nms_score_thresh)
+        self._pre_nms_topk = int(pre_nms_topk) if pre_nms_topk else None
+        self._per_window_nms = bool(per_window_nms)
         # Cap detections per image (top-K by score, after the cross-window
         # NMS merge). Tiled eval over many windows emits ~thousands of mostly
         # low-score detections/image (~16k for the sea-lion test set), which
@@ -186,7 +200,7 @@ class TiledPredictor:
 
         merged: List[dict] = []
         for (x0, y0), dets in zip(offsets, self._score_crops(crops)):
-            for det in dets:
+            for det in self._reduce_window(dets):
                 x1, y1, x2, y2 = det["bbox_xyxy"]
                 merged.append({
                     "label": int(det["label"]),
@@ -212,6 +226,16 @@ class TiledPredictor:
             out = out[:self._max_dets]
         self.t_nms += time.perf_counter() - _t
         return out
+
+    def _reduce_window(self, dets):
+        """Score-floor -> per-window NMS -> top-K, on one window's detections."""
+        if self._pre_nms_score_thresh > 0.0:
+            dets = [d for d in dets if float(d["score"]) >= self._pre_nms_score_thresh]
+        if self._per_window_nms and len(dets) > 1:
+            dets = _per_class_nms(dets, self._nms_thresh)
+        if self._pre_nms_topk is not None and len(dets) > self._pre_nms_topk:
+            dets = sorted(dets, key=lambda d: float(d["score"]), reverse=True)[:self._pre_nms_topk]
+        return dets
 
     def _score_crops(self, crops):
         """Yield a detection list per crop, batching base.predict_batch calls."""

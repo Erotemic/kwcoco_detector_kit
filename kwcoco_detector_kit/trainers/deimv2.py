@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+from kwcoco_detector_kit._lineprofile import profile
 from kwcoco_detector_kit.trainers._registry import register_trainer
 from kwcoco_detector_kit._env import raise_nofile_limit
 
@@ -718,6 +719,7 @@ class DEIMv2Predictor:
             and os.environ.get("KCD_EVAL_AMP", "1") != "0"
         )
 
+    @profile
     def _forward(self, im, sz):
         """Model forward under no_grad + (CUDA) fp16 autocast."""
         import contextlib
@@ -733,6 +735,7 @@ class DEIMv2Predictor:
     def eval_spatial_size(self) -> Tuple[int, int]:
         return (self._eval_h, self._eval_w)
 
+    @profile
     def predict_image(self, image_np, orig_size):
         import kwimage
         import numpy as np
@@ -767,6 +770,7 @@ class DEIMv2Predictor:
             })
         return out
 
+    @profile
     def predict_batch(self, images_np, orig_sizes):
         """Score a list of equal-purpose crops in ONE forward pass.
 

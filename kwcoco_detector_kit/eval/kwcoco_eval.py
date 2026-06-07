@@ -17,6 +17,8 @@ import sys
 from pathlib import Path
 from typing import Sequence, Tuple
 
+from kwcoco_detector_kit._lineprofile import profile
+
 
 def _valid_detection_bbox(bbox) -> bool:
     """True iff ``bbox`` is a concrete kwcoco detection box."""
@@ -204,6 +206,7 @@ def _rerun_eval_dropping_distractors(true_fpath: Path, pred_fpath: Path,
     return out_fpath
 
 
+@profile
 def run_kwcoco_eval(
     *,
     trainer,

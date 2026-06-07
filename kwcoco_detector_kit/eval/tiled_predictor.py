@@ -36,8 +36,10 @@ from typing import List, Optional, Sequence, Tuple
 import numpy as np
 
 from kwcoco_detector_kit.data.tile import _grid_positions
+from kwcoco_detector_kit._lineprofile import profile
 
 
+@profile
 def _per_class_nms(detections: List[dict], iou_thresh: float) -> List[dict]:
     """Greedy IoU NMS applied independently within each class label.
 
@@ -176,6 +178,7 @@ class TiledPredictor:
     def eval_spatial_size(self) -> Tuple[int, int]:
         return self._base.eval_spatial_size
 
+    @profile
     def predict_image(self, image_np, orig_size) -> List[dict]:
         H, W = int(image_np.shape[0]), int(image_np.shape[1])
         win_h, win_w = self._window
@@ -227,6 +230,7 @@ class TiledPredictor:
         self.t_nms += time.perf_counter() - _t
         return out
 
+    @profile
     def _reduce_window(self, dets):
         """Score-floor -> per-window NMS -> top-K, on one window's detections."""
         if self._pre_nms_score_thresh > 0.0:
@@ -237,6 +241,7 @@ class TiledPredictor:
             dets = sorted(dets, key=lambda d: float(d["score"]), reverse=True)[:self._pre_nms_topk]
         return dets
 
+    @profile
     def _score_crops(self, crops):
         """Yield a detection list per crop, batching base.predict_batch calls."""
         if not self._can_batch:

@@ -58,15 +58,29 @@ echo "run:        $RUN_NAME"
 echo "image:      $KCD_IMAGE"
 echo "device:     $KCD_EVAL_DEVICE"
 echo "categories: $CATEGORY_NAMES   distractors: ${DISTRACTORS:-<none>}"
+
+# Line profiling: LINE_PROFILE=1 enables @profile decorators; line_profiler
+# dumps profile_output.{txt,lprof} to the CWD on exit. Run with the CWD set
+# to a host-mounted dir so the dump survives the container.
+LP_FLAGS=()
+WORKDIR_IN=/opt/kwcoco_detector_kit
+if [ -n "${LINE_PROFILE:-}" ]; then
+    PROFILE_DIR="${KCD_LINEPROFILE_DPATH:-$KCD_TRAINING_ROOT/lineprofile}"
+    mkdir -p "$PROFILE_DIR"
+    LP_FLAGS=(-e "LINE_PROFILE=$LINE_PROFILE")
+    WORKDIR_IN="$PROFILE_DIR"
+    echo "LINE_PROFILE=$LINE_PROFILE -> profile_output.* will land in $PROFILE_DIR"
+fi
 echo
 
 set -x
 docker run --rm "${GPU_FLAGS[@]}" \
     -e PYTHONUNBUFFERED=1 \
+    "${LP_FLAGS[@]}" \
     -v "$KCD_DATA_ROOT:$KCD_DATA_ROOT" \
     -v "$KCD_DATA_DPATH:$KCD_DATA_DPATH" \
     "${DEV_MOUNTS[@]}" \
-    -w /opt/kwcoco_detector_kit \
+    -w "$WORKDIR_IN" \
     "$KCD_IMAGE" \
     python3 -u "$KCD_KIT_DPATH/projects/viame_sealions_2026/scripts/rescore_tiled_compare.py" \
         --kcd_root "$KCD_ROOT" \

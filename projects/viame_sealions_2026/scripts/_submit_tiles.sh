@@ -24,7 +24,10 @@ SLURM_PARTITION="${SLURM_PARTITION:-}"
 ACCOUNT="${ACCOUNT:-}"
 
 FOLLOW_SCRIPT="$KCD_KIT_DPATH/smoketests/dino_v2_4x/slurm/follow_job.py"
-kcd_require_path "kit follow_job.py" "$FOLLOW_SCRIPT" || exit 1
+# follow_job.py tails slurm logs — irrelevant for the no-slurm path.
+if [ "${KCD_NO_SLURM:-0}" != "1" ]; then
+    kcd_require_path "kit follow_job.py" "$FOLLOW_SCRIPT" || exit 1
+fi
 
 mkdir -p "$LOG_DPATH"
 
@@ -33,7 +36,10 @@ mkdir -p "$LOG_DPATH"
 # node to yourself (KCD_CPUS_PER_TASK=16 KCD_MEM=64G bash submit_...sh).
 # The HDD is the actual bottleneck for sealions tile output; throwing
 # more CPUs at it past ~8 hits contention diminishing returns.
-KCD_GRES="${KCD_GRES:-none}"
+# export KCD_GRES so it survives the exec into _run_standalone.sh (the
+# no-slurm path keys its --gpus decision off it; a non-exported value
+# would be lost and the CPU tile build would wrongly request GPUs).
+export KCD_GRES="${KCD_GRES:-none}"
 KCD_CPUS_PER_TASK="${KCD_CPUS_PER_TASK:-8}"
 KCD_MEM="${KCD_MEM:-24G}"
 KCD_TIME_LIMIT="${KCD_TIME_LIMIT:-12:00:00}"
@@ -49,6 +55,13 @@ export KCD_LAUNCH_SCRIPT=_launch_tiles.sh
 # ignores. Setting them here so we never silently use undef-var defaults.
 export KCD_SCHEME="${KCD_SCHEME:-universal}"
 export KCD_VARIANT="${KCD_VARIANT:-tiles}"
+
+# No-slurm hosts (e.g. aiq-gpu): run the CPU tile build directly via
+# `docker run` (KCD_GRES=none -> no --gpus) instead of sbatch. Foreground
+# so it's driven in tmux + tee.
+if [ "${KCD_NO_SLURM:-0}" = "1" ]; then
+    exec bash "$SCRIPT_DIR/_run_standalone.sh"
+fi
 
 job_name="$KCD_RUN_NAME"
 

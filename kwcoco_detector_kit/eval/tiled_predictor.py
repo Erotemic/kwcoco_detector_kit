@@ -104,6 +104,7 @@ class TiledPredictor:
         overlap: float = 0.25,
         nms_thresh: float = 0.5,
         keep_full: bool = True,
+        batch_size: int = 16,
     ):
         self._base = base
         if window is None:
@@ -112,6 +113,12 @@ class TiledPredictor:
         self._overlap = float(max(0.0, min(overlap, 0.9)))
         self._nms_thresh = float(nms_thresh)
         self._keep_full = bool(keep_full)
+        # Run windows through the base in batches when it supports a batched
+        # forward (DEIMv2 does). One GPU call per `batch_size` windows turns a
+        # ~64k-sequential-pass test set from hours into minutes. Falls back to
+        # per-window predict_image otherwise.
+        self._batch_size = max(1, int(batch_size))
+        self._can_batch = callable(getattr(base, "predict_batch", None))
 
     @property
     def eval_spatial_size(self) -> Tuple[int, int]:
@@ -130,18 +137,24 @@ class TiledPredictor:
         ys = _grid_positions(H, win_h, stride_h)
         xs = _grid_positions(W, win_w, stride_w)
 
-        merged: List[dict] = []
+        # Collect every window crop + its top-left offset, then score them
+        # (batched when possible). Keeping crops as views avoids copies.
+        crops = []
+        offsets = []
         for y0 in ys:
             for x0 in xs:
-                crop = image_np[y0:y0 + win_h, x0:x0 + win_w]
-                ch, cw = int(crop.shape[0]), int(crop.shape[1])
-                for det in self._base.predict_image(crop, (cw, ch)):
-                    x1, y1, x2, y2 = det["bbox_xyxy"]
-                    merged.append({
-                        "label": int(det["label"]),
-                        "score": float(det["score"]),
-                        "bbox_xyxy": [x1 + x0, y1 + y0, x2 + x0, y2 + y0],
-                    })
+                crops.append(image_np[y0:y0 + win_h, x0:x0 + win_w])
+                offsets.append((x0, y0))
+
+        merged: List[dict] = []
+        for (x0, y0), dets in zip(offsets, self._score_crops(crops)):
+            for det in dets:
+                x1, y1, x2, y2 = det["bbox_xyxy"]
+                merged.append({
+                    "label": int(det["label"]),
+                    "score": float(det["score"]),
+                    "bbox_xyxy": [x1 + x0, y1 + y0, x2 + x0, y2 + y0],
+                })
 
         if self._keep_full:
             for det in self._base.predict_image(image_np, orig_size):
@@ -152,3 +165,16 @@ class TiledPredictor:
                 })
 
         return _per_class_nms(merged, self._nms_thresh)
+
+    def _score_crops(self, crops):
+        """Yield a detection list per crop, batching base.predict_batch calls."""
+        if not self._can_batch:
+            for crop in crops:
+                ch, cw = int(crop.shape[0]), int(crop.shape[1])
+                yield self._base.predict_image(crop, (cw, ch))
+            return
+        for i in range(0, len(crops), self._batch_size):
+            chunk = crops[i:i + self._batch_size]
+            sizes = [(int(c.shape[1]), int(c.shape[0])) for c in chunk]
+            for dets in self._base.predict_batch(chunk, sizes):
+                yield dets

@@ -35,6 +35,20 @@ class _FakeWindowDetector:
         return [{"label": 0, "score": 0.9, "bbox_xyxy": [2.0, 3.0, 12.0, 13.0]}]
 
 
+class _FakeBatchDetector(_FakeWindowDetector):
+    """Adds a batched path and records how many batch calls were made."""
+
+    def __init__(self, size=(64, 64)):
+        super().__init__(size)
+        self.batch_calls = 0
+        self.batch_sizes = []
+
+    def predict_batch(self, images_np, orig_sizes):
+        self.batch_calls += 1
+        self.batch_sizes.append(len(images_np))
+        return [self.predict_image(im, sz) for im, sz in zip(images_np, orig_sizes)]
+
+
 def test_window_offsets_translate_to_full_image():
     base = _FakeWindowDetector(size=(64, 64))
     pred = TiledPredictor(base, overlap=0.0, keep_full=False)
@@ -73,6 +87,21 @@ def test_keep_full_adds_whole_image_pass():
     # the duplicate: counts stay equal. This asserts keep_full doesn't double
     # count identical detections.
     assert n1 == n0
+
+
+def test_batched_path_used_and_equivalent():
+    # A base with predict_batch must (a) be used, (b) produce the same merged
+    # result as the per-window path.
+    per_window = TiledPredictor(_FakeWindowDetector((64, 64)), overlap=0.0, keep_full=False)
+    batched_base = _FakeBatchDetector((64, 64))
+    batched = TiledPredictor(batched_base, overlap=0.0, keep_full=False, batch_size=2)
+    img = np.zeros((128, 128, 3), dtype=np.uint8)  # 4 windows
+    a = per_window.predict_image(img, (128, 128))
+    b = batched.predict_image(img, (128, 128))
+    assert batched_base.batch_calls > 0           # batched path exercised
+    assert max(batched_base.batch_sizes) <= 2     # respected batch_size
+    key = lambda ds: sorted((d["label"], *d["bbox_xyxy"]) for d in ds)
+    assert key(a) == key(b)                       # identical detections
 
 
 def test_nms_indices_suppresses_overlap():

@@ -749,6 +749,66 @@ class DEIMv2Predictor:
             })
         return out
 
+    def predict_batch(self, images_np, orig_sizes):
+        """Score a list of equal-purpose crops in ONE forward pass.
+
+        Used by the windowed evaluator (eval/tiled_predictor.py) so a tiled
+        eval runs ~B windows per GPU call instead of one — turning a
+        ~64k-sequential-pass test set from hours into minutes. Each crop is
+        resized to the model input and stacked; the DEIM postprocessor
+        already returns per-image results for a batched input.
+
+        Args:
+            images_np: list of HxWx3 uint8 arrays (any size; each resized to
+                the model input independently).
+            orig_sizes: list of (W, H) — bbox coords come back in each crop's
+                own pixel frame, matching predict_image's contract.
+
+        Returns:
+            list (len == len(images_np)) of detection lists, same dict shape
+            as predict_image.
+        """
+        import kwimage
+        import numpy as np
+        import torch
+
+        if not images_np:
+            return []
+        chws = []
+        sizes = []
+        for img, osz in zip(images_np, orig_sizes):
+            if img.ndim == 2:
+                img = np.repeat(img[..., None], 3, axis=-1)
+            if img.shape[2] == 4:
+                img = img[..., :3]
+            try:
+                resized = kwimage.imresize(img, dsize=(self._eval_w, self._eval_h),
+                                           interpolation="area")
+            except NotImplementedError:
+                resized = kwimage.imresize(img, dsize=(self._eval_w, self._eval_h),
+                                           interpolation="linear")
+            chws.append((resized.astype(np.float32) / 255.0).transpose(2, 0, 1))
+            sizes.append([int(osz[0]), int(osz[1])])
+        batch = torch.from_numpy(np.stack(chws, axis=0)).to(self._device)
+        sz = torch.tensor(sizes, dtype=torch.int64, device=self._device)
+        with torch.no_grad():
+            labels, boxes, scores = self._model(batch, sz)
+        results: List[List[dict]] = []
+        for bi in range(len(images_np)):
+            b = boxes[bi].cpu().numpy()
+            s = scores[bi].cpu().numpy()
+            l = labels[bi].cpu().numpy()
+            dets: List[dict] = []
+            for k in range(b.shape[0]):
+                x1, y1, x2, y2 = [float(v) for v in b[k]]
+                dets.append({
+                    "label": int(l[k]),
+                    "bbox_xyxy": [x1, y1, x2, y2],
+                    "score": float(s[k]),
+                })
+            results.append(dets)
+        return results
+
 
 # ---------------------------------------------------------------------------
 # Trainer plugin

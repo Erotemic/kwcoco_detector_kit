@@ -174,7 +174,20 @@ echo "[_sbatch_train.sh] forwarding ${#KCD_ENV_FLAGS[@]} KCD_* values to docker 
 #     device 1 inside the container — which doesn't exist — and silently
 #     ends up with zero usable GPUs, model stays on CPU, DDP errors
 #     ("module parameters {device(type='cpu')}"). gen002 2544 hit this.
-if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
+# GPU exposure mechanism. arisia's docker has a broken --gpus value
+# parser (see below), so it uses --runtime=nvidia + NVIDIA_VISIBLE_DEVICES.
+# Other hosts (aiq-gpu) work with the modern --gpus and may NOT have the
+# nvidia runtime registered, so --runtime=nvidia fails there. Select with
+# KCD_DOCKER_GPU_MODE: "runtime" (default, arisia) or "gpus".
+if [ "${KCD_DOCKER_GPU_MODE:-runtime}" = "gpus" ]; then
+    GPU_FLAG=(--gpus "${KCD_GPUS:-all}")
+    if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
+        n_gpus=$(echo "$CUDA_VISIBLE_DEVICES" | awk -F',' '{print NF}')
+        CONTAINER_CUDA_VISIBLE=$(seq -s, 0 $((n_gpus - 1)))
+    else
+        CONTAINER_CUDA_VISIBLE=""
+    fi
+elif [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
     # Multi-GPU on arisia: docker's --gpus value parser is broken
     # for comma-separated device lists in the version installed.
     # We tried:

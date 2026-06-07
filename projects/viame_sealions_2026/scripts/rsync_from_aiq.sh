@@ -73,8 +73,20 @@ else
 fi
 
 echo
+echo "=== slurm logs ($KCD_SLURM_LOG_DPATH/*.out) ==="
+# Since aiq-gpu got slurm, jobs write %x-%j.out here (same canonical path
+# as arisia). Harmless no-op for standalone-only setups.
+mkdir -p "$KCD_SLURM_LOG_DPATH"
+rsync -avh --info=progress2 \
+    --include '*.out' \
+    --include '*.err' \
+    --exclude '*' \
+    "$AIQ_HOST:$KCD_SLURM_LOG_DPATH/" "$KCD_SLURM_LOG_DPATH/" || \
+    echo "  (no slurm logs — fine if running standalone)"
+
+echo
 echo "=== tmux tee logs ($KCD_TRAINING_ROOT/*.log) ==="
-# aiq-gpu standalone runs tee their stdout here instead of slurm *.out.
+# Standalone (KCD_NO_SLURM=1) runs tee their stdout here instead.
 rsync -avh --info=progress2 \
     --include '*.log' \
     --exclude '*/' \

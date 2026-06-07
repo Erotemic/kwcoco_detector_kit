@@ -39,13 +39,38 @@ from kwcoco_detector_kit.data.tile import _grid_positions
 
 
 def _per_class_nms(detections: List[dict], iou_thresh: float) -> List[dict]:
-    """Greedy IoU NMS applied independently within each class label."""
+    """Greedy IoU NMS applied independently within each class label.
+
+    Uses torchvision.ops.batched_nms (vectorized C++/CUDA, same greedy
+    algorithm) when available — critical for tiled eval, where merging
+    ~16k detections/image with a pure-Python O(n^2) loop dominated runtime
+    (53 of 75 min on the gen005 pup test set). Falls back to the numpy
+    implementation if torchvision isn't importable.
+    """
     if not detections:
         return detections
+    try:
+        import torch
+        from torchvision.ops import batched_nms
+        # Build arrays via numpy first — torch.tensor(list-of-lists) is much
+        # slower than np.array + from_numpy for ~16k rows (the conversion,
+        # not the NMS, was otherwise the cost).
+        boxes = np.array([d["bbox_xyxy"] for d in detections], dtype=np.float32)
+        scores = np.array([d["score"] for d in detections], dtype=np.float32)
+        idxs = np.array([d["label"] for d in detections], dtype=np.int64)
+        keep = batched_nms(
+            torch.from_numpy(boxes), torch.from_numpy(scores),
+            torch.from_numpy(idxs), float(iou_thresh)).tolist()
+        return [detections[i] for i in keep]
+    except Exception:
+        return _per_class_nms_numpy(detections, iou_thresh)
+
+
+def _per_class_nms_numpy(detections: List[dict], iou_thresh: float) -> List[dict]:
+    """Pure-numpy greedy per-class NMS (fallback when torchvision is absent)."""
     by_label: dict = {}
     for det in detections:
         by_label.setdefault(int(det["label"]), []).append(det)
-
     kept: List[dict] = []
     for label, dets in by_label.items():
         boxes = np.array([d["bbox_xyxy"] for d in dets], dtype=np.float64)

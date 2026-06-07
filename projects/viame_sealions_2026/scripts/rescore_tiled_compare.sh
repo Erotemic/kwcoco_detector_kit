@@ -29,7 +29,11 @@ RUN_NAME="${1:?usage: rescore_tiled_compare.sh <run_name> <category_names_csv> [
 CATEGORY_NAMES="${2:?missing category_names (e.g. pup,nonpup_sealion or sealion)}"
 DISTRACTORS="${3:-}"
 
-KCD_IMAGE="${KCD_IMAGE:-kwcoco-detector-kit:ogdino-cu132-arisia}"
+# Default to the locally-built auto-profile image (build_auto.sh tags it
+# ogdino-auto with the CUDA profile matching THIS host's driver). The
+# cu132-arisia tag requires a CUDA>=13.2 driver and fails on hosts with an
+# older driver (e.g. namek: driver 580 / CUDA 13.0). Override per host.
+KCD_IMAGE="${KCD_IMAGE:-kwcoco-detector-kit:ogdino-auto}"
 KCD_EVAL_DEVICE="${KCD_EVAL_DEVICE:-cuda}"
 KCD_ROOT="$KCD_RUNS_DPATH/$RUN_NAME"
 

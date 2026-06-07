@@ -23,7 +23,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/paths.sh"
 
 : "${KCD_RUN_NAME:?_run_standalone.sh: KCD_RUN_NAME must be set}"
-KCD_IMAGE="${KCD_IMAGE:-kwcoco-detector-kit:ogdino-cu132-arisia}"
+# Default to the locally-built auto-profile image (build_auto.sh tags
+# ogdino-auto with the CUDA profile matching THIS host's driver). Avoids
+# the cu132 image's nvidia-container "cuda>=13.2" requirement failing on
+# hosts with an older driver. Override per host (aiq submit sets cu132-aiq).
+KCD_IMAGE="${KCD_IMAGE:-kwcoco-detector-kit:ogdino-auto}"
 LAUNCH="${KCD_LAUNCH_SCRIPT:-_launch_train.sh}"
 
 # Host-side pre-flight: a training launch needs the variant's pretrained

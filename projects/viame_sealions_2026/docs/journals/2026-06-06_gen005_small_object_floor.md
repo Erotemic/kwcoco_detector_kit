@@ -98,6 +98,17 @@ Consequences:
   throughput / a capacity bump / faster iteration instead, if anything.
 * Operationally: deploy with tiled/windowed inference on the full aerials.
 
+### CONFIRMED (2026-06-07): aiq-gpu Blackwell, fully-trained, matches arisia
+
+The 640 Blackwell shakedown (4-GPU, batch 32, 30 epochs, standalone
+no-slurm) completed and ran the batched tiled eval (batch=64). Final
+class-agnostic AP@0.5: overall 0.858, pup 0.838, nonpup 0.881 — within
+noise of the arisia 2-GPU mid-training rescore (0.857 / 0.838 / 0.879).
+Takeaways: (1) the whole Blackwell path is validated — sm_120 deform ops,
+4-GPU DDP, AMP, standalone docker, symlinked SSD cache, batched tiled eval
+all work; (2) cross-hardware reproducible; (3) pup AP is converged at
+~0.838 (fully-trained == mid-training, so pup detection plateaus early).
+
 ### (superseded) Recommended first Blackwell experiment
 
 pup_vs_nonpup, dinov3_s, **1280px** input (train + eval), per-GPU batch

@@ -41,7 +41,13 @@ export KCD_SCHEME=pup_vs_nonpup
 export KCD_CATEGORY_NAMES=pup,nonpup_sealion
 export KCD_VARIANT=deimv2_dinov3_x
 export KCD_NUM_GPUS="${KCD_NUM_GPUS:-4}"
-export KCD_PER_GPU_BATCH="${KCD_PER_GPU_BATCH:-4}"    # total = 4 * 4 = 16
+# Bumped 4 -> 16 (total 64): the first X run OOM-free at batch 4 used only
+# ~8% of the 96GB cards, and a bigger batch gives steadier gradients (the
+# batch-4 run hit a transient negative-wh prediction -> giou assert at
+# epoch 13; now clamped in DEIMv2, but a larger batch makes it rarer too).
+# LR kept at 5e-4 (bigger batch + same LR = lower-variance, stable); raise
+# if convergence is slow.
+export KCD_PER_GPU_BATCH="${KCD_PER_GPU_BATCH:-16}"   # total = 4 * 16 = 64
 export KCD_VAL_BATCH_MULT="${KCD_VAL_BATCH_MULT:-1}"
 export KCD_NUM_EPOCHS="${KCD_NUM_EPOCHS:-30}"
 export KCD_INPUT_HW="${KCD_INPUT_HW:-[640, 640]}"

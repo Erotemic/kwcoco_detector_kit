@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+from kwcoco_detector_kit._lineprofile import profile
 from kwcoco_detector_kit.trainers._registry import register_trainer
 from kwcoco_detector_kit._env import raise_nofile_limit
 
@@ -709,11 +710,32 @@ class DEIMv2Predictor:
         self._eval_h = int(eval_h)
         self._eval_w = int(eval_w)
         self._device = device
+        # fp16 autocast for inference on CUDA — the model trained under AMP,
+        # so fp16 is numerically safe here and ~2x faster on tensor cores
+        # (matters a lot for tiled eval's ~55 forward passes/image). Disable
+        # with KCD_EVAL_AMP=0. CPU path stays fp32.
+        self._use_amp = (
+            str(device).startswith("cuda")
+            and os.environ.get("KCD_EVAL_AMP", "1") != "0"
+        )
+
+    @profile
+    def _forward(self, im, sz):
+        """Model forward under no_grad + (CUDA) fp16 autocast."""
+        import contextlib
+        import torch
+        amp = (
+            torch.autocast("cuda", dtype=torch.float16)
+            if self._use_amp else contextlib.nullcontext()
+        )
+        with torch.no_grad(), amp:
+            return self._model(im, sz)
 
     @property
     def eval_spatial_size(self) -> Tuple[int, int]:
         return (self._eval_h, self._eval_w)
 
+    @profile
     def predict_image(self, image_np, orig_size):
         import kwimage
         import numpy as np
@@ -733,8 +755,7 @@ class DEIMv2Predictor:
         ).to(self._device)
         W, H = int(orig_size[0]), int(orig_size[1])
         sz = torch.tensor([[W, H]], dtype=torch.int64, device=self._device)
-        with torch.no_grad():
-            labels, boxes, scores = self._model(chw, sz)
+        labels, boxes, scores = self._forward(chw, sz)
         out: List[dict] = []
         b = boxes[0].cpu().numpy()
         s = scores[0].cpu().numpy()
@@ -748,6 +769,74 @@ class DEIMv2Predictor:
                 "score": score,
             })
         return out
+
+    @profile
+    def predict_batch(self, images_np, orig_sizes):
+        """Score a list of equal-purpose crops in ONE forward pass.
+
+        Used by the windowed evaluator (eval/tiled_predictor.py) so a tiled
+        eval runs ~B windows per GPU call instead of one — turning a
+        ~64k-sequential-pass test set from hours into minutes. Each crop is
+        resized to the model input and stacked; the DEIM postprocessor
+        already returns per-image results for a batched input.
+
+        Args:
+            images_np: list of HxWx3 uint8 arrays (any size; each resized to
+                the model input independently).
+            orig_sizes: list of (W, H) — bbox coords come back in each crop's
+                own pixel frame, matching predict_image's contract.
+
+        Returns:
+            list (len == len(images_np)) of ``kwimage.Detections`` — one per
+            crop, columnar (boxes/scores/class_idxs as arrays). Built straight
+            from the model output tensors with no per-detection Python dicts,
+            so the windowed evaluator can offset/merge/NMS them vectorized.
+        """
+        import kwimage
+        import numpy as np
+        import torch
+
+        if not images_np:
+            return []
+        crops_u8 = []
+        sizes = []
+        for img, osz in zip(images_np, orig_sizes):
+            if img.ndim == 2:
+                img = np.repeat(img[..., None], 3, axis=-1)
+            if img.shape[2] == 4:
+                img = img[..., :3]
+            # Skip the resize when the crop is already eval-sized — for tiled
+            # eval (window == eval_spatial_size) this is an identity op, and
+            # imresize over ~64k windows otherwise dominated predict_batch.
+            if img.shape[0] != self._eval_h or img.shape[1] != self._eval_w:
+                try:
+                    img = kwimage.imresize(img, dsize=(self._eval_w, self._eval_h),
+                                           interpolation="area")
+                except NotImplementedError:
+                    img = kwimage.imresize(img, dsize=(self._eval_w, self._eval_h),
+                                           interpolation="linear")
+            crops_u8.append(np.ascontiguousarray(img, dtype=np.uint8))
+            sizes.append([int(osz[0]), int(osz[1])])
+        # Upload uint8 (4x smaller transfer than float32) and do the
+        # /255 + HWC->CHW conversion on the GPU — offloads the per-window
+        # float convert that was pegging the main thread (CPU) and starving
+        # the GPU between forward passes.
+        batch_u8 = torch.from_numpy(np.stack(crops_u8, axis=0)).to(self._device)
+        batch = batch_u8.permute(0, 3, 1, 2).to(torch.float32).div_(255.0)
+        sz = torch.tensor(sizes, dtype=torch.int64, device=self._device)
+        labels, boxes, scores = self._forward(batch, sz)
+        # One .cpu() per tensor (not per detection) — columnar transfer.
+        boxes_np = boxes.detach().cpu().numpy()
+        scores_np = scores.detach().cpu().numpy()
+        labels_np = labels.detach().cpu().numpy()
+        results = []
+        for bi in range(len(images_np)):
+            results.append(kwimage.Detections(
+                boxes=kwimage.Boxes(boxes_np[bi].astype(np.float32), "ltrb"),
+                scores=scores_np[bi].astype(np.float32),
+                class_idxs=labels_np[bi].astype(np.int64),
+            ))
+        return results
 
 
 # ---------------------------------------------------------------------------

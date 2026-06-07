@@ -36,6 +36,21 @@ source "$SCRIPT_DIR/paths.sh"
 : "${KCD_VARIANT:?_submit_train.sh: KCD_VARIANT must be exported}"
 : "${KCD_NUM_GPUS:?_submit_train.sh: KCD_NUM_GPUS must be exported}"
 
+# Fail fast on the host (before sbatch OR the standalone docker run) when a
+# required input is missing — same checks the in-container launch does, but
+# without paying for a job/container start: pretrained checkpoint, corpus
+# bundles, and the tile cache (exact hash when the kit is importable here).
+kcd_require_init_checkpoint "$KCD_VARIANT" || exit 1
+kcd_require_train_inputs || exit 1
+
+# No-slurm hosts (e.g. aiq-gpu): run the job directly via `docker run` in
+# the foreground instead of sbatch. The wrapper already exported every
+# KCD_* var, so _run_standalone.sh forwards them as-is. Run it in tmux and
+# capture with `tee`.
+if [ "${KCD_NO_SLURM:-0}" = "1" ]; then
+    exec bash "$SCRIPT_DIR/_run_standalone.sh"
+fi
+
 LOG_DPATH="${LOG_DPATH:-$KCD_SLURM_LOG_DPATH}"
 FOLLOW="${FOLLOW:-auto}"
 SLURM_PARTITION="${SLURM_PARTITION:-}"

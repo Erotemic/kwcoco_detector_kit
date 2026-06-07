@@ -36,6 +36,21 @@ case "$VARIANT" in
         DEST_DIR="$KCD_DEIMV2_DINOV3_S_COCO_DIR"
         CANONICAL_PTH="$KCD_DEIMV2_DINOV3_S_COCO_PTH"
         ;;
+    deimv2_dinov3_m)
+        REPO_ID="${KCD_HF_REPO:-Intellindust/DEIMv2_DINOv3_M_COCO}"
+        DEST_DIR="$KCD_DEIMV2_DINOV3_M_COCO_DIR"
+        CANONICAL_PTH="$KCD_DEIMV2_DINOV3_M_COCO_PTH"
+        ;;
+    deimv2_dinov3_l)
+        REPO_ID="${KCD_HF_REPO:-Intellindust/DEIMv2_DINOv3_L_COCO}"
+        DEST_DIR="$KCD_DEIMV2_DINOV3_L_COCO_DIR"
+        CANONICAL_PTH="$KCD_DEIMV2_DINOV3_L_COCO_PTH"
+        ;;
+    deimv2_dinov3_x)
+        REPO_ID="${KCD_HF_REPO:-Intellindust/DEIMv2_DINOv3_X_COCO}"
+        DEST_DIR="$KCD_DEIMV2_DINOV3_X_COCO_DIR"
+        CANONICAL_PTH="$KCD_DEIMV2_DINOV3_X_COCO_PTH"
+        ;;
     deimv2_hgnetv2_n)
         REPO_ID="${KCD_HF_REPO:-Intellindust/DEIMv2_HGNetv2_N_COCO}"
         DEST_DIR="$KCD_DEIMV2_HGNETV2_N_COCO_DIR"
@@ -62,7 +77,7 @@ case "$VARIANT" in
         ;;
     *)
         echo "ERROR: unknown variant: $VARIANT" >&2
-        echo "Known: deimv2_dinov3_s, deimv2_hgnetv2_n, deimv2_hgnetv2_s" >&2
+        echo "Known: deimv2_dinov3_{s,m,l,x}, deimv2_hgnetv2_n, deimv2_hgnetv2_s" >&2
         echo "Add a case branch in $0 to support more." >&2
         exit 1
         ;;
@@ -106,7 +121,7 @@ elif [ -f "$SAFETENSORS_FPATH" ]; then
     # image has both; the host's python may not. Prefer docker so this
     # works on a fresh host without extra pip installs. Fall back to
     # host python only if docker is unavailable.
-    KCD_IMAGE="${KCD_IMAGE:-kwcoco-detector-kit:ogdino-cu132-arisia}"
+    KCD_IMAGE="${KCD_IMAGE:-kwcoco-detector-kit:ogdino-auto}"
     if command -v docker >/dev/null 2>&1 && docker image inspect "$KCD_IMAGE" >/dev/null 2>&1; then
         docker run --rm \
             -v "$KCD_DATA_ROOT:$KCD_DATA_ROOT" \

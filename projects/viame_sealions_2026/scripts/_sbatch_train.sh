@@ -136,6 +136,31 @@ if [ -n "${KCD_EXTRA_MOUNTS:-}" ]; then
     done
 fi
 
+# Auto-resolve symlinked backing stores (e.g. aiq-gpu's tile cache:
+# .../kcd_sealion/ssd-data -> /home/.../ssd-data). The /data mount makes
+# the symlink visible but not its target, so it dangles in the container
+# (mkdir -p fails). readlink -f the cache/training roots and mount any
+# real path that lands outside the already-mounted data roots. Same logic
+# as _run_standalone.sh — no manual KCD_EXTRA_MOUNTS needed.
+_kcd_auto_mount_real() {
+    local p real m
+    p="$1"
+    [ -z "$p" ] && return 0
+    real="$(readlink -f "$p" 2>/dev/null || true)"
+    [ -z "$real" ] && return 0
+    [ "$real" = "$p" ] && return 0          # not symlinked; already covered
+    case "$real/" in
+        "$KCD_DATA_ROOT"/*|"$KCD_DATA_DPATH"/*) return 0 ;;
+    esac
+    for m in "${EXTRA_MOUNT_FLAGS[@]:-}"; do
+        [ "$m" = "$real:$real" ] && return 0
+    done
+    EXTRA_MOUNT_FLAGS+=(-v "$real:$real")
+    echo "AUTO SYMLINK MOUNT: $p -> $real" >&2
+}
+_kcd_auto_mount_real "${KCD_TILE_CACHE_DPATH:-}"
+_kcd_auto_mount_real "${KCD_TRAINING_ROOT:-}"
+
 # Shared shm size scales with gpu count: DataLoader workers' ipc.
 shm_gb=$(( 16 + 8 * KCD_NUM_GPUS ))
 
@@ -174,7 +199,20 @@ echo "[_sbatch_train.sh] forwarding ${#KCD_ENV_FLAGS[@]} KCD_* values to docker 
 #     device 1 inside the container — which doesn't exist — and silently
 #     ends up with zero usable GPUs, model stays on CPU, DDP errors
 #     ("module parameters {device(type='cpu')}"). gen002 2544 hit this.
-if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
+# GPU exposure mechanism. arisia's docker has a broken --gpus value
+# parser (see below), so it uses --runtime=nvidia + NVIDIA_VISIBLE_DEVICES.
+# Other hosts (aiq-gpu) work with the modern --gpus and may NOT have the
+# nvidia runtime registered, so --runtime=nvidia fails there. Select with
+# KCD_DOCKER_GPU_MODE: "runtime" (default, arisia) or "gpus".
+if [ "${KCD_DOCKER_GPU_MODE:-runtime}" = "gpus" ]; then
+    GPU_FLAG=(--gpus "${KCD_GPUS:-all}")
+    if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
+        n_gpus=$(echo "$CUDA_VISIBLE_DEVICES" | awk -F',' '{print NF}')
+        CONTAINER_CUDA_VISIBLE=$(seq -s, 0 $((n_gpus - 1)))
+    else
+        CONTAINER_CUDA_VISIBLE=""
+    fi
+elif [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
     # Multi-GPU on arisia: docker's --gpus value parser is broken
     # for comma-separated device lists in the version installed.
     # We tried:

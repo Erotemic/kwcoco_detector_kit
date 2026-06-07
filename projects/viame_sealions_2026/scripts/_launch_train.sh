@@ -124,23 +124,14 @@ print(json.dumps(mapping))
     export KCD_WDS_SOURCE_TO_TARGET
 fi
 
-# Variant -> init checkpoint (when not explicitly set).
-if [ -z "${KCD_INIT_CHECKPOINT:-}" ] && [ "${KCD_TRAIN_FROM_SCRATCH:-0}" != "1" ]; then
-    case "$KCD_VARIANT" in
-        deimv2_dinov3_s)  KCD_INIT_CHECKPOINT="$KCD_DEIMV2_DINOV3_S_COCO_PTH" ;;
-        deimv2_hgnetv2_n) KCD_INIT_CHECKPOINT="$KCD_DEIMV2_HGNETV2_N_COCO_PTH" ;;
-        deimv2_hgnetv2_s) KCD_INIT_CHECKPOINT="$KCD_DEIMV2_HGNETV2_S_COCO_PTH" ;;
-        *) ;;
-    esac
-fi
+# Variant -> init checkpoint via the shared resolver in paths.sh (same
+# mapping the host-side submit pre-flight uses).
+KCD_INIT_CHECKPOINT="$(kcd_resolve_init_checkpoint "$KCD_VARIANT")"
 if [ "${KCD_TRAIN_FROM_SCRATCH:-0}" = "1" ]; then
     INIT_FLAG=()
     INIT_CKPT_DISPLAY="<from-scratch>"
 else
-    kcd_require_path "$KCD_VARIANT COCO pretrained checkpoint" "$KCD_INIT_CHECKPOINT" || {
-        echo "  Run: bash projects/viame_sealions_2026/scripts/fetch_pretrained.sh $KCD_VARIANT" >&2
-        exit 1
-    }
+    kcd_require_init_checkpoint "$KCD_VARIANT" || exit 1
     INIT_FLAG=(--init_checkpoint "$KCD_INIT_CHECKPOINT")
     INIT_CKPT_DISPLAY="$KCD_INIT_CHECKPOINT"
 fi
@@ -462,12 +453,20 @@ echo "  KCD_DISTRACTOR_CLASSES = ${KCD_DISTRACTOR_CLASSES:-<unset>}"
     --num_epochs "$KCD_NUM_EPOCHS" \
     --batch_size "$TOTAL_BATCH" \
     --val_batch_size "$TOTAL_VAL_BATCH" \
+    ${KCD_DO_EXPORT:+--do_export "$KCD_DO_EXPORT"} \
+    ${KCD_DO_EVAL:+--do_eval "$KCD_DO_EVAL"} \
+    ${KCD_DO_BENCH:+--do_bench "$KCD_DO_BENCH"} \
     ${KCD_RESUME_CKPT:+--resume "$KCD_RESUME_CKPT"} \
     ${KCD_FORCE_TRAIN:+--force_train "$KCD_FORCE_TRAIN"} \
     ${KCD_FORCE_EXPORT:+--force_export "$KCD_FORCE_EXPORT"} \
     ${KCD_FORCE_EVAL:+--force_eval "$KCD_FORCE_EVAL"} \
     ${KCD_FORCE_BENCH:+--force_bench "$KCD_FORCE_BENCH"} \
     ${KCD_DISTRACTOR_CLASSES:+--distractor_classes "$KCD_DISTRACTOR_CLASSES"} \
+    ${KCD_TILED_EVAL:+--tiled_eval "$KCD_TILED_EVAL"} \
+    ${KCD_TILED_EVAL_WINDOW:+--tiled_eval_window "$KCD_TILED_EVAL_WINDOW"} \
+    ${KCD_TILED_EVAL_OVERLAP:+--tiled_eval_overlap "$KCD_TILED_EVAL_OVERLAP"} \
+    ${KCD_TILED_EVAL_NMS_THRESH:+--tiled_eval_nms_thresh "$KCD_TILED_EVAL_NMS_THRESH"} \
+    ${KCD_EVAL_DEVICE:+--eval_device "$KCD_EVAL_DEVICE"} \
     ${KCD_WDS_SHARDS_DPATH:+--train_wds_shards_dpath "$KCD_WDS_SHARDS_DPATH"} \
     ${KCD_WDS_EPOCH_LENGTH:+--train_wds_epoch_length "$KCD_WDS_EPOCH_LENGTH"} \
     ${KCD_WDS_SOURCE_TO_TARGET:+--train_wds_source_to_target "$KCD_WDS_SOURCE_TO_TARGET"} \

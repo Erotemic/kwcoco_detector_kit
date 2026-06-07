@@ -33,8 +33,12 @@ ensure_submodule() {
 ensure_submodule tpl/Open-GroundingDino tpl/Open-GroundingDino/models/GroundingDINO/ops/setup.py
 ensure_submodule tpl/DEIMv2 tpl/DEIMv2/train.py
 
+source "$(dirname "$0")/_build_provenance.sh"
+mapfile -t PROV_ARGS < <(kcd_provenance_build_args)
+
 docker build \
     -f docker/opengroundingdino/Dockerfile \
+    "${PROV_ARGS[@]}" \
     --ulimit nofile="$BUILD_ULIMIT_NOFILE" \
     --build-arg BASE_IMAGE="$BASE_IMAGE" \
     --build-arg PYTHON_VERSION="$PYTHON_VERSION" \

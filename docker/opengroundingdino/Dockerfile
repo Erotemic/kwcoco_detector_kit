@@ -193,6 +193,31 @@ RUN if [ "${RUN_TESTS}" = "1" ]; then \
         echo "skipping in-image pytest run (RUN_TESTS=${RUN_TESTS})"; \
     fi
 
+# Bake build provenance: the git SHAs of the kit + each submodule, the
+# Dockerfile's own hash, and the build time. _provenance.py reads
+# /etc/kcd_provenance.json, so a RUNNING container (and the eval metrics
+# JSON) report exactly what produced the image — even if the image hash
+# itself is later lost (never published, retagged, etc.). The LABELs make
+# the same data visible via `docker inspect` without running the image.
+# ARGs declared HERE (not at the top) so changing them only rebuilds this
+# trailing layer, never the expensive dependency layers.
+ARG KCD_KIT_SHA=unknown
+ARG KCD_DEIMV2_SHA=unknown
+ARG KCD_OGDINO_SHA=unknown
+ARG KCD_DATALOADER_SHA=unknown
+ARG KCD_DOCKERFILE_SHA=unknown
+ARG KCD_BUILD_TIME=unknown
+RUN printf '{\n  "kit_sha": "%s",\n  "deimv2_sha": "%s",\n  "opengroundingdino_sha": "%s",\n  "kwcoco_dataloader_sha": "%s",\n  "dockerfile_sha256": "%s",\n  "build_time": "%s"\n}\n' \
+        "${KCD_KIT_SHA}" "${KCD_DEIMV2_SHA}" "${KCD_OGDINO_SHA}" \
+        "${KCD_DATALOADER_SHA}" "${KCD_DOCKERFILE_SHA}" "${KCD_BUILD_TIME}" \
+        > /etc/kcd_provenance.json && cat /etc/kcd_provenance.json
+LABEL kcd.kit_sha="${KCD_KIT_SHA}" \
+      kcd.deimv2_sha="${KCD_DEIMV2_SHA}" \
+      kcd.opengroundingdino_sha="${KCD_OGDINO_SHA}" \
+      kcd.kwcoco_dataloader_sha="${KCD_DATALOADER_SHA}" \
+      kcd.dockerfile_sha256="${KCD_DOCKERFILE_SHA}" \
+      kcd.build_time="${KCD_BUILD_TIME}"
+
 COPY docker/opengroundingdino/entrypoint.sh /usr/local/bin/kcd-ogdino-entrypoint
 COPY docker/opengroundingdino/kcd-pytest /usr/local/bin/kcd-pytest
 RUN chmod +x /usr/local/bin/kcd-ogdino-entrypoint /usr/local/bin/kcd-pytest

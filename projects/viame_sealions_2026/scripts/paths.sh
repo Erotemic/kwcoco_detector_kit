@@ -121,6 +121,18 @@ export KCD_TILE_KEEP_NEGATIVE="${KCD_TILE_KEEP_NEGATIVE:-true}"
 export KCD_TILE_CATEGORY_NAMES="${KCD_TILE_CATEGORY_NAMES:-bull,subadult_male,female,juvenile,pup,northern_fur_seal,negative,dead_pup,dead_nonpup}"
 export KCD_TILE_MODE="${KCD_TILE_MODE:-multiscale}"
 
+# -- Eval defaults -------------------------------------------------------
+#
+# Tiled (windowed) eval is the DEFAULT for this project: we train on tiles
+# cut from full-resolution aerials, so evaluating on whole images resized
+# to the model input measures the wrong thing — it shrinks small objects
+# (pups) below detectability. Tiled eval slides native-resolution windows
+# matching the training tile scale. The gain is decisive: on gen005 pup it
+# lifted pup AP 0.123 -> 0.838 (see docs/journals/2026-06-06_gen005_small_object_floor.md).
+# Override KCD_TILED_EVAL=False for a deliberate whole-image baseline.
+export KCD_TILED_EVAL="${KCD_TILED_EVAL:-True}"
+export KCD_EVAL_DEVICE="${KCD_EVAL_DEVICE:-cuda}"
+
 # -- Pretrained checkpoints ----------------------------------------------
 
 # DEIMv2-DINOv3-S COCO-finetuned (50.9 AP on COCO). Foundation backbone
@@ -128,6 +140,19 @@ export KCD_TILE_MODE="${KCD_TILE_MODE:-multiscale}"
 # COCO. The strongest publicly-available init for `deimv2_dinov3_s`.
 export KCD_DEIMV2_DINOV3_S_COCO_DIR="${KCD_DEIMV2_DINOV3_S_COCO_DIR:-$KCD_PRETRAINED_ROOT/deimv2_dinov3_s_coco}"
 export KCD_DEIMV2_DINOV3_S_COCO_PTH="${KCD_DEIMV2_DINOV3_S_COCO_PTH:-$KCD_DEIMV2_DINOV3_S_COCO_DIR/deimv2_dinov3_s_coco.pth}"
+
+# Larger DINOv3 backbones (same family, more capacity). All have public
+# COCO checkpoints on HF (Intellindust/DEIMv2_DINOv3_{M,L,X}_COCO).
+#   M: 18.1M params, 53.0 COCO AP
+#   L: 32.2M params, 56.0 COCO AP
+#   X: 50.3M params, 57.8 COCO AP
+# Fetch with: fetch_pretrained.sh deimv2_dinov3_{m,l,x}
+export KCD_DEIMV2_DINOV3_M_COCO_DIR="${KCD_DEIMV2_DINOV3_M_COCO_DIR:-$KCD_PRETRAINED_ROOT/deimv2_dinov3_m_coco}"
+export KCD_DEIMV2_DINOV3_M_COCO_PTH="${KCD_DEIMV2_DINOV3_M_COCO_PTH:-$KCD_DEIMV2_DINOV3_M_COCO_DIR/deimv2_dinov3_m_coco.pth}"
+export KCD_DEIMV2_DINOV3_L_COCO_DIR="${KCD_DEIMV2_DINOV3_L_COCO_DIR:-$KCD_PRETRAINED_ROOT/deimv2_dinov3_l_coco}"
+export KCD_DEIMV2_DINOV3_L_COCO_PTH="${KCD_DEIMV2_DINOV3_L_COCO_PTH:-$KCD_DEIMV2_DINOV3_L_COCO_DIR/deimv2_dinov3_l_coco.pth}"
+export KCD_DEIMV2_DINOV3_X_COCO_DIR="${KCD_DEIMV2_DINOV3_X_COCO_DIR:-$KCD_PRETRAINED_ROOT/deimv2_dinov3_x_coco}"
+export KCD_DEIMV2_DINOV3_X_COCO_PTH="${KCD_DEIMV2_DINOV3_X_COCO_PTH:-$KCD_DEIMV2_DINOV3_X_COCO_DIR/deimv2_dinov3_x_coco.pth}"
 
 # DEIMv2-HGNetv2-N COCO (43.0 AP, 3.6M params, native 320x320). Mobile-
 # class HGNetv2 B0 backbone + DEIM head, COCO-pretrained. The fastest
@@ -169,4 +194,122 @@ kcd_require_path() {
         echo "  fetch/build script that produces it." >&2
         return 1
     fi
+}
+
+# Resolve a variant's COCO pretrained init checkpoint path. Honors an
+# explicit KCD_INIT_CHECKPOINT override and KCD_TRAIN_FROM_SCRATCH (which
+# yields an empty path = no init). Single source of the variant->path
+# mapping, shared by the host-side submit pre-flight and the in-container
+# _launch_train.sh so the two never drift.
+kcd_resolve_init_checkpoint() {
+    local variant="$1"
+    [ "${KCD_TRAIN_FROM_SCRATCH:-0}" = "1" ] && return 0
+    if [ -n "${KCD_INIT_CHECKPOINT:-}" ]; then
+        printf '%s\n' "$KCD_INIT_CHECKPOINT"
+        return 0
+    fi
+    case "$variant" in
+        deimv2_dinov3_s)  printf '%s\n' "$KCD_DEIMV2_DINOV3_S_COCO_PTH" ;;
+        deimv2_dinov3_m)  printf '%s\n' "$KCD_DEIMV2_DINOV3_M_COCO_PTH" ;;
+        deimv2_dinov3_l)  printf '%s\n' "$KCD_DEIMV2_DINOV3_L_COCO_PTH" ;;
+        deimv2_dinov3_x)  printf '%s\n' "$KCD_DEIMV2_DINOV3_X_COCO_PTH" ;;
+        deimv2_hgnetv2_n) printf '%s\n' "$KCD_DEIMV2_HGNETV2_N_COCO_PTH" ;;
+        deimv2_hgnetv2_s) printf '%s\n' "$KCD_DEIMV2_HGNETV2_S_COCO_PTH" ;;
+        *) ;;
+    esac
+}
+
+# Fail fast (with a fetch hint) when a variant's pretrained init checkpoint
+# is missing. No-op for from-scratch training. Call from the host BEFORE
+# spinning up docker so a missing checkpoint doesn't cost a container start.
+kcd_require_init_checkpoint() {
+    local variant="$1"
+    [ "${KCD_TRAIN_FROM_SCRATCH:-0}" = "1" ] && return 0
+    local ckpt
+    ckpt="$(kcd_resolve_init_checkpoint "$variant")"
+    [ -z "$ckpt" ] && return 0
+    # Missing -> try to fetch it automatically (idempotent; uses KCD_IMAGE
+    # for the safetensors->pth conversion). Disable with KCD_NO_AUTO_FETCH=1.
+    if [ ! -e "$ckpt" ] && [ "${KCD_NO_AUTO_FETCH:-0}" != "1" ]; then
+        local _dir
+        _dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        echo "[paths] $variant pretrained checkpoint missing; fetching ..." >&2
+        if bash "$_dir/fetch_pretrained.sh" "$variant" >&2; then
+            ckpt="$(kcd_resolve_init_checkpoint "$variant")"
+        fi
+    fi
+    if [ ! -e "$ckpt" ]; then
+        echo "ERROR: $variant COCO pretrained checkpoint not found at: $ckpt" >&2
+        echo "  Fetch it:  bash projects/viame_sealions_2026/scripts/fetch_pretrained.sh $variant" >&2
+        echo "  (auto-fetch failed or was disabled via KCD_NO_AUTO_FETCH=1)" >&2
+        echo "  or rsync pretrained_models/ from a host that has it," >&2
+        echo "  or set KCD_TRAIN_FROM_SCRATCH=1 to skip pretrained init." >&2
+        return 1
+    fi
+}
+
+# Compute the universal tile-cache hash for the current KCD_TILE_* config.
+# MUST match the body hashed in _launch_train.sh / _launch_tiles.sh exactly.
+# The writer fingerprint needs the kit python; if it can't be imported
+# (e.g. a host shell without the kit installed) this echoes nothing so
+# callers fall back rather than computing a WRONG hash. In-container the
+# kit is always importable, so this is exact there.
+kcd_tile_hash() {
+    local fp body
+    fp="$(python3 -c "from kwcoco_detector_kit.data import tile; print('v{}:{}'.format(getattr(tile,'_TILE_WRITER_VERSION',1), ','.join(sorted(tile._PASSTHROUGH_ANN_FIELDS))))" 2>/dev/null)" || return 0
+    [ -z "$fp" ] && return 0
+    body="$(printf '%s\n' \
+        "tile_mode=${KCD_TILE_MODE:-multiscale}" \
+        "tile_size=${KCD_TILE_SIZE}" \
+        "source_scales=${KCD_TILE_SOURCE_SCALES}" \
+        "stride_frac=${KCD_TILE_STRIDE_FRAC}" \
+        "min_gt_area_frac=${KCD_TILE_MIN_GT_AREA_FRAC}" \
+        "min_keep_fraction=${KCD_TILE_MIN_KEEP_FRACTION}" \
+        "oversize_factor=${KCD_TILE_OVERSIZE_FACTOR}" \
+        "keep_negative=${KCD_TILE_KEEP_NEGATIVE}" \
+        "category_names=${KCD_TILE_CATEGORY_NAMES:-sealion}" \
+        "writer_passthrough=${fp}")"
+    printf '%s' "$body" | sha1sum | cut -c1-8
+}
+
+# Host-side pre-flight for a TRAINING run: the corpus bundles and the tile
+# cache. Reliable bundle checks (plain paths) always run; the tile-cache
+# check is exact when kcd_tile_hash can be computed, else best-effort
+# (cache root must exist; the container does the authoritative check).
+# Skips the tile-cache check for WebDataset runs. Call BEFORE docker/sbatch.
+kcd_require_train_inputs() {
+    local rc=0
+    kcd_require_path "universal train bundle" "${KCD_UNIVERSAL_TRAIN_KWCOCO:-}" || rc=1
+    kcd_require_path "universal vali bundle"  "${KCD_UNIVERSAL_VALI_KWCOCO:-}"  || rc=1
+    kcd_require_path "universal test bundle"  "${KCD_UNIVERSAL_TEST_KWCOCO:-}"  || rc=1
+    [ "${KCD_USE_WEBDATASET:-0}" = "1" ] && return "$rc"
+
+    local uni="${KCD_TILE_CACHE_DPATH:-}/_universal"
+    local hash
+    hash="$(kcd_tile_hash)"
+    if [ -n "$hash" ]; then
+        if [ ! -f "$uni/$hash/tiles.kwcoco.zip" ]; then
+            echo "ERROR: tile cache for this config not found:" >&2
+            echo "  expected: $uni/$hash/tiles.kwcoco.zip" >&2
+            echo "  KCD_TILE_CACHE_DPATH=${KCD_TILE_CACHE_DPATH:-<unset>}" >&2
+            if [ -d "$uni" ]; then
+                echo "  hashes present under cache root: $(ls "$uni" 2>/dev/null | tr '\n' ' ')" >&2
+                echo "  -> wrong KCD_TILE_CACHE_DPATH (e.g. point it at the SSD), or" >&2
+                echo "     build/rsync this hash." >&2
+            else
+                echo "  cache root missing; set KCD_TILE_CACHE_DPATH (e.g. the SSD) or build it:" >&2
+                echo "    bash projects/viame_sealions_2026/scripts/submit_build_tiles.sh" >&2
+            fi
+            rc=1
+        fi
+    elif [ ! -d "$uni" ]; then
+        echo "ERROR: tile cache root not found: $uni" >&2
+        echo "  set KCD_TILE_CACHE_DPATH (e.g. the SSD) or build it:" >&2
+        echo "    bash projects/viame_sealions_2026/scripts/submit_build_tiles.sh" >&2
+        rc=1
+    else
+        echo "NOTE: kit not importable on host; exact tile-hash check deferred" >&2
+        echo "  to the container (cache root $uni exists)." >&2
+    fi
+    return "$rc"
 }

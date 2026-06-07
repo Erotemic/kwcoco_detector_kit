@@ -141,9 +141,16 @@ def provenance_dict() -> Dict[str, Any]:
         sources.add("unknown")
         return "<unknown>"
 
+    dataloader = (kit_root / "tpl" / "kwcoco_dataloader") if kit_root else None
     kit_sha = _resolve_with_src("KCD_PROVENANCE_KIT_SHA", "kit_sha", kit_root)
     deimv2_sha = _resolve_with_src("KCD_PROVENANCE_DEIMV2_SHA", "deimv2_sha", deimv2)
     ogdino_sha = _resolve_with_src("KCD_PROVENANCE_OGDINO_SHA", "opengroundingdino_sha", ogdino)
+    dataloader_sha = _resolve_with_src("KCD_PROVENANCE_DATALOADER_SHA", "kwcoco_dataloader_sha", dataloader)
+    # Build-time-only fields (no runtime git fallback): present iff the
+    # image baked /etc/kcd_provenance.json (see Dockerfile).
+    _pf = _read_provenance_file()
+    build_time = _pf.get("build_time", "<unknown>")
+    dockerfile_sha256 = _pf.get("dockerfile_sha256", "<unknown>")
 
     if len(sources - {"unknown"}) > 1:
         src = "mixed"
@@ -163,6 +170,9 @@ def provenance_dict() -> Dict[str, Any]:
         "deimv2_dirty": deimv2_dirty,
         "opengroundingdino_sha": ogdino_sha,
         "opengroundingdino_dirty": ogdino_dirty,
+        "kwcoco_dataloader_sha": dataloader_sha,
+        "build_time": build_time,
+        "dockerfile_sha256": dockerfile_sha256,
         "source": src,
     }
 

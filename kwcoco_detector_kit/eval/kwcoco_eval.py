@@ -17,12 +17,50 @@ import sys
 from pathlib import Path
 from typing import Sequence, Tuple
 
+from kwcoco_detector_kit._lineprofile import profile
+
 
 def _valid_detection_bbox(bbox) -> bool:
     """True iff ``bbox`` is a concrete kwcoco detection box."""
     if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
         return False
     return all(v is not None for v in bbox)
+
+
+def _iter_prefetched(items, read_fn, workers, ahead=None):
+    """Yield ``(item, read_fn(item))`` in order, decoding ahead on threads.
+
+    Keeps up to ``ahead`` reads in flight so slow per-item I/O (JPEG decode
+    off HDD) overlaps with whatever the consumer does between yields (GPU
+    inference). Order is preserved. ``workers<=0`` falls back to a plain
+    sequential read with no threads.
+    """
+    if workers is None or workers <= 0:
+        for it in items:
+            yield it, read_fn(it)
+        return
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor
+    if ahead is None:
+        ahead = 2 * workers
+    ahead = max(ahead, 1)
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        pending = deque()
+        src = iter(items)
+        for _ in range(ahead):
+            try:
+                nxt = next(src)
+            except StopIteration:
+                break
+            pending.append((nxt, ex.submit(read_fn, nxt)))
+        while pending:
+            item, fut = pending.popleft()
+            try:
+                nxt = next(src)
+                pending.append((nxt, ex.submit(read_fn, nxt)))
+            except StopIteration:
+                pass
+            yield item, fut.result()
 
 
 def filter_bbox_only_kwcoco(src_fpath, dst_fpath) -> Tuple[Path, int, int]:
@@ -168,6 +206,7 @@ def _rerun_eval_dropping_distractors(true_fpath: Path, pred_fpath: Path,
     return out_fpath
 
 
+@profile
 def run_kwcoco_eval(
     *,
     trainer,
@@ -179,6 +218,19 @@ def run_kwcoco_eval(
     score_thresh: float = 0.001,
     force: bool = False,
     distractor_classes=None,
+    tiled_eval: bool = False,
+    tiled_window=None,
+    tiled_overlap: float = 0.25,
+    tiled_nms_thresh: float = 0.5,
+    tiled_keep_full: bool = True,
+    tiled_batch: int = 64,
+    tiled_max_dets=None,
+    tiled_pre_nms_score_thresh=None,
+    tiled_pre_nms_topk=None,
+    tiled_per_window_nms: bool = False,
+    eval_nms_workers: int = 0,
+    read_workers: int = 4,
+    device: str = "cpu",
 ) -> Path:
     """Score every image in `test_kwcoco` with the trained model; eval.
 
@@ -213,7 +265,45 @@ def run_kwcoco_eval(
         print(f"  reusing existing eval metrics: {metrics_fpath}")
         return metrics_fpath
 
-    predictor = trainer.build_predictor(workdir, device="cpu")
+    predictor = trainer.build_predictor(workdir, device=str(device))
+
+    if bool(tiled_eval):
+        # Windowed inference: slide native-resolution windows over each full
+        # image and merge, instead of resizing the whole image to the model
+        # input. Closes the train/eval resolution gap for small objects (see
+        # eval/tiled_predictor.py). The window defaults to the model's
+        # eval_spatial_size (= training tile size).
+        from kwcoco_detector_kit.eval.tiled_predictor import TiledPredictor
+        window = tiled_window
+        if window is not None and not (isinstance(window, (list, tuple)) and len(window) == 2):
+            window = (int(window), int(window))
+        # Default the per-window score floor to the eval's own score_thresh
+        # (lossless: the eval drops < score_thresh anyway, this just applies
+        # it earlier to shrink the merge).
+        pre_floor = (float(tiled_pre_nms_score_thresh)
+                     if tiled_pre_nms_score_thresh is not None
+                     else float(score_thresh))
+        predictor = TiledPredictor(
+            predictor,
+            window=window,
+            overlap=float(tiled_overlap),
+            nms_thresh=float(tiled_nms_thresh),
+            keep_full=bool(tiled_keep_full),
+            batch_size=int(tiled_batch),
+            max_dets=(int(tiled_max_dets) if tiled_max_dets else None),
+            pre_nms_score_thresh=pre_floor,
+            pre_nms_topk=(int(tiled_pre_nms_topk) if tiled_pre_nms_topk else None),
+            per_window_nms=bool(tiled_per_window_nms),
+        )
+        print(
+            f"  eval: TILED inference window={predictor._window} "
+            f"overlap={tiled_overlap} nms={tiled_nms_thresh} "
+            f"keep_full={tiled_keep_full} batch={tiled_batch} "
+            f"max_dets={predictor._max_dets} | pre-merge: "
+            f"score>={predictor._pre_nms_score_thresh} "
+            f"per_window_nms={predictor._per_window_nms} "
+            f"topk={predictor._pre_nms_topk}"
+        )
 
     true = kwcoco.CocoDataset.coerce(str(test_kwcoco))
     pred = kwcoco.CocoDataset()
@@ -237,49 +327,152 @@ def run_kwcoco_eval(
         pred.add_image(**new, id=img["id"])
 
     dropped_unknown_label = 0
-    for gid in list(true.images()):
-        coco_img = true.coco_image(gid)
+    import ubelt as ub
+    _gids = list(true.images())
+
+    # Decode is HDD/JPEG-bound and leaves the GPU idle between inference
+    # spikes. Prefetch upcoming images on worker threads (libjpeg/gdal
+    # release the GIL during decode) so the next image is ready when the
+    # current one finishes scoring — fills the idle gaps without changing
+    # scoring order. read_workers<=0 disables (sequential read).
+    def _read(_gid):
         try:
-            arr = coco_img.imdelay().finalize()
-        except Exception as ex:
-            print(f"  eval: failed to read gid {gid}: {ex}")
-            continue
-        H, W = arr.shape[:2]
-        detections = predictor.predict_image(arr, (W, H))
+            return true.coco_image(_gid).imdelay().finalize()
+        except Exception as ex:  # surfaced in the loop, same as before
+            return ex
+
+    # ProgIter handles cadence/rate/eta. verbose=3 -> newline-per-update
+    # (clearline off) so the stream tees/logs cleanly instead of rewriting
+    # one line. Tiled eval can be seconds/image, so a steady heartbeat
+    # confirms liveness.
+    import time as _time
+
+    def _add_dets(_gid, detections):
+        """Add one image's detections to the pred bundle (main thread only —
+        kwcoco add_annotation isn't thread-safe)."""
+        nonlocal dropped_unknown_label
         for det in detections:
             score = float(det.get("score", 0.0))
             if score < float(score_thresh):
                 continue
             label = int(det.get("label", 0))
             if label < 0 or label >= n_labels:
-                # Out-of-range label from the predictor (e.g. background
-                # slot in a model that emits num_classes+1). Drop quietly
-                # but count so we can warn.
                 dropped_unknown_label += 1
                 continue
             x1, y1, x2, y2 = det["bbox_xyxy"]
             pred.add_annotation(
-                image_id=gid, category_id=label_to_cat_id[label],
+                image_id=_gid, category_id=label_to_cat_id[label],
                 bbox=[float(x1), float(y1), float(x2 - x1), float(y2 - y1)],
                 score=score,
             )
+
+    # Pipeline GPU inference with CPU NMS when asked and possible: profiling
+    # showed GPU (_infer_windows) and the NMS merge are comparable serial
+    # costs, so overlapping image N's NMS with image N+1's inference ~halves
+    # the compute. batched_nms releases the GIL, so consumer threads run truly
+    # parallel to the GPU-dispatching main thread. Annotation building stays
+    # on the main thread. Falls back to serial when eval_nms_workers<=0 or the
+    # predictor isn't a windowed one.
+    _pipeline = (
+        bool(tiled_eval) and int(eval_nms_workers) > 0
+        and hasattr(predictor, "_infer_windows")
+        and hasattr(predictor, "_merge_and_nms")
+    )
+    _t_decode = _t_predict = _t_annot = 0.0
+    _loop_t0 = _time.perf_counter()
+    _iter = _iter_prefetched(_gids, _read, int(read_workers))
+    _prog = ub.ProgIter(_iter, total=len(_gids), desc="eval: scoring", verbose=3)
+
+    if _pipeline:
+        from collections import deque
+        from concurrent.futures import ThreadPoolExecutor
+        print(f"  eval: pipelined NMS ({eval_nms_workers} consumer threads)")
+        _max_inflight = 2 * int(eval_nms_workers) + 2
+        pending = deque()  # (gid, future)
+        with ThreadPoolExecutor(max_workers=int(eval_nms_workers)) as _pool:
+            def _drain(block):
+                while pending and (block or pending[0][1].done()):
+                    g, fut = pending.popleft()
+                    _add_dets(g, fut.result())
+            for gid, arr in _prog:
+                if isinstance(arr, BaseException):
+                    print(f"  eval: failed to read gid {gid}: {arr}")
+                    continue
+                H, W = arr.shape[:2]
+                raw = predictor._infer_windows(arr, (W, H))  # GPU, main thread
+                if raw.get("deferred") is not None:
+                    _add_dets(gid, raw["deferred"])
+                else:
+                    pending.append((gid, _pool.submit(predictor._merge_and_nms, raw)))
+                _drain(block=False)
+                while len(pending) >= _max_inflight:  # backpressure
+                    g, fut = pending.popleft()
+                    _add_dets(g, fut.result())
+            _drain(block=True)
+    else:
+        _mark = _time.perf_counter()
+        for gid, arr in _prog:
+            _t_decode += _time.perf_counter() - _mark
+            if isinstance(arr, BaseException):
+                print(f"  eval: failed to read gid {gid}: {arr}")
+                _mark = _time.perf_counter()
+                continue
+            H, W = arr.shape[:2]
+            _tp = _time.perf_counter()
+            detections = predictor.predict_image(arr, (W, H))
+            _t_predict += _time.perf_counter() - _tp
+            _ta = _time.perf_counter()
+            _add_dets(gid, detections)
+            _t_annot += _time.perf_counter() - _ta
+            _mark = _time.perf_counter()
+
+    _loop_total = _time.perf_counter() - _loop_t0
+    _n = max(1, len(_gids))
+    print(
+        f"  eval timing: {_loop_total:.0f}s total over {len(_gids)} imgs "
+        f"({1000 * _loop_total / _n:.0f} ms/img) | "
+        f"decode_wait {_t_decode:.0f}s, predict {_t_predict:.0f}s, "
+        f"annot {_t_annot:.0f}s"
+    )
+    if hasattr(predictor, "t_infer") and hasattr(predictor, "t_nms"):
+        print(
+            f"  eval timing (tiled): window_infer {predictor.t_infer:.0f}s, "
+            f"nms_merge {predictor.t_nms:.0f}s "
+            f"(the rest of 'predict' is window cropping + box offsetting)"
+        )
     if dropped_unknown_label:
         print(
             f"  eval: dropped {dropped_unknown_label} detections with "
             f"label outside [0, {n_labels})"
         )
+    # The phases after the scoring loop are silent and can be slow — tiled
+    # eval writes many detections/image, so the dump + bbox-filter copies
+    # are O(n_predictions). Announce each with a timer so "scoring 100%"
+    # isn't followed by a long unexplained stall.
+    import time as _t2
+    _npred = pred.n_annots
+    print(f"  eval: writing {_npred} predictions -> {Path(pred.fpath).name} "
+          f"(large for tiled eval; this can take a while) ...", flush=True)
+    _m = _t2.perf_counter()
     pred.dump()
+    print(f"  eval: wrote predictions in {_t2.perf_counter() - _m:.0f}s", flush=True)
 
+    print("  eval: filtering to bbox-only detections (true + pred) ...", flush=True)
+    _m = _t2.perf_counter()
     true_filtered, true_kept, true_dropped = filter_bbox_only_kwcoco(
         test_kwcoco, eval_root / "true_bbox_only.kwcoco.zip")
     pred_filtered, pred_kept, pred_dropped = filter_bbox_only_kwcoco(
         pred.fpath, eval_root / "pred_boxes_bbox_only.kwcoco.zip")
+    print(f"  eval: bbox filter done in {_t2.perf_counter() - _m:.0f}s", flush=True)
     if true_dropped or pred_dropped:
         print(
             "  eval bbox filter: "
             f"true kept={true_kept} dropped={true_dropped}; "
             f"pred kept={pred_kept} dropped={pred_dropped}"
         )
+
+    print(f"  eval: computing detection metrics over {_npred} predictions "
+          f"(kwcoco eval: assign + AP) ...", flush=True)
 
     cmd = [
         sys.executable, "-m", "kwcoco", "eval",

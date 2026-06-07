@@ -90,6 +90,7 @@ docker run --rm "${GPU_FLAGS[@]}" \
         --overlap "${KCD_TILED_EVAL_OVERLAP:-0.25}" \
         --max_dets "${KCD_TILED_EVAL_MAX_DETS:-1000}" \
         --pre_nms_topk "${KCD_TILED_PRE_NMS_TOPK:-300}" \
+        --nms_workers "${KCD_EVAL_NMS_WORKERS:-2}" \
         ${KCD_TILED_PRE_NMS_SCORE:+--pre_nms_score_thresh "$KCD_TILED_PRE_NMS_SCORE"} \
         ${KCD_SKIP_WHOLEIMAGE:+--skip_wholeimage} \
         ${KCD_FORCE_WHOLEIMAGE:+--force_wholeimage} \

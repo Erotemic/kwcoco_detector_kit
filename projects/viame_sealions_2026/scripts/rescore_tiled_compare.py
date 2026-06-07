@@ -54,7 +54,7 @@ def _read_nocls_ap(metrics_fpath: Path):
 def _score_one(trainer, *, workdir, test_kwcoco, out_root, candidate_id,
                category_names, distractors, tiled, device, window, overlap,
                batch=64, read_workers=4, max_dets=0, pre_nms_score_thresh=None,
-               pre_nms_topk=0, force=True):
+               pre_nms_topk=0, nms_workers=0, force=True):
     from kwcoco_detector_kit.eval.kwcoco_eval import run_kwcoco_eval
     metrics = run_kwcoco_eval(
         trainer=trainer,
@@ -72,6 +72,7 @@ def _score_one(trainer, *, workdir, test_kwcoco, out_root, candidate_id,
         tiled_max_dets=(max_dets or None),
         tiled_pre_nms_score_thresh=pre_nms_score_thresh,
         tiled_pre_nms_topk=(pre_nms_topk or None),
+        eval_nms_workers=nms_workers,
         read_workers=read_workers,
         device=device,
     )
@@ -115,6 +116,8 @@ def main() -> int:
                         "the merge further at a small AP@0.5 cost.")
     p.add_argument("--pre_nms_topk", type=int, default=0,
                    help="keep top-K detections/window before the merge (0=off)")
+    p.add_argument("--nms_workers", type=int, default=0,
+                   help="pipeline GPU inference with N consumer threads doing NMS (0=serial)")
     p.add_argument("--skip_wholeimage", action="store_true",
                    help="skip the whole-image baseline pass; only run tiled")
     p.add_argument("--force_wholeimage", action="store_true",
@@ -165,7 +168,7 @@ def main() -> int:
                       tiled=True, device=args.device, window=args.window, overlap=args.overlap,
                       batch=args.batch, read_workers=args.read_workers, max_dets=args.max_dets,
                       pre_nms_score_thresh=args.pre_nms_score_thresh,
-                      pre_nms_topk=args.pre_nms_topk)
+                      pre_nms_topk=args.pre_nms_topk, nms_workers=args.nms_workers)
 
     def _pair(metrics_fpath):
         m = Path(metrics_fpath)

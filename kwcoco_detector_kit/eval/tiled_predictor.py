@@ -180,29 +180,58 @@ class TiledPredictor:
 
     @profile
     def predict_image(self, image_np, orig_size) -> List[dict]:
+        # Serial path: GPU inference then CPU merge+NMS. The eval loop can
+        # instead call _infer_windows (GPU) and _merge_and_nms (CPU) on
+        # separate stages to overlap them across images (see kwcoco_eval).
+        raw = self._infer_windows(image_np, orig_size)
+        if raw.get("deferred") is not None:
+            return raw["deferred"]
+        return self._merge_and_nms(raw)
+
+    @profile
+    def _infer_windows(self, image_np, orig_size) -> dict:
+        """GPU phase: run every window (+ optional whole-image) through the
+        base model. Returns the RAW per-window detections (crop coords) plus
+        their offsets — NO per-window reduction, merge, or NMS (those are the
+        CPU phase, _merge_and_nms). Keeping this phase pure-GPU lets the eval
+        loop overlap it with the CPU NMS of the previous image.
+        """
         H, W = int(image_np.shape[0]), int(image_np.shape[1])
         win_h, win_w = self._window
 
         # Image already fits in one window — no tiling benefit, defer.
         if H <= win_h and W <= win_w:
-            return list(self._base.predict_image(image_np, orig_size))
+            return {"deferred": list(self._base.predict_image(image_np, orig_size))}
 
         stride_h = max(1, int(round(win_h * (1.0 - self._overlap))))
         stride_w = max(1, int(round(win_w * (1.0 - self._overlap))))
         ys = _grid_positions(H, win_h, stride_h)
         xs = _grid_positions(W, win_w, stride_w)
 
-        # Collect every window crop + its top-left offset, then score them
-        # (batched when possible). Keeping crops as views avoids copies.
-        crops = []
-        offsets = []
+        crops, offsets = [], []
         for y0 in ys:
             for x0 in xs:
                 crops.append(image_np[y0:y0 + win_h, x0:x0 + win_w])
                 offsets.append((x0, y0))
 
+        window_dets = list(self._score_crops(crops))  # GPU
+        full_dets = None
+        if self._keep_full:
+            _t = time.perf_counter()
+            full_dets = self._base.predict_image(image_np, orig_size)  # GPU
+            self.t_infer += time.perf_counter() - _t
+        return {"deferred": None, "offsets": offsets,
+                "window_dets": window_dets, "full_dets": full_dets}
+
+    @profile
+    def _merge_and_nms(self, raw: dict) -> List[dict]:
+        """CPU phase: per-window reduce -> offset -> merge -> global NMS ->
+        cap. ``batched_nms`` releases the GIL, so this runs in parallel with
+        the next image's _infer_windows when the eval loop pipelines it.
+        """
+        _t = time.perf_counter()
         merged: List[dict] = []
-        for (x0, y0), dets in zip(offsets, self._score_crops(crops)):
+        for (x0, y0), dets in zip(raw["offsets"], raw["window_dets"]):
             for det in self._reduce_window(dets):
                 x1, y1, x2, y2 = det["bbox_xyxy"]
                 merged.append({
@@ -210,19 +239,13 @@ class TiledPredictor:
                     "score": float(det["score"]),
                     "bbox_xyxy": [x1 + x0, y1 + y0, x2 + x0, y2 + y0],
                 })
-
-        if self._keep_full:
-            _t = time.perf_counter()
-            full_dets = self._base.predict_image(image_np, orig_size)
-            self.t_infer += time.perf_counter() - _t
-            for det in full_dets:
+        if raw.get("full_dets"):
+            for det in raw["full_dets"]:
                 merged.append({
                     "label": int(det["label"]),
                     "score": float(det["score"]),
                     "bbox_xyxy": [float(v) for v in det["bbox_xyxy"]],
                 })
-
-        _t = time.perf_counter()
         out = _per_class_nms(merged, self._nms_thresh)
         if self._max_dets is not None and len(out) > self._max_dets:
             out.sort(key=lambda d: d["score"], reverse=True)

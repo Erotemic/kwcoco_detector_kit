@@ -228,6 +228,7 @@ def run_kwcoco_eval(
     tiled_pre_nms_score_thresh=None,
     tiled_pre_nms_topk=None,
     tiled_per_window_nms: bool = True,
+    eval_nms_workers: int = 0,
     read_workers: int = 4,
     device: str = "cpu",
 ) -> Path:
@@ -345,45 +346,85 @@ def run_kwcoco_eval(
     # one line. Tiled eval can be seconds/image, so a steady heartbeat
     # confirms liveness.
     import time as _time
-    # Per-phase wall-time so we can see where eval spends its budget:
-    #   decode_wait = time blocked getting the next (prefetched) image
-    #   predict     = predictor.predict_image (tiled: windows + GPU + merge)
-    #   annot       = building the pred kwcoco annotations
-    _t_decode = _t_predict = _t_annot = 0.0
-    _loop_t0 = _time.perf_counter()
-    _mark = _time.perf_counter()
-    _iter = _iter_prefetched(_gids, _read, int(read_workers))
-    for gid, arr in ub.ProgIter(_iter, total=len(_gids), desc="eval: scoring",
-                                verbose=3):
-        _t_decode += _time.perf_counter() - _mark
-        if isinstance(arr, BaseException):
-            print(f"  eval: failed to read gid {gid}: {arr}")
-            _mark = _time.perf_counter()
-            continue
-        H, W = arr.shape[:2]
-        _tp = _time.perf_counter()
-        detections = predictor.predict_image(arr, (W, H))
-        _t_predict += _time.perf_counter() - _tp
-        _ta = _time.perf_counter()
+
+    def _add_dets(_gid, detections):
+        """Add one image's detections to the pred bundle (main thread only —
+        kwcoco add_annotation isn't thread-safe)."""
+        nonlocal dropped_unknown_label
         for det in detections:
             score = float(det.get("score", 0.0))
             if score < float(score_thresh):
                 continue
             label = int(det.get("label", 0))
             if label < 0 or label >= n_labels:
-                # Out-of-range label from the predictor (e.g. background
-                # slot in a model that emits num_classes+1). Drop quietly
-                # but count so we can warn.
                 dropped_unknown_label += 1
                 continue
             x1, y1, x2, y2 = det["bbox_xyxy"]
             pred.add_annotation(
-                image_id=gid, category_id=label_to_cat_id[label],
+                image_id=_gid, category_id=label_to_cat_id[label],
                 bbox=[float(x1), float(y1), float(x2 - x1), float(y2 - y1)],
                 score=score,
             )
-        _t_annot += _time.perf_counter() - _ta
+
+    # Pipeline GPU inference with CPU NMS when asked and possible: profiling
+    # showed GPU (_infer_windows) and the NMS merge are comparable serial
+    # costs, so overlapping image N's NMS with image N+1's inference ~halves
+    # the compute. batched_nms releases the GIL, so consumer threads run truly
+    # parallel to the GPU-dispatching main thread. Annotation building stays
+    # on the main thread. Falls back to serial when eval_nms_workers<=0 or the
+    # predictor isn't a windowed one.
+    _pipeline = (
+        bool(tiled_eval) and int(eval_nms_workers) > 0
+        and hasattr(predictor, "_infer_windows")
+        and hasattr(predictor, "_merge_and_nms")
+    )
+    _t_decode = _t_predict = _t_annot = 0.0
+    _loop_t0 = _time.perf_counter()
+    _iter = _iter_prefetched(_gids, _read, int(read_workers))
+    _prog = ub.ProgIter(_iter, total=len(_gids), desc="eval: scoring", verbose=3)
+
+    if _pipeline:
+        from collections import deque
+        from concurrent.futures import ThreadPoolExecutor
+        print(f"  eval: pipelined NMS ({eval_nms_workers} consumer threads)")
+        _max_inflight = 2 * int(eval_nms_workers) + 2
+        pending = deque()  # (gid, future)
+        with ThreadPoolExecutor(max_workers=int(eval_nms_workers)) as _pool:
+            def _drain(block):
+                while pending and (block or pending[0][1].done()):
+                    g, fut = pending.popleft()
+                    _add_dets(g, fut.result())
+            for gid, arr in _prog:
+                if isinstance(arr, BaseException):
+                    print(f"  eval: failed to read gid {gid}: {arr}")
+                    continue
+                H, W = arr.shape[:2]
+                raw = predictor._infer_windows(arr, (W, H))  # GPU, main thread
+                if raw.get("deferred") is not None:
+                    _add_dets(gid, raw["deferred"])
+                else:
+                    pending.append((gid, _pool.submit(predictor._merge_and_nms, raw)))
+                _drain(block=False)
+                while len(pending) >= _max_inflight:  # backpressure
+                    g, fut = pending.popleft()
+                    _add_dets(g, fut.result())
+            _drain(block=True)
+    else:
         _mark = _time.perf_counter()
+        for gid, arr in _prog:
+            _t_decode += _time.perf_counter() - _mark
+            if isinstance(arr, BaseException):
+                print(f"  eval: failed to read gid {gid}: {arr}")
+                _mark = _time.perf_counter()
+                continue
+            H, W = arr.shape[:2]
+            _tp = _time.perf_counter()
+            detections = predictor.predict_image(arr, (W, H))
+            _t_predict += _time.perf_counter() - _tp
+            _ta = _time.perf_counter()
+            _add_dets(gid, detections)
+            _t_annot += _time.perf_counter() - _ta
+            _mark = _time.perf_counter()
 
     _loop_total = _time.perf_counter() - _loop_t0
     _n = max(1, len(_gids))

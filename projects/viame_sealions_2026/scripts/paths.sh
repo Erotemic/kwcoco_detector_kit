@@ -228,9 +228,20 @@ kcd_require_init_checkpoint() {
     local ckpt
     ckpt="$(kcd_resolve_init_checkpoint "$variant")"
     [ -z "$ckpt" ] && return 0
+    # Missing -> try to fetch it automatically (idempotent; uses KCD_IMAGE
+    # for the safetensors->pth conversion). Disable with KCD_NO_AUTO_FETCH=1.
+    if [ ! -e "$ckpt" ] && [ "${KCD_NO_AUTO_FETCH:-0}" != "1" ]; then
+        local _dir
+        _dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        echo "[paths] $variant pretrained checkpoint missing; fetching ..." >&2
+        if bash "$_dir/fetch_pretrained.sh" "$variant" >&2; then
+            ckpt="$(kcd_resolve_init_checkpoint "$variant")"
+        fi
+    fi
     if [ ! -e "$ckpt" ]; then
         echo "ERROR: $variant COCO pretrained checkpoint not found at: $ckpt" >&2
         echo "  Fetch it:  bash projects/viame_sealions_2026/scripts/fetch_pretrained.sh $variant" >&2
+        echo "  (auto-fetch failed or was disabled via KCD_NO_AUTO_FETCH=1)" >&2
         echo "  or rsync pretrained_models/ from a host that has it," >&2
         echo "  or set KCD_TRAIN_FROM_SCRATCH=1 to skip pretrained init." >&2
         return 1

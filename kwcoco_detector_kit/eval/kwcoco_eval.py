@@ -323,14 +323,27 @@ def run_kwcoco_eval(
     # (clearline off) so the stream tees/logs cleanly instead of rewriting
     # one line. Tiled eval can be seconds/image, so a steady heartbeat
     # confirms liveness.
+    import time as _time
+    # Per-phase wall-time so we can see where eval spends its budget:
+    #   decode_wait = time blocked getting the next (prefetched) image
+    #   predict     = predictor.predict_image (tiled: windows + GPU + merge)
+    #   annot       = building the pred kwcoco annotations
+    _t_decode = _t_predict = _t_annot = 0.0
+    _loop_t0 = _time.perf_counter()
+    _mark = _time.perf_counter()
     _iter = _iter_prefetched(_gids, _read, int(read_workers))
     for gid, arr in ub.ProgIter(_iter, total=len(_gids), desc="eval: scoring",
                                 verbose=3):
+        _t_decode += _time.perf_counter() - _mark
         if isinstance(arr, BaseException):
             print(f"  eval: failed to read gid {gid}: {arr}")
+            _mark = _time.perf_counter()
             continue
         H, W = arr.shape[:2]
+        _tp = _time.perf_counter()
         detections = predictor.predict_image(arr, (W, H))
+        _t_predict += _time.perf_counter() - _tp
+        _ta = _time.perf_counter()
         for det in detections:
             score = float(det.get("score", 0.0))
             if score < float(score_thresh):
@@ -348,6 +361,23 @@ def run_kwcoco_eval(
                 bbox=[float(x1), float(y1), float(x2 - x1), float(y2 - y1)],
                 score=score,
             )
+        _t_annot += _time.perf_counter() - _ta
+        _mark = _time.perf_counter()
+
+    _loop_total = _time.perf_counter() - _loop_t0
+    _n = max(1, len(_gids))
+    print(
+        f"  eval timing: {_loop_total:.0f}s total over {len(_gids)} imgs "
+        f"({1000 * _loop_total / _n:.0f} ms/img) | "
+        f"decode_wait {_t_decode:.0f}s, predict {_t_predict:.0f}s, "
+        f"annot {_t_annot:.0f}s"
+    )
+    if hasattr(predictor, "t_infer") and hasattr(predictor, "t_nms"):
+        print(
+            f"  eval timing (tiled): window_infer {predictor.t_infer:.0f}s, "
+            f"nms_merge {predictor.t_nms:.0f}s "
+            f"(the rest of 'predict' is window cropping + box offsetting)"
+        )
     if dropped_unknown_label:
         print(
             f"  eval: dropped {dropped_unknown_label} detections with "

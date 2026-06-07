@@ -30,6 +30,7 @@ window seams or exceed a single window.
 """
 from __future__ import annotations
 
+import time
 from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -119,6 +120,10 @@ class TiledPredictor:
         # per-window predict_image otherwise.
         self._batch_size = max(1, int(batch_size))
         self._can_batch = callable(getattr(base, "predict_batch", None))
+        # Accumulated wall-time (seconds) for the eval timing breakdown:
+        # window inference (base forward) vs the cross-window NMS merge.
+        self.t_infer = 0.0
+        self.t_nms = 0.0
 
     @property
     def eval_spatial_size(self) -> Tuple[int, int]:
@@ -157,24 +162,36 @@ class TiledPredictor:
                 })
 
         if self._keep_full:
-            for det in self._base.predict_image(image_np, orig_size):
+            _t = time.perf_counter()
+            full_dets = self._base.predict_image(image_np, orig_size)
+            self.t_infer += time.perf_counter() - _t
+            for det in full_dets:
                 merged.append({
                     "label": int(det["label"]),
                     "score": float(det["score"]),
                     "bbox_xyxy": [float(v) for v in det["bbox_xyxy"]],
                 })
 
-        return _per_class_nms(merged, self._nms_thresh)
+        _t = time.perf_counter()
+        out = _per_class_nms(merged, self._nms_thresh)
+        self.t_nms += time.perf_counter() - _t
+        return out
 
     def _score_crops(self, crops):
         """Yield a detection list per crop, batching base.predict_batch calls."""
         if not self._can_batch:
             for crop in crops:
                 ch, cw = int(crop.shape[0]), int(crop.shape[1])
-                yield self._base.predict_image(crop, (cw, ch))
+                _t = time.perf_counter()
+                dets = self._base.predict_image(crop, (cw, ch))
+                self.t_infer += time.perf_counter() - _t
+                yield dets
             return
         for i in range(0, len(crops), self._batch_size):
             chunk = crops[i:i + self._batch_size]
             sizes = [(int(c.shape[1]), int(c.shape[0])) for c in chunk]
-            for dets in self._base.predict_batch(chunk, sizes):
+            _t = time.perf_counter()
+            results = self._base.predict_batch(chunk, sizes)
+            self.t_infer += time.perf_counter() - _t
+            for dets in results:
                 yield dets

@@ -170,3 +170,41 @@ kcd_require_path() {
         return 1
     fi
 }
+
+# Resolve a variant's COCO pretrained init checkpoint path. Honors an
+# explicit KCD_INIT_CHECKPOINT override and KCD_TRAIN_FROM_SCRATCH (which
+# yields an empty path = no init). Single source of the variant->path
+# mapping, shared by the host-side submit pre-flight and the in-container
+# _launch_train.sh so the two never drift.
+kcd_resolve_init_checkpoint() {
+    local variant="$1"
+    [ "${KCD_TRAIN_FROM_SCRATCH:-0}" = "1" ] && return 0
+    if [ -n "${KCD_INIT_CHECKPOINT:-}" ]; then
+        printf '%s\n' "$KCD_INIT_CHECKPOINT"
+        return 0
+    fi
+    case "$variant" in
+        deimv2_dinov3_s)  printf '%s\n' "$KCD_DEIMV2_DINOV3_S_COCO_PTH" ;;
+        deimv2_hgnetv2_n) printf '%s\n' "$KCD_DEIMV2_HGNETV2_N_COCO_PTH" ;;
+        deimv2_hgnetv2_s) printf '%s\n' "$KCD_DEIMV2_HGNETV2_S_COCO_PTH" ;;
+        *) ;;
+    esac
+}
+
+# Fail fast (with a fetch hint) when a variant's pretrained init checkpoint
+# is missing. No-op for from-scratch training. Call from the host BEFORE
+# spinning up docker so a missing checkpoint doesn't cost a container start.
+kcd_require_init_checkpoint() {
+    local variant="$1"
+    [ "${KCD_TRAIN_FROM_SCRATCH:-0}" = "1" ] && return 0
+    local ckpt
+    ckpt="$(kcd_resolve_init_checkpoint "$variant")"
+    [ -z "$ckpt" ] && return 0
+    if [ ! -e "$ckpt" ]; then
+        echo "ERROR: $variant COCO pretrained checkpoint not found at: $ckpt" >&2
+        echo "  Fetch it:  bash projects/viame_sealions_2026/scripts/fetch_pretrained.sh $variant" >&2
+        echo "  or rsync pretrained_models/ from a host that has it," >&2
+        echo "  or set KCD_TRAIN_FROM_SCRATCH=1 to skip pretrained init." >&2
+        return 1
+    fi
+}

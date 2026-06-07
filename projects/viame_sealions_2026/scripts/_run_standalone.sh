@@ -25,6 +25,12 @@ source "$SCRIPT_DIR/paths.sh"
 : "${KCD_RUN_NAME:?_run_standalone.sh: KCD_RUN_NAME must be set}"
 KCD_IMAGE="${KCD_IMAGE:-kwcoco-detector-kit:ogdino-cu132-arisia}"
 LAUNCH="${KCD_LAUNCH_SCRIPT:-_launch_train.sh}"
+
+# Host-side pre-flight: a training launch needs the variant's pretrained
+# init checkpoint. Check it HERE, before paying for a container start.
+if [ "$LAUNCH" = "_launch_train.sh" ]; then
+    kcd_require_init_checkpoint "${KCD_VARIANT:?_run_standalone.sh: missing KCD_VARIANT}" || exit 1
+fi
 SHM_GB=$(( 16 + 8 * ${KCD_NUM_GPUS:-1} ))
 
 # GPU flag: omit for CPU-only jobs (tile build sets KCD_GRES=none).

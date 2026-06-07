@@ -36,6 +36,11 @@ source "$SCRIPT_DIR/paths.sh"
 : "${KCD_VARIANT:?_submit_train.sh: KCD_VARIANT must be exported}"
 : "${KCD_NUM_GPUS:?_submit_train.sh: KCD_NUM_GPUS must be exported}"
 
+# Fail fast on the host (before sbatch OR the standalone docker run) when
+# the variant's pretrained init checkpoint is missing — same check the
+# in-container launch does, but without paying for a job/container start.
+kcd_require_init_checkpoint "$KCD_VARIANT" || exit 1
+
 # No-slurm hosts (e.g. aiq-gpu): run the job directly via `docker run` in
 # the foreground instead of sbatch. The wrapper already exported every
 # KCD_* var, so _run_standalone.sh forwards them as-is. Run it in tmux and

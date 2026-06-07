@@ -52,7 +52,8 @@ def _read_nocls_ap(metrics_fpath: Path):
 
 
 def _score_one(trainer, *, workdir, test_kwcoco, out_root, candidate_id,
-               category_names, distractors, tiled, device, window, overlap):
+               category_names, distractors, tiled, device, window, overlap,
+               force=True):
     from kwcoco_detector_kit.eval.kwcoco_eval import run_kwcoco_eval
     metrics = run_kwcoco_eval(
         trainer=trainer,
@@ -61,7 +62,7 @@ def _score_one(trainer, *, workdir, test_kwcoco, out_root, candidate_id,
         kcd_root=out_root,
         candidate_id=candidate_id,
         category_names=category_names,
-        force=True,
+        force=force,
         distractor_classes=distractors or None,
         tiled_eval=tiled,
         tiled_window=window,
@@ -96,6 +97,9 @@ def main() -> int:
     p.add_argument("--window", type=int, default=None,
                    help="tiled window size (square); default = model eval_spatial_size")
     p.add_argument("--overlap", type=float, default=0.25)
+    p.add_argument("--force_wholeimage", action="store_true",
+                   help="recompute the whole-image baseline even if its "
+                        "detect_metrics.json already exists (default: reuse it)")
     args = p.parse_args()
 
     H, W = (int(x) for x in str(args.input_hw).replace("x", ",").split(","))
@@ -125,7 +129,8 @@ def main() -> int:
     whole = _score_one(trainer, workdir=workdir, test_kwcoco=test_kwcoco,
                        out_root=out_root, candidate_id="wholeimage",
                        category_names=category_names, distractors=distractors,
-                       tiled=False, device=args.device, window=None, overlap=args.overlap)
+                       tiled=False, device=args.device, window=None, overlap=args.overlap,
+                       force=bool(args.force_wholeimage))
     print("\n=== pass 2/2: TILED (windowed) ===")
     tiled = _score_one(trainer, workdir=workdir, test_kwcoco=test_kwcoco,
                       out_root=out_root, candidate_id="tiled",

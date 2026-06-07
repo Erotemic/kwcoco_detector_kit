@@ -58,12 +58,13 @@ echo
 
 set -x
 docker run --rm "${GPU_FLAGS[@]}" \
+    -e PYTHONUNBUFFERED=1 \
     -v "$KCD_DATA_ROOT:$KCD_DATA_ROOT" \
     -v "$KCD_DATA_DPATH:$KCD_DATA_DPATH" \
     "${DEV_MOUNTS[@]}" \
     -w /opt/kwcoco_detector_kit \
     "$KCD_IMAGE" \
-    python3 "$KCD_KIT_DPATH/projects/viame_sealions_2026/scripts/rescore_tiled_compare.py" \
+    python3 -u "$KCD_KIT_DPATH/projects/viame_sealions_2026/scripts/rescore_tiled_compare.py" \
         --kcd_root "$KCD_ROOT" \
         --category_names "$CATEGORY_NAMES" \
         ${DISTRACTORS:+--distractor_classes "$DISTRACTORS"} \

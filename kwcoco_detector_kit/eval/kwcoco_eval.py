@@ -266,7 +266,12 @@ def run_kwcoco_eval(
         pred.add_image(**new, id=img["id"])
 
     dropped_unknown_label = 0
-    for gid in list(true.images()):
+    _gids = list(true.images())
+    _n_imgs = len(_gids)
+    _progress_every = max(1, _n_imgs // 20)
+    for _i, gid in enumerate(_gids):
+        if _i % _progress_every == 0 or _i == _n_imgs - 1:
+            print(f"  eval: scoring image {_i + 1}/{_n_imgs}", flush=True)
         coco_img = true.coco_image(gid)
         try:
             arr = coco_img.imdelay().finalize()

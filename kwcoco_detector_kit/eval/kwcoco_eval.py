@@ -227,7 +227,7 @@ def run_kwcoco_eval(
     tiled_max_dets=None,
     tiled_pre_nms_score_thresh=None,
     tiled_pre_nms_topk=None,
-    tiled_per_window_nms: bool = True,
+    tiled_per_window_nms: bool = False,
     eval_nms_workers: int = 0,
     read_workers: int = 4,
     device: str = "cpu",

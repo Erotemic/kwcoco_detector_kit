@@ -132,3 +132,11 @@ def test_pre_nms_floor_drops_low_scores(tmp_path):
     # floor above the 0.2 secondary box should drop it everywhere
     high = _pred_boxes(_run(tmp_path / "h", tiled=True, pre_floor=0.5))
     assert all(s >= 0.5 for (_g, _c, s, _b) in high)
+
+
+def test_per_window_nms_off_matches_on(tmp_path):
+    # The global NMS subsumes per-window NMS, so toggling per_window_nms must
+    # not change the final predictions (it's purely a speed knob).
+    on = _pred_boxes(_run(tmp_path / "on", tiled=True, per_window_nms=True))
+    off = _pred_boxes(_run(tmp_path / "off", tiled=True, per_window_nms=False))
+    assert on == off

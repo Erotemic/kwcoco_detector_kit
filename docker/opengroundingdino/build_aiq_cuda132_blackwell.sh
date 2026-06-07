@@ -59,8 +59,12 @@ echo "Torch index:          $TORCH_INDEX_URL (pre=$TORCH_PRE)"
 echo "TORCH_CUDA_ARCH_LIST: $TORCH_CUDA_ARCH_LIST  (Blackwell sm_120)"
 echo
 
+source "$(dirname "$0")/_build_provenance.sh"
+mapfile -t PROV_ARGS < <(kcd_provenance_build_args)
+
 docker build \
     -f docker/opengroundingdino/Dockerfile \
+    "${PROV_ARGS[@]}" \
     --ulimit nofile="$BUILD_ULIMIT_NOFILE" \
     --build-arg BASE_IMAGE="$BASE_IMAGE" \
     --build-arg PYTHON_VERSION="$PYTHON_VERSION" \

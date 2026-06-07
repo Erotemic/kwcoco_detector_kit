@@ -137,7 +137,8 @@ if [ "$TAG_VARIANT" = "1" ]; then
     echo "Variant tag: $VARIANT_IMAGE_TAG"
 fi
 
-_ensure_submodule
+source "$(dirname "$0")/_build_provenance.sh"
+mapfile -t PROV_ARGS < <(kcd_provenance_build_args)
 
 tags=(-t "$AUTO_IMAGE_TAG")
 if [ "$TAG_VARIANT" = "1" ]; then
@@ -153,6 +154,7 @@ cmd=(
     --build-arg "TORCH_INDEX_URL=$TORCH_INDEX_URL"
     --build-arg "TORCH_PRE=$TORCH_PRE"
     --build-arg "TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST"
+    "${PROV_ARGS[@]}"
     "${tags[@]}"
     .
 )

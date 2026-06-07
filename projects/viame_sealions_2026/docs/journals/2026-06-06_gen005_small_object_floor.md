@@ -70,7 +70,35 @@ on a bigger model:
 4. **Larger backbone (dinov3_b/l)** — deprioritize. Large-object AP
    already ~0.4; capacity is not the constraint.
 
-### Recommended first Blackwell experiment
+### RESULT (2026-06-07): tiled eval recovers pup AP — gap was the protocol
+
+Re-scored the gen005 pup_vs_nonpup checkpoint (arisia 2589, mid-training)
+whole-image vs tiled on the v2 test set, class-agnostic AP@0.5:
+
+| | whole-image@640 | tiled | gain |
+|---|---|---|---|
+| overall | 0.542 | **0.857** | +0.32 (1.58x) |
+| **pup** | 0.123 | **0.838** | **+0.72 (6.8x)** |
+| nonpup_sealion | 0.689 | 0.879 | +0.19 |
+
+The pup gap was almost entirely an **eval-protocol artifact**, not a model
+deficiency. Tiling (sliding native-resolution 640 windows + per-class NMS
+merge, batched) measures the model at the resolution it trained on; pups
+stay ~46px instead of shrinking to ~7px. A mid-training checkpoint detects
+pups at AP ~0.84 once measured correctly.
+
+Consequences:
+* **Tiled eval should be the standard selection metric** for this corpus
+  (whole-image@input grossly understates small-object AP). Wire it on by
+  default for sealion evals (KCD_TILED_EVAL).
+* The Blackwell **1280-training experiment drops in priority**: it was
+  premised on "small objects need higher *training* resolution," but the
+  model already detects them — the gap was *eval* resolution. 1280 may
+  still add a little, but it's polish, not the fix. Spend Blackwell on
+  throughput / a capacity bump / faster iteration instead, if anything.
+* Operationally: deploy with tiled/windowed inference on the full aerials.
+
+### (superseded) Recommended first Blackwell experiment
 
 pup_vs_nonpup, dinov3_s, **1280px** input (train + eval), per-GPU batch
 sized to fill ~96 GB (start 8–12, scale up), LR scaled with batch,

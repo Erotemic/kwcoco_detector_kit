@@ -70,4 +70,5 @@ docker run --rm "${GPU_FLAGS[@]}" \
         ${DISTRACTORS:+--distractor_classes "$DISTRACTORS"} \
         --device "$KCD_EVAL_DEVICE" \
         --overlap "${KCD_TILED_EVAL_OVERLAP:-0.25}" \
+        ${KCD_FORCE_WHOLEIMAGE:+--force_wholeimage} \
         ${KCD_TILED_EVAL_WINDOW:+--window "$KCD_TILED_EVAL_WINDOW"}

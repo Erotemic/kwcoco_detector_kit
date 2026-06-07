@@ -709,6 +709,25 @@ class DEIMv2Predictor:
         self._eval_h = int(eval_h)
         self._eval_w = int(eval_w)
         self._device = device
+        # fp16 autocast for inference on CUDA — the model trained under AMP,
+        # so fp16 is numerically safe here and ~2x faster on tensor cores
+        # (matters a lot for tiled eval's ~55 forward passes/image). Disable
+        # with KCD_EVAL_AMP=0. CPU path stays fp32.
+        self._use_amp = (
+            str(device).startswith("cuda")
+            and os.environ.get("KCD_EVAL_AMP", "1") != "0"
+        )
+
+    def _forward(self, im, sz):
+        """Model forward under no_grad + (CUDA) fp16 autocast."""
+        import contextlib
+        import torch
+        amp = (
+            torch.autocast("cuda", dtype=torch.float16)
+            if self._use_amp else contextlib.nullcontext()
+        )
+        with torch.no_grad(), amp:
+            return self._model(im, sz)
 
     @property
     def eval_spatial_size(self) -> Tuple[int, int]:
@@ -733,8 +752,7 @@ class DEIMv2Predictor:
         ).to(self._device)
         W, H = int(orig_size[0]), int(orig_size[1])
         sz = torch.tensor([[W, H]], dtype=torch.int64, device=self._device)
-        with torch.no_grad():
-            labels, boxes, scores = self._model(chw, sz)
+        labels, boxes, scores = self._forward(chw, sz)
         out: List[dict] = []
         b = boxes[0].cpu().numpy()
         s = scores[0].cpu().numpy()
@@ -791,8 +809,7 @@ class DEIMv2Predictor:
             sizes.append([int(osz[0]), int(osz[1])])
         batch = torch.from_numpy(np.stack(chws, axis=0)).to(self._device)
         sz = torch.tensor(sizes, dtype=torch.int64, device=self._device)
-        with torch.no_grad():
-            labels, boxes, scores = self._model(batch, sz)
+        labels, boxes, scores = self._forward(batch, sz)
         results: List[List[dict]] = []
         for bi in range(len(images_np)):
             b = boxes[bi].cpu().numpy()

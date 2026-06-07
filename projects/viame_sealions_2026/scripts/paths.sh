@@ -121,6 +121,18 @@ export KCD_TILE_KEEP_NEGATIVE="${KCD_TILE_KEEP_NEGATIVE:-true}"
 export KCD_TILE_CATEGORY_NAMES="${KCD_TILE_CATEGORY_NAMES:-bull,subadult_male,female,juvenile,pup,northern_fur_seal,negative,dead_pup,dead_nonpup}"
 export KCD_TILE_MODE="${KCD_TILE_MODE:-multiscale}"
 
+# -- Eval defaults -------------------------------------------------------
+#
+# Tiled (windowed) eval is the DEFAULT for this project: we train on tiles
+# cut from full-resolution aerials, so evaluating on whole images resized
+# to the model input measures the wrong thing — it shrinks small objects
+# (pups) below detectability. Tiled eval slides native-resolution windows
+# matching the training tile scale. The gain is decisive: on gen005 pup it
+# lifted pup AP 0.123 -> 0.838 (see docs/journals/2026-06-06_gen005_small_object_floor.md).
+# Override KCD_TILED_EVAL=False for a deliberate whole-image baseline.
+export KCD_TILED_EVAL="${KCD_TILED_EVAL:-True}"
+export KCD_EVAL_DEVICE="${KCD_EVAL_DEVICE:-cuda}"
+
 # -- Pretrained checkpoints ----------------------------------------------
 
 # DEIMv2-DINOv3-S COCO-finetuned (50.9 AP on COCO). Foundation backbone
@@ -128,6 +140,19 @@ export KCD_TILE_MODE="${KCD_TILE_MODE:-multiscale}"
 # COCO. The strongest publicly-available init for `deimv2_dinov3_s`.
 export KCD_DEIMV2_DINOV3_S_COCO_DIR="${KCD_DEIMV2_DINOV3_S_COCO_DIR:-$KCD_PRETRAINED_ROOT/deimv2_dinov3_s_coco}"
 export KCD_DEIMV2_DINOV3_S_COCO_PTH="${KCD_DEIMV2_DINOV3_S_COCO_PTH:-$KCD_DEIMV2_DINOV3_S_COCO_DIR/deimv2_dinov3_s_coco.pth}"
+
+# Larger DINOv3 backbones (same family, more capacity). All have public
+# COCO checkpoints on HF (Intellindust/DEIMv2_DINOv3_{M,L,X}_COCO).
+#   M: 18.1M params, 53.0 COCO AP
+#   L: 32.2M params, 56.0 COCO AP
+#   X: 50.3M params, 57.8 COCO AP
+# Fetch with: fetch_pretrained.sh deimv2_dinov3_{m,l,x}
+export KCD_DEIMV2_DINOV3_M_COCO_DIR="${KCD_DEIMV2_DINOV3_M_COCO_DIR:-$KCD_PRETRAINED_ROOT/deimv2_dinov3_m_coco}"
+export KCD_DEIMV2_DINOV3_M_COCO_PTH="${KCD_DEIMV2_DINOV3_M_COCO_PTH:-$KCD_DEIMV2_DINOV3_M_COCO_DIR/deimv2_dinov3_m_coco.pth}"
+export KCD_DEIMV2_DINOV3_L_COCO_DIR="${KCD_DEIMV2_DINOV3_L_COCO_DIR:-$KCD_PRETRAINED_ROOT/deimv2_dinov3_l_coco}"
+export KCD_DEIMV2_DINOV3_L_COCO_PTH="${KCD_DEIMV2_DINOV3_L_COCO_PTH:-$KCD_DEIMV2_DINOV3_L_COCO_DIR/deimv2_dinov3_l_coco.pth}"
+export KCD_DEIMV2_DINOV3_X_COCO_DIR="${KCD_DEIMV2_DINOV3_X_COCO_DIR:-$KCD_PRETRAINED_ROOT/deimv2_dinov3_x_coco}"
+export KCD_DEIMV2_DINOV3_X_COCO_PTH="${KCD_DEIMV2_DINOV3_X_COCO_PTH:-$KCD_DEIMV2_DINOV3_X_COCO_DIR/deimv2_dinov3_x_coco.pth}"
 
 # DEIMv2-HGNetv2-N COCO (43.0 AP, 3.6M params, native 320x320). Mobile-
 # class HGNetv2 B0 backbone + DEIM head, COCO-pretrained. The fastest
@@ -185,6 +210,9 @@ kcd_resolve_init_checkpoint() {
     fi
     case "$variant" in
         deimv2_dinov3_s)  printf '%s\n' "$KCD_DEIMV2_DINOV3_S_COCO_PTH" ;;
+        deimv2_dinov3_m)  printf '%s\n' "$KCD_DEIMV2_DINOV3_M_COCO_PTH" ;;
+        deimv2_dinov3_l)  printf '%s\n' "$KCD_DEIMV2_DINOV3_L_COCO_PTH" ;;
+        deimv2_dinov3_x)  printf '%s\n' "$KCD_DEIMV2_DINOV3_X_COCO_PTH" ;;
         deimv2_hgnetv2_n) printf '%s\n' "$KCD_DEIMV2_HGNETV2_N_COCO_PTH" ;;
         deimv2_hgnetv2_s) printf '%s\n' "$KCD_DEIMV2_HGNETV2_S_COCO_PTH" ;;
         *) ;;

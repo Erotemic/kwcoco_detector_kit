@@ -57,11 +57,6 @@ export KCD_BALANCE_MAX_OVERSAMPLE=1
 # ---- Eval: tiled (windowed) on GPU, batched + prefetched ---------------
 # The whole point of the kit work this session — closes the train/eval
 # resolution gap for pups. Override to False for a plain whole-image eval.
-# Train-only: aiq is a training box; eval/export/bench run on namek via the
-# rescore pipeline (rescore_all.sh) so a post-train bug can't derail training.
-export KCD_DO_EXPORT="${KCD_DO_EXPORT:-False}"
-export KCD_DO_EVAL="${KCD_DO_EVAL:-False}"
-export KCD_DO_BENCH="${KCD_DO_BENCH:-False}"
 export KCD_TILED_EVAL="${KCD_TILED_EVAL:-True}"
 export KCD_EVAL_DEVICE="${KCD_EVAL_DEVICE:-cuda}"
 

@@ -65,11 +65,6 @@ export KCD_BALANCE_MAX_OVERSAMPLE=1
 export KCD_TILE_SIZE="${KCD_TILE_SIZE:-1280}"
 
 # ---- Eval: tiled (windowed) at the trained 1280 window -----------------
-# Train-only: aiq is a training box; eval/export/bench run on namek via the
-# rescore pipeline (rescore_all.sh) so a post-train bug can't derail training.
-export KCD_DO_EXPORT="${KCD_DO_EXPORT:-False}"
-export KCD_DO_EVAL="${KCD_DO_EVAL:-False}"
-export KCD_DO_BENCH="${KCD_DO_BENCH:-False}"
 export KCD_TILED_EVAL="${KCD_TILED_EVAL:-True}"
 export KCD_EVAL_DEVICE="${KCD_EVAL_DEVICE:-cuda}"
 

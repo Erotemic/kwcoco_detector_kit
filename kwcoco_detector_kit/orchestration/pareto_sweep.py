@@ -332,6 +332,30 @@ def _has_best_checkpoint(workdir: Path) -> bool:
     return (workdir / "best_stg2.pth").exists() or (workdir / "best_stg1.pth").exists()
 
 
+_TRAIN_COMPLETE_MARKER = ".train_complete"
+
+
+def _train_complete(workdir: Path) -> bool:
+    """True iff a prior _run_train in this workdir ran to completion.
+
+    Distinguishes a finished checkpoint from one left behind by a crashed or
+    killed (scancel / SIGKILL / power loss) training. DEIMv2 writes
+    best_stg2.pth right after the FIRST eval, so even an epoch-0 kill leaves a
+    best_*.pth — `_has_best_checkpoint` alone can't tell the two apart. The
+    marker is written only after _run_train returns without raising, so a
+    partial checkpoint never satisfies it (and the cell retrains instead of
+    evaluating garbage).
+    """
+    return (workdir / _TRAIN_COMPLETE_MARKER).exists()
+
+
+def _mark_train_complete(workdir: Path) -> None:
+    try:
+        (workdir / _TRAIN_COMPLETE_MARKER).write_text("ok\n")
+    except OSError:
+        pass
+
+
 def _find_plausible_onnx(workdir: Path) -> Optional[Path]:
     export_dpath = workdir / "export"
     for fpath in sorted(export_dpath.glob("*.onnx")):
@@ -544,15 +568,25 @@ def run(config):
         if bool(config.do_bench):
             enabled_stages += 1
 
-        if _has_best_checkpoint(workdir) and not bool(config.force_train):
-            print(f"[sweep] {candidate_id}: skip train; best_*.pth already exists")
+        if _has_best_checkpoint(workdir) and _train_complete(workdir) \
+                and not bool(config.force_train):
+            print(f"[sweep] {candidate_id}: skip train; completed best_*.pth already exists")
         else:
+            if _has_best_checkpoint(workdir) and not _train_complete(workdir):
+                # A best_*.pth with no completion marker means a prior training
+                # crashed or was killed (DEIMv2 writes best_stg2 after the first
+                # eval, so even an epoch-0 kill leaves one). Retrain rather than
+                # skip-to-eval on that partial checkpoint — evaluating a crashed
+                # model is never what we want.
+                print(f"[sweep] {candidate_id}: best_*.pth present but no completion "
+                      f"marker (prior train crashed/killed) -> retraining")
             did_any_stage = True
             try:
                 _run_train(
                     trainer, config=config, cell=cell, workdir=workdir,
                     candidate_id=candidate_id,
                 )
+                _mark_train_complete(workdir)
             except Exception as ex:
                 row["status"] = "fail_train"
                 row["stage_failed"] = "train"

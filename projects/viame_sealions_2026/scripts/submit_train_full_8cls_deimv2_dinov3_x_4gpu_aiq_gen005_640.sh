@@ -64,7 +64,14 @@ export KCD_BALANCE_MAX_OVERSAMPLE=1
 # The b9540ace cache was tiled with the full source category set, so all 8
 # target classes survive the scheme application — no retiling needed.
 
-# ---- Eval: tiled (windowed) on GPU -------------------------------------
+# ---- Train-only: aiq is a training box -------------------------------
+# eval/export/bench run on namek via the rescore pipeline
+# (projects/viame_sealions_2026/scripts/rescore_all.sh), so a post-train
+# stage bug can never derail the training run. Override KCD_DO_EVAL=True etc.
+# to re-enable a stage here.
+export KCD_DO_EXPORT="${KCD_DO_EXPORT:-False}"
+export KCD_DO_EVAL="${KCD_DO_EVAL:-False}"
+export KCD_DO_BENCH="${KCD_DO_BENCH:-False}"
 export KCD_TILED_EVAL="${KCD_TILED_EVAL:-True}"
 export KCD_EVAL_DEVICE="${KCD_EVAL_DEVICE:-cuda}"
 

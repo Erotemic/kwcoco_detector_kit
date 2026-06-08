@@ -18,11 +18,9 @@
 # cards have huge headroom; raise KCD_PER_GPU_BATCH (and scale LR) once
 # this run proves the path.
 #
-# Run it in tmux, capture with tee:
+# Submit (slurm writes the log to slurm_logs; follow with follow_job.sh <jobid>):
 #   KCD_IMAGE=kwcoco-detector-kit:ogdino-cu132-aiq \
-#   KCD_DEV_MOUNT_KIT=1 KCD_DEV_MOUNT_DEIMV2=1 \
-#     bash projects/viame_sealions_2026/scripts/submit_train_pup_vs_nonpup_deimv2_dinov3_s_4gpu_aiq_gen005_640.sh \
-#     2>&1 | tee /data/users/jon.crall/kcd_sealion/aiq_pup_640.log
+#     bash projects/viame_sealions_2026/scripts/submit_train_pup_vs_nonpup_deimv2_dinov3_s_4gpu_aiq_gen005_640.sh
 #
 # Pre-flight on aiq-gpu:
 #   * b9540ace tile cache present (set KCD_TILE_CACHE_DPATH to the SSD path,

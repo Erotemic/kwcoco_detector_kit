@@ -27,12 +27,10 @@
 # noisy regardless of balance. NFS is a real output class but stays excluded
 # from our class-agnostic selection AP (distractor; NFS is always a negative).
 #
-# Run it in tmux, capture with tee (NOT nohup):
+# Submit (slurm writes the log to slurm_logs; follow with follow_job.sh <jobid>):
 #   KCD_IMAGE=kwcoco-detector-kit:ogdino-cu132-aiq \
-#   (slurm; gres/partition from your shell rc) \
 #   KCD_TILE_CACHE_DPATH=/data/users/jon.crall/kcd_sealion/ssd-data/tile_cache \
-#     bash projects/viame_sealions_2026/scripts/submit_train_full_8cls_deimv2_dinov3_x_4gpu_aiq_gen005_640.sh \
-#     2>&1 | tee /data/users/jon.crall/kcd_sealion/aiq_full8_x_640.log
+#     bash projects/viame_sealions_2026/scripts/submit_train_full_8cls_deimv2_dinov3_x_4gpu_aiq_gen005_640.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

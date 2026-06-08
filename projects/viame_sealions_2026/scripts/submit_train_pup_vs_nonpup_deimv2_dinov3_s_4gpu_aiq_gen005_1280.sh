@@ -26,12 +26,10 @@
 # KCD_PER_GPU_BATCH (and scale LR ~linearly). If it OOMs, you're already at
 # the floor — drop tile scales or input_hw, not batch.
 #
-# Run it in tmux, capture with tee (NOT nohup):
+# Submit (slurm writes the log to slurm_logs; follow with follow_job.sh <jobid>):
 #   KCD_IMAGE=kwcoco-detector-kit:ogdino-cu132-aiq \
-#   (slurm; gres/partition from your shell rc) \
 #   KCD_TILE_CACHE_DPATH=/data/users/jon.crall/kcd_sealion/tile_cache \
-#     bash projects/viame_sealions_2026/scripts/submit_train_pup_vs_nonpup_deimv2_dinov3_s_4gpu_aiq_gen005_1280.sh \
-#     2>&1 | tee /data/users/jon.crall/kcd_sealion/aiq_pup_s_1280.log
+#     bash projects/viame_sealions_2026/scripts/submit_train_pup_vs_nonpup_deimv2_dinov3_s_4gpu_aiq_gen005_1280.sh
 #
 # Pre-flight: the 0441d89e (1280) tile cache must be present. The train
 # script computes the tile hash from KCD_TILE_SIZE below and fails fast if

@@ -563,27 +563,12 @@ def run(config):
                     break
                 continue
 
-        if bool(config.do_export):
-            existing_onnx = _find_plausible_onnx(workdir)
-            if existing_onnx and not bool(config.force_export):
-                print(f"[sweep] {candidate_id}: skip export; {existing_onnx} already exists")
-            else:
-                did_any_stage = True
-                try:
-                    _run_export(
-                        trainer, workdir=workdir, cell=cell,
-                        force=bool(config.force_export),
-                    )
-                except Exception as ex:
-                    row["status"] = "fail_export"
-                    row["stage_failed"] = "export"
-                    row["error"] = f"{type(ex).__name__}: {ex}"
-                    print(f"\n[sweep] {candidate_id} FAILED at export: {ex}\n{traceback.format_exc()}")
-                    index_rows.append(row)
-                    if not bool(config.keep_going):
-                        break
-                    continue
-
+        # Eval BEFORE export: eval loads the .pth via the trainer and does
+        # not depend on the .onnx, whereas the ONNX export can fail on deploy-
+        # only bugs (e.g. torch's dynamo ONNX exporter tripping on a DEIM op
+        # pattern). Running eval first guarantees the scientific metric is
+        # produced even when export dies — the deploy artifact must never
+        # block the science. (bench stays after export; it needs the .onnx.)
         if bool(config.do_eval):
             metrics_fpath = kcd_root / "eval" / candidate_id / "eval" / "detect_metrics.json"
             if metrics_fpath.exists() and not bool(config.force_eval):
@@ -617,6 +602,27 @@ def run(config):
                     row["stage_failed"] = "eval"
                     row["error"] = f"{type(ex).__name__}: {ex}"
                     print(f"\n[sweep] {candidate_id} FAILED at eval: {ex}\n{traceback.format_exc()}")
+                    index_rows.append(row)
+                    if not bool(config.keep_going):
+                        break
+                    continue
+
+        if bool(config.do_export):
+            existing_onnx = _find_plausible_onnx(workdir)
+            if existing_onnx and not bool(config.force_export):
+                print(f"[sweep] {candidate_id}: skip export; {existing_onnx} already exists")
+            else:
+                did_any_stage = True
+                try:
+                    _run_export(
+                        trainer, workdir=workdir, cell=cell,
+                        force=bool(config.force_export),
+                    )
+                except Exception as ex:
+                    row["status"] = "fail_export"
+                    row["stage_failed"] = "export"
+                    row["error"] = f"{type(ex).__name__}: {ex}"
+                    print(f"\n[sweep] {candidate_id} FAILED at export: {ex}\n{traceback.format_exc()}")
                     index_rows.append(row)
                     if not bool(config.keep_going):
                         break

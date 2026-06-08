@@ -105,3 +105,31 @@ schemes:
       negative:    background-only annotations
       dead_pup:    ambiguous; revisit if a per-class fine-tune is worthwhile
       dead_nonpup: only 49 instances corpus-wide
+
+  full_8cls:
+    description: |
+      Full taxonomy — every source positive kept as its own class, plus the
+      two dead classes and NFS. Built to compare against a collaborator's
+      runs that train these exact 8 classes in this exact index order. Drops
+      only `negative` (background). NFS is a real output class here (so the
+      model learns it) but stays a distractor for our class-agnostic
+      detection-AP selection criterion (NFS is always a negative for the
+      mission). dead_pup / dead_nonpup are rare (dead_nonpup ~49 instances
+      corpus-wide) so their per-class AP will be very noisy.
+    num_classes: 8
+    # Index order is the COMPARISON CONTRACT — it must match the
+    # collaborator's class order exactly. Do not reorder.
+    target_order: [juvenile, bull, female, subadult_male, pup, dead_pup, northern_fur_seal, dead_nonpup]
+    distractor_classes: [northern_fur_seal]
+    mapping:
+      juvenile:          juvenile
+      bull:              bull
+      female:            female
+      subadult_male:     subadult_male
+      pup:               pup
+      dead_pup:          dead_pup
+      northern_fur_seal: northern_fur_seal
+      dead_nonpup:       dead_nonpup
+    drop: [negative]
+    drop_reasons:
+      negative: background-only annotations

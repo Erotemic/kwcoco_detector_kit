@@ -5,7 +5,7 @@
 #   variant:  deimv2_dinov3_x   (50.3M params, 57.8 COCO AP)
 #   gpus:     4 (aiq-gpu: 4x RTX PRO 6000 Blackwell, 96GB each)
 #   res:      640 (REUSES the existing b9540ace tile cache — no rebuild)
-#   launcher: standalone docker (no slurm) -> KCD_NO_SLURM=1
+#   launcher: slurm (aiq has slurm — always slurm) -> KCD_NO_SLURM=0
 #
 # THE LEVER: model capacity. Identical to the validated dinov3_S aiq run
 # (submit_train_pup_vs_nonpup_deimv2_dinov3_s_4gpu_aiq_gen005_640.sh) except
@@ -28,7 +28,7 @@
 #
 # Run it in tmux, capture with tee:
 #   KCD_IMAGE=kwcoco-detector-kit:ogdino-cu132-aiq \
-#   KCD_NO_SLURM=1 KCD_DEV_MOUNT_KIT=1 KCD_DEV_MOUNT_DEIMV2=1 \
+#   KCD_DEV_MOUNT_KIT=1 KCD_DEV_MOUNT_DEIMV2=1 \
 #   KCD_TILE_CACHE_DPATH=/data/users/jon.crall/kcd_sealion/ssd-data/tile_cache \
 #     bash projects/viame_sealions_2026/scripts/submit_train_pup_vs_nonpup_deimv2_dinov3_x_4gpu_aiq_gen005_640.sh \
 #     2>&1 | tee /data/users/jon.crall/kcd_sealion/aiq_pup_x_640.log
@@ -68,8 +68,9 @@ export KCD_BALANCE_MAX_OVERSAMPLE=1
 export KCD_TILED_EVAL="${KCD_TILED_EVAL:-True}"
 export KCD_EVAL_DEVICE="${KCD_EVAL_DEVICE:-cuda}"
 
-# ---- Standalone docker on a dedicated box ------------------------------
-export KCD_NO_SLURM="${KCD_NO_SLURM:-1}"
+# ---- Slurm on aiq (aiq has slurm — always slurm; gres/partition from rc) -
+export KCD_NO_SLURM="${KCD_NO_SLURM:-0}"
+export KCD_DOCKER_GPU_MODE="${KCD_DOCKER_GPU_MODE:-gpus}"
 export KCD_IMAGE="${KCD_IMAGE:-kwcoco-detector-kit:ogdino-cu132-aiq}"
 export KCD_TRAIN_NUM_WORKERS="${KCD_TRAIN_NUM_WORKERS:-8}"
 export KCD_VAL_NUM_WORKERS="${KCD_VAL_NUM_WORKERS:-4}"

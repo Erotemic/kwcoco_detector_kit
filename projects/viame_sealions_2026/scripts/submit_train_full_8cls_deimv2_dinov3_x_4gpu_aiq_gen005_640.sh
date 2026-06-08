@@ -7,7 +7,7 @@
 #   gpus:     4 (aiq-gpu: 4x RTX PRO 6000 Blackwell, 96GB each)
 #   res:      640 (REUSES the existing b9540ace tile cache — no rebuild;
 #                  that cache already carries all source categories)
-#   launcher: standalone docker (no slurm) -> KCD_NO_SLURM=1
+#   launcher: slurm (aiq has slurm — always slurm) -> KCD_NO_SLURM=0
 #
 # PURPOSE: a comparison run against a collaborator training these exact 8
 # classes in this exact index order. The class order is the COMPARISON
@@ -29,7 +29,7 @@
 #
 # Run it in tmux, capture with tee (NOT nohup):
 #   KCD_IMAGE=kwcoco-detector-kit:ogdino-cu132-aiq \
-#   KCD_NO_SLURM=1 \
+#   (slurm; gres/partition from your shell rc) \
 #   KCD_TILE_CACHE_DPATH=/data/users/jon.crall/kcd_sealion/ssd-data/tile_cache \
 #     bash projects/viame_sealions_2026/scripts/submit_train_full_8cls_deimv2_dinov3_x_4gpu_aiq_gen005_640.sh \
 #     2>&1 | tee /data/users/jon.crall/kcd_sealion/aiq_full8_x_640.log
@@ -70,8 +70,9 @@ export KCD_BALANCE_MAX_OVERSAMPLE=1
 export KCD_TILED_EVAL="${KCD_TILED_EVAL:-True}"
 export KCD_EVAL_DEVICE="${KCD_EVAL_DEVICE:-cuda}"
 
-# ---- Standalone docker on a dedicated box ------------------------------
-export KCD_NO_SLURM="${KCD_NO_SLURM:-1}"
+# ---- Slurm on aiq (aiq has slurm — always slurm; gres/partition from rc) -
+export KCD_NO_SLURM="${KCD_NO_SLURM:-0}"
+export KCD_DOCKER_GPU_MODE="${KCD_DOCKER_GPU_MODE:-gpus}"
 export KCD_IMAGE="${KCD_IMAGE:-kwcoco-detector-kit:ogdino-cu132-aiq}"
 export KCD_TRAIN_NUM_WORKERS="${KCD_TRAIN_NUM_WORKERS:-8}"
 export KCD_VAL_NUM_WORKERS="${KCD_VAL_NUM_WORKERS:-4}"

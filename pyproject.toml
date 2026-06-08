@@ -56,7 +56,7 @@ dependencies = [
 # tpl/DEIMv2/requirements.txt; we don't pin to specific versions to avoid
 # fighting upstream pins. setup_audit's --check-env probes for each.
 deimv2 = [
-    "faster_coco_eval>=1.6.7,<1.7",  # 1.7.x breaks DEIM in-loop eval (loadAnns)
+    "faster_coco_eval>=1.6.7",
     "calflops",
     "transformers",
     "tensorboard",

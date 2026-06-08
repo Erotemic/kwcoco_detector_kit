@@ -522,6 +522,16 @@ def _build_train_yml(
             },
         },
         "epoches": int(num_epochs),
+        # LR schedule (FlatCosineLR): flat target LR until `flat_epoch`, then
+        # cosine-anneal to 0 by `epoches`. The upstream configs set
+        # flat_epoch/no_aug_epoch for their native (~150-500 epoch) schedules,
+        # so when the kit overrides `epoches` to a shorter run the cosine phase
+        # never triggers (constant LR) AND no_aug_epoch can exceed the run. Emit
+        # both scaled to num_epochs so short runs actually anneal + get a small
+        # no-aug tail. (Override-friendly: a recipe wanting constant LR can set
+        # epoches via a longer schedule.)
+        "flat_epoch": max(1, int(num_epochs) // 2),
+        "no_aug_epoch": max(1, round(int(num_epochs) * 0.1)),
         "optimizer": optimizer,
     }
 

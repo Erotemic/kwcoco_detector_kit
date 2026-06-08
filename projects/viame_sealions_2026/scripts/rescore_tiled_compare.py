@@ -128,6 +128,27 @@ def main() -> int:
     H, W = (int(x) for x in str(args.input_hw).replace("x", ",").split(","))
     candidate_id = f"{args.variant}_{H}x{W}_{args.train_policy}"
     workdir = args.workdir or (args.kcd_root / "runs" / candidate_id)
+    if args.workdir is None and not Path(workdir).exists():
+        # Auto-detect the trained workdir so this script is backbone-agnostic
+        # (hgnetv2_n_320x320, dinov3_s/x_640x640, ...) without the caller
+        # passing --variant/--input_hw. Pick the runs/<cid>/ dir that holds a
+        # checkpoint; prefer one matching the derived candidate_id else the
+        # sole candidate.
+        candidates = sorted(
+            d for d in (args.kcd_root / "runs").glob("*")
+            if d.is_dir() and (
+                any((d / f"best_{s}.pth").exists() for s in ("stg2", "stg1"))
+                or (d / "last.pth").exists()
+            )
+        )
+        if len(candidates) == 1:
+            workdir = candidates[0]
+        elif candidates:
+            match = [d for d in candidates if d.name == candidate_id]
+            workdir = match[0] if match else candidates[0]
+        if Path(workdir).exists() and Path(workdir).name != candidate_id:
+            candidate_id = Path(workdir).name
+            print(f"[rescore] auto-detected workdir: {workdir}")
     test_kwcoco = args.test_kwcoco or (args.kcd_root / "scheme_applied" / "test.kwcoco.zip")
     out_root = args.out_root or (args.kcd_root / "tiled_compare")
     category_names = [s.strip() for s in args.category_names.split(",") if s.strip()]

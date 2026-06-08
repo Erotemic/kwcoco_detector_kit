@@ -632,6 +632,12 @@ def run(config):
             bench_json = _find_bench_json(workdir)
             if bench_json and not bool(config.force_bench):
                 print(f"[sweep] {candidate_id}: skip bench; {bench_json} already exists")
+            elif _find_plausible_onnx(workdir) is None:
+                # Bench benchmarks the ONNX model; with no .onnx (export
+                # disabled, skipped, or failed) there is nothing to bench.
+                # Skip rather than hard-fail — a missing deploy artifact must
+                # not mark the whole cell FAILED when train+eval succeeded.
+                print(f"[sweep] {candidate_id}: skip bench; no .onnx (export disabled/failed)")
             else:
                 did_any_stage = True
                 try:

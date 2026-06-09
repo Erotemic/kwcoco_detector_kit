@@ -51,12 +51,15 @@ export KCD_LR="${KCD_LR:-5e-4}"
 export KCD_BACKBONE_LR="${KCD_BACKBONE_LR:-2.5e-5}"
 export KCD_USE_AMP=true
 
-# ---- Backend + balance (8-class rebalance) -----------------------------
-# Pup (binding constraint) gets a slight boost; the data-starved dead classes
-# get small targets (oversample-capped anyway at MAX_OVERSAMPLE=1, so they
-# appear at ~their natural low rate). Sums to 1.0.
+# ---- Backend + balance -------------------------------------------------
+# EXACT proven lifestage_6cls balance (which yielded a healthy ~81k-tile set,
+# NFS-bound at ~8727/0.10). The two dead classes are deliberately NOT balance
+# targets: with only 261 (dead_nonpup) / 3293 (dead_pup) tiles available and
+# MAX_OVERSAMPLE=1 (no upsampling), giving them a 5% target collapses the
+# whole set to ~540 tiles (8 steps/epoch!). They still train as output
+# classes — they just ride along at their natural (low) frequency.
 export KCD_USE_WEBDATASET=0
-export KCD_BALANCE_TARGET_JSON='{"<empty>": 0.25, "juvenile": 0.1, "bull": 0.1, "female": 0.1, "subadult_male": 0.1, "pup": 0.15, "dead_pup": 0.05, "northern_fur_seal": 0.1, "dead_nonpup": 0.05}'
+export KCD_BALANCE_TARGET_JSON='{"<empty>": 0.25, "pup": 0.20, "northern_fur_seal": 0.10, "bull": 0.12, "subadult_male": 0.11, "female": 0.11, "juvenile": 0.11}'
 export KCD_BALANCE_MAX_OVERSAMPLE=1
 
 # ---- Tile params: 640 defaults (existing b9540ace cache) ---------------

@@ -379,6 +379,7 @@ def test_max_oversample_1_undersamples_majority(tmp_path):
         src=str(src_fpath), dst=str(dst),
         target_distribution='{"<empty>": 0.4, "pup": 0.2, "nonpup": 0.4}',
         max_oversample=1, seed=0,
+        min_balanced_size=0,  # tiny synthetic set; disable the collapse guard
     ), strict=True)
     run(cfg)
 
@@ -424,6 +425,7 @@ def test_max_oversample_3_repeats_rarest_at_most_3x(tmp_path):
         src=str(src_fpath), dst=str(dst),
         target_distribution='{"<empty>": 0.5, "pup": 0.5}',
         max_oversample=3, seed=0,
+        min_balanced_size=0,  # tiny synthetic set; disable the collapse guard
     ), strict=True)
     run(cfg)
 
@@ -468,6 +470,54 @@ def test_target_size_overrides_max_oversample(tmp_path):
     info = out["info"]["balance_mscoco"]
     assert info["target_size"] == 42, "target_size must override max_oversample"
     assert info["max_oversample"] == 1
+
+
+def test_aborts_when_starved_bucket_collapses_set(tmp_path):
+    """A data-starved bucket in the target (few dominant-class tiles)
+    collapses the whole balanced set under max_oversample — the guard
+    must abort and name the binding bucket, not silently train on a
+    handful of tiles (the dead_nonpup -> 540-tile incident)."""
+    pytest.importorskip("kwimage")
+    from kwcoco_detector_kit.data.balance_mscoco import (
+        BalanceMSCOCOConfig, run,
+    )
+
+    # 'rare' has only 2 tiles; 100 empties. With max_oversample=1 and a
+    # 0.5 target, target_size = 2/0.5 = 4 — a collapse.
+    src_fpath, _ = _build_mscoco_with_buckets(
+        tmp_path / "src", n_positive_per_class=2, n_empty=100,
+        category_names=("rare",),
+    )
+    dst = tmp_path / "balanced.json"
+    cfg = BalanceMSCOCOConfig.cli(argv=False, data=dict(
+        src=str(src_fpath), dst=str(dst),
+        target_distribution='{"<empty>": 0.5, "rare": 0.5}',
+        max_oversample=1, seed=0,
+        min_balanced_size=50,
+    ), strict=True)
+    with pytest.raises(ValueError, match="rare"):
+        run(cfg)
+    assert not dst.exists(), "no balanced json should be written on abort"
+
+
+def test_starved_guard_can_be_overridden(tmp_path):
+    """min_balanced_size=0 disables the collapse guard (escape hatch)."""
+    pytest.importorskip("kwimage")
+    from kwcoco_detector_kit.data.balance_mscoco import (
+        BalanceMSCOCOConfig, run,
+    )
+    src_fpath, _ = _build_mscoco_with_buckets(
+        tmp_path / "src", n_positive_per_class=2, n_empty=100,
+        category_names=("rare",),
+    )
+    dst = tmp_path / "balanced.json"
+    cfg = BalanceMSCOCOConfig.cli(argv=False, data=dict(
+        src=str(src_fpath), dst=str(dst),
+        target_distribution='{"<empty>": 0.5, "rare": 0.5}',
+        max_oversample=1, seed=0, min_balanced_size=0,
+    ), strict=True)
+    run(cfg)  # must not raise
+    assert dst.exists()
 
 
 def test_rejects_unknown_bucket(tmp_path):

@@ -100,6 +100,20 @@ class BalanceMSCOCOConfig(scfg.DataConfig):
 
     seed = scfg.Value(0, type=int, help="RNG seed for sampling")
 
+    min_balanced_size = scfg.Value(
+        2000, type=int,
+        help=(
+            "Safety floor: abort if the auto-computed balanced size falls "
+            "below this. A data-starved bucket in target_distribution (e.g. "
+            "a rare class with few dominant-class tiles) silently collapses "
+            "the whole set under max_oversample, because target_size = "
+            "max_oversample × min_b(len(bucket_b)/frac_b). The error names "
+            "the binding bucket. Only enforced when target_size is derived "
+            "(max_oversample / legacy), not when set explicitly. Set 0 to "
+            "disable."
+        ),
+    )
+
     @classmethod
     def main(cls, argv=1, **kwargs):
         config = cls.cli(argv=argv, data=kwargs, strict=True)
@@ -304,6 +318,49 @@ def run(config: BalanceMSCOCOConfig):
         raise ValueError(
             f"target_size must be positive; got {target_size}"
         )
+
+    # --- Guardrail: a data-starved bucket can silently collapse the set ---
+    # With max_oversample=K, target_size = K * min_b(len(bucket_b)/frac_b),
+    # so a bucket with very few DOMINANT-class tiles (e.g. dead_nonpup with
+    # ~27 dominant tiles at frac 0.05 -> 540) crushes the whole output.
+    # Print the per-bucket natural fit so the binding bucket is visible, and
+    # abort below the floor (only when the size was DERIVED, not chosen).
+    nat_by_bucket = {
+        b: len(buckets.get(b, [])) / target_distribution[b]
+        for b in target_distribution if target_distribution[b] > 0
+    }
+    if nat_by_bucket:
+        binding_bucket = min(nat_by_bucket, key=nat_by_bucket.get)
+        print("balance_mscoco: per-bucket natural fit "
+              "(dominant-class tiles / target_frac):")
+        for b in sorted(nat_by_bucket, key=nat_by_bucket.get):
+            flag = "  <-- BINDING" if b == binding_bucket else ""
+            print(f"    {b:<22} tiles={len(buckets.get(b, [])):>8}  "
+                  f"frac={target_distribution[b]:.3f}  "
+                  f"natural={nat_by_bucket[b]:>10.0f}{flag}")
+        min_size = int(config.min_balanced_size)
+        # Only the max_oversample path can silently collapse (target_size is
+        # derived from the rarest bucket). Explicit target_size is the
+        # caller's choice; legacy (size = len(images)) is never a collapse.
+        size_was_derived = (
+            config.max_oversample is not None
+            and not (config.target_size is not None and int(config.target_size) > 0)
+        )
+        if size_was_derived and min_size > 0 and target_size < min_size:
+            raise ValueError(
+                f"balanced target_size={target_size} is below the safety "
+                f"floor min_balanced_size={min_size}. Binding bucket "
+                f"{binding_bucket!r} has only {len(buckets.get(binding_bucket, []))} "
+                f"dominant-class tiles at target fraction "
+                f"{target_distribution[binding_bucket]:.3f} (natural fit "
+                f"{nat_by_bucket[binding_bucket]:.0f}), so with "
+                f"max_oversample={config.max_oversample} it crushes the whole "
+                f"set. Fix one of: (a) DROP {binding_bucket!r} from "
+                f"target_distribution — it still trains as an output class, "
+                f"just at natural frequency; (b) lower its target fraction; "
+                f"(c) raise max_oversample; or (d) set min_balanced_size=0 to "
+                f"override this guard."
+            )
 
     per_bucket = _compute_per_bucket_counts(target_distribution, target_size)
 

@@ -413,6 +413,7 @@ export_mscoco(src='$TRAIN_KWCOCO', dst='$UNBALANCED_MSCOCO',
             --target_distribution "$KCD_BALANCE_TARGET_JSON" \
             ${KCD_BALANCE_TARGET_SIZE:+--target_size "$KCD_BALANCE_TARGET_SIZE"} \
             ${KCD_BALANCE_MAX_OVERSAMPLE:+--max_oversample "$KCD_BALANCE_MAX_OVERSAMPLE"} \
+            ${KCD_BALANCE_MIN_SIZE:+--min_balanced_size "$KCD_BALANCE_MIN_SIZE"} \
             --seed "${KCD_BALANCE_SEED:-0}"
     else
         echo "  Reusing $BALANCED_MSCOCO (KCD_FORCE_REBALANCE=1 to redo)."

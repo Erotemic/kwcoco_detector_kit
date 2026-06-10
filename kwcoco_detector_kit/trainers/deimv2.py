@@ -961,6 +961,25 @@ class DEIMv2Trainer:
             yml["kcd_skip_inloop_val"] = bool(
                 (extra or {}).get("skip_inloop_val", False))
 
+        # Dataloader-level balanced sampling (data/balanced_sampler.py):
+        # when a launch-time weights sidecar is configured, the patched
+        # DEIMv2 solver swaps the default (Distributed)Sampler for a
+        # rank-aware weighted sampler. Optional; absent keys = today's
+        # behavior (file-duplication balance or no balance).
+        balance_weights_fpath = (extra or {}).get("balance_weights_fpath")
+        if balance_weights_fpath:
+            if (extra or {}).get("train_wds_shards_dpath"):
+                raise ValueError(
+                    "balance_weights_fpath is for the kwcoco/mscoco JPEG "
+                    "path; the WebDataset path balances via "
+                    "train_wds_bucket_weights instead"
+                )
+            yml["kcd_sample_weights_fpath"] = str(balance_weights_fpath)
+            epoch_length = int((extra or {}).get("balance_epoch_length", 0) or 0)
+            if epoch_length:
+                yml["kcd_sample_epoch_length"] = epoch_length
+            yml["kcd_sample_seed"] = int((extra or {}).get("balance_seed", 0) or 0)
+
         cfg_fpath.write_text(yaml.safe_dump(yml, sort_keys=False))
         # Resolved-effective-config side-by-side sidecar — Phase 1 emits a
         # copy of the generator's view; the upstream __include__ expansion

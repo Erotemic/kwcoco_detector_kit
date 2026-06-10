@@ -384,13 +384,31 @@ fi
 #   * <target_class_name> = dominant target class per image
 # (See kwcoco_detector_kit/data/balance_mscoco.py for the
 # bucketing rules.)
-if [ -n "${KCD_BALANCE_TARGET_JSON:-}" ]; then
+# Two balance modes (KCD_BALANCE_MODE, default `file`):
+#   file:    balance_mscoco duplicates image rows in a static file
+#            (the original mechanism; TRAIN_KWCOCO is repointed).
+#   sampler: dataloader-level weighted sampling — balanced_sampler
+#            computes per-index weights via kwcoco_dataloader's
+#            BalancedSampleForest at launch time; TRAIN_KWCOCO stays
+#            the UNBALANCED mscoco (the weights are positional against
+#            it; the solver hard-fails on a count mismatch) and the
+#            sweep gets --balance_weights_fpath. Fresh draw per epoch,
+#            no duplicated rows, balance is a knob not a bake.
+KCD_BALANCE_MODE="${KCD_BALANCE_MODE:-file}"
+BALANCE_SWEEP_ARGS=()
+if [ -n "${KCD_BALANCE_TARGET_JSON:-}" ] || [ "$KCD_BALANCE_MODE" = "sampler" ]; then
     echo
-    echo "=== 2c. Class-balance training MSCOCO ==="
+    echo "=== 2c. Class-balance training MSCOCO (mode=$KCD_BALANCE_MODE) ==="
+    if [ "$KCD_BALANCE_MODE" = "sampler" ] && [ "${KCD_USE_WEBDATASET:-0}" = "1" ]; then
+        echo "ERROR: KCD_BALANCE_MODE=sampler is for the JPEG path;" >&2
+        echo "       the WDS path balances via KCD_WDS_BUCKET_WEIGHTS." >&2
+        exit 1
+    fi
     BALANCE_DIR="$KCD_ROOT/balance"
     mkdir -p "$BALANCE_DIR"
     UNBALANCED_MSCOCO="$BALANCE_DIR/train_unbalanced.mscoco.json"
     BALANCED_MSCOCO="$BALANCE_DIR/train_balanced.mscoco.json"
+    BALANCE_WEIGHTS_JSON="$BALANCE_DIR/balance_weights.json"
 
     if [ ! -f "$UNBALANCED_MSCOCO" ] || [ "${KCD_FORCE_REBALANCE:-0}" = "1" ]; then
         echo "  export $TRAIN_KWCOCO -> $UNBALANCED_MSCOCO"
@@ -406,23 +424,43 @@ export_mscoco(src='$TRAIN_KWCOCO', dst='$UNBALANCED_MSCOCO',
         echo "  Reusing $UNBALANCED_MSCOCO (KCD_FORCE_REBALANCE=1 to redo)."
     fi
 
-    if [ ! -f "$BALANCED_MSCOCO" ] || [ "${KCD_FORCE_REBALANCE:-0}" = "1" ]; then
-        echo "  balance: $KCD_BALANCE_TARGET_JSON"
-        "$PYTHON_BIN" -m kwcoco_detector_kit.data.balance_mscoco \
-            "$UNBALANCED_MSCOCO" "$BALANCED_MSCOCO" \
-            --target_distribution "$KCD_BALANCE_TARGET_JSON" \
-            ${KCD_BALANCE_TARGET_SIZE:+--target_size "$KCD_BALANCE_TARGET_SIZE"} \
-            ${KCD_BALANCE_MAX_OVERSAMPLE:+--max_oversample "$KCD_BALANCE_MAX_OVERSAMPLE"} \
-            ${KCD_BALANCE_MIN_SIZE:+--min_balanced_size "$KCD_BALANCE_MIN_SIZE"} \
-            --seed "${KCD_BALANCE_SEED:-0}"
+    if [ "$KCD_BALANCE_MODE" = "sampler" ]; then
+        if [ ! -f "$BALANCE_WEIGHTS_JSON" ] || [ "${KCD_FORCE_REBALANCE:-0}" = "1" ]; then
+            echo "  sampler weights: ${KCD_BALANCE_TARGET_JSON:-<uniform stratified>}"
+            "$PYTHON_BIN" -m kwcoco_detector_kit.data.balanced_sampler \
+                --src "$UNBALANCED_MSCOCO" \
+                --dst "$BALANCE_WEIGHTS_JSON" \
+                ${KCD_BALANCE_TARGET_JSON:+--class_weights "$KCD_BALANCE_TARGET_JSON"} \
+                --seed "${KCD_BALANCE_SEED:-0}"
+        else
+            echo "  Reusing $BALANCE_WEIGHTS_JSON (KCD_FORCE_REBALANCE=1 to redo)."
+        fi
+        # the trainer consumes the UNBALANCED file + the weights sidecar
+        TRAIN_KWCOCO="$UNBALANCED_MSCOCO"
+        BALANCE_SWEEP_ARGS+=(--balance_weights_fpath "$BALANCE_WEIGHTS_JSON")
+        BALANCE_SWEEP_ARGS+=(--balance_seed "${KCD_BALANCE_SEED:-0}")
+        [ -n "${KCD_BALANCE_EPOCH_LENGTH:-}" ] && \
+            BALANCE_SWEEP_ARGS+=(--balance_epoch_length "$KCD_BALANCE_EPOCH_LENGTH")
+        echo "  -> TRAIN_KWCOCO=$TRAIN_KWCOCO (+ weights sidecar)"
     else
-        echo "  Reusing $BALANCED_MSCOCO (KCD_FORCE_REBALANCE=1 to redo)."
-    fi
+        if [ ! -f "$BALANCED_MSCOCO" ] || [ "${KCD_FORCE_REBALANCE:-0}" = "1" ]; then
+            echo "  balance: $KCD_BALANCE_TARGET_JSON"
+            "$PYTHON_BIN" -m kwcoco_detector_kit.data.balance_mscoco \
+                "$UNBALANCED_MSCOCO" "$BALANCED_MSCOCO" \
+                --target_distribution "$KCD_BALANCE_TARGET_JSON" \
+                ${KCD_BALANCE_TARGET_SIZE:+--target_size "$KCD_BALANCE_TARGET_SIZE"} \
+                ${KCD_BALANCE_MAX_OVERSAMPLE:+--max_oversample "$KCD_BALANCE_MAX_OVERSAMPLE"} \
+                ${KCD_BALANCE_MIN_SIZE:+--min_balanced_size "$KCD_BALANCE_MIN_SIZE"} \
+                --seed "${KCD_BALANCE_SEED:-0}"
+        else
+            echo "  Reusing $BALANCED_MSCOCO (KCD_FORCE_REBALANCE=1 to redo)."
+        fi
 
-    # Repoint the trainer at the balanced MSCOCO. The sweep accepts
-    # .mscoco.json directly via _ensure_mscoco.
-    TRAIN_KWCOCO="$BALANCED_MSCOCO"
-    echo "  -> TRAIN_KWCOCO=$TRAIN_KWCOCO"
+        # Repoint the trainer at the balanced MSCOCO. The sweep accepts
+        # .mscoco.json directly via _ensure_mscoco.
+        TRAIN_KWCOCO="$BALANCED_MSCOCO"
+        echo "  -> TRAIN_KWCOCO=$TRAIN_KWCOCO"
+    fi
 fi
 
 echo
@@ -463,6 +501,7 @@ echo "  KCD_DISTRACTOR_CLASSES = ${KCD_DISTRACTOR_CLASSES:-<unset>}"
     ${KCD_FORCE_EVAL:+--force_eval "$KCD_FORCE_EVAL"} \
     ${KCD_FORCE_BENCH:+--force_bench "$KCD_FORCE_BENCH"} \
     ${KCD_DISTRACTOR_CLASSES:+--distractor_classes "$KCD_DISTRACTOR_CLASSES"} \
+    "${BALANCE_SWEEP_ARGS[@]}" \
     ${KCD_TILED_EVAL:+--tiled_eval "$KCD_TILED_EVAL"} \
     ${KCD_TILED_EVAL_WINDOW:+--tiled_eval_window "$KCD_TILED_EVAL_WINDOW"} \
     ${KCD_TILED_EVAL_OVERLAP:+--tiled_eval_overlap "$KCD_TILED_EVAL_OVERLAP"} \

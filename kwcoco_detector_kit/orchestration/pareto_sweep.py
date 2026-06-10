@@ -104,6 +104,30 @@ class SweepConfig(scfg.DataConfig):
             "set in submit script, NOT via env."
         ),
     )
+    balance_weights_fpath = scfg.Value(
+        None,
+        help=(
+            "Optional balance_weights.json (from "
+            "kwcoco_detector_kit.data.balanced_sampler) enabling "
+            "dataloader-level weighted sampling instead of the "
+            "file-duplication balance. The weights must have been computed "
+            "from the SAME annotation file passed as train_kwcoco "
+            "(the solver hard-fails on a count mismatch). "
+            "Experiment-defining: set in submit script, NOT via env."
+        ),
+    )
+    balance_epoch_length = scfg.Value(
+        0, type=int,
+        help=(
+            "Total samples per epoch (across ranks) for sampler-mode "
+            "balance. 0 -> len(dataset). Weighted draws are with "
+            "replacement, so epoch length is a free knob."
+        ),
+    )
+    balance_seed = scfg.Value(
+        0, type=int,
+        help="Seed for the weighted sampler's (seed, epoch, rank) streams.",
+    )
     train_wds_skip_empty = scfg.Value(
         False,
         help=(
@@ -443,7 +467,13 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
                    json.loads(config.train_wds_bucket_weights)
                    if config.train_wds_bucket_weights else None
                ),
-               "train_wds_skip_empty": bool(config.train_wds_skip_empty)},
+               "train_wds_skip_empty": bool(config.train_wds_skip_empty),
+               "balance_weights_fpath": (
+                   str(config.balance_weights_fpath)
+                   if config.balance_weights_fpath else None
+               ),
+               "balance_epoch_length": int(config.balance_epoch_length or 0),
+               "balance_seed": int(config.balance_seed or 0)},
     )
     # init_ckpt was already resolved + validated above.
     resume_ckpt = config.resume

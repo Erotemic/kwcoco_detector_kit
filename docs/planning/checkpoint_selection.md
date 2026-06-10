@@ -1,9 +1,29 @@
 # Checkpoint selection & retention — design
 
-Status: **planning** (not yet implemented). This is a spec for an
-implementing model to work from. It describes a kit-wide, project-
-configurable system for choosing which trained checkpoint(s) to keep
-and which one to deploy, with full provenance on every score.
+Status: **implemented** (first implementation 2026-06-10; commits
+`df11961`, `298159f`, DEIMv2 submodule `8a500a2`). This document remains
+the authoritative spec; the file map:
+
+| Spec section | Implementation |
+|---|---|
+| Protocol registry, fingerprints | `kwcoco_detector_kit/eval/protocols.py` |
+| Run journal | `kwcoco_detector_kit/selection/journal.py` |
+| Leaderboards / retention / GC fold | `kwcoco_detector_kit/selection/boards.py` |
+| Frozen probe builder | `kwcoco_detector_kit/selection/probe.py` |
+| Multi-objective re-rank | `kwcoco_detector_kit/selection/rerank.py` |
+| Config + plan resolution | `kwcoco_detector_kit/selection/config.py` |
+| Detached worker | `kwcoco_detector_kit/selection/worker.py` |
+| Real scorer (DEIMv2 + tiled) | `kwcoco_detector_kit/selection/scoring.py` |
+| Worker CLI | `python -m kwcoco_detector_kit.selection` |
+| DEIMv2 emit patch | `tpl/DEIMv2 engine/solver/det_solver.py` (`kcd_journal_dir`, `kcd_skip_inloop_val`) |
+| Tests | `tests/unit/test_selection_*.py` |
+
+Not yet wired: sweep/`_launch_train.sh` integration (launching the worker
+beside training) and Phase 2 (journal as the sweep's source of truth).
+
+This describes a kit-wide, project-configurable system for choosing
+which trained checkpoint(s) to keep and which one to deploy, with full
+provenance on every score.
 
 Revision note (2026-06-10, second pass): factored scores into
 `(protocol, dataset, subject)`; the probe is now the *same* protocol on
@@ -11,6 +31,13 @@ a smaller dataset; selection moved out of the training process into a
 detached journal-consuming worker; EMA-always replaces the earlier
 raw-before/EMA-after default; retention payloads split slim/full with
 leaderboard-anchored resume states.
+
+Implementation note (2026-06-10): dataset identity is **purely content**
+— only `dataset_id` is hashed; `role` is informational. Consequence: when
+the in-loop `whole_resize` binding and the re-rank axis point at the same
+vali file, they share a fingerprint, so in-loop scores satisfy the
+re-rank axis with zero duplicate eval. The only re-rank-time compute is
+the expensive `true_tiled` pass over the retained union, as intended.
 
 ## Motivation
 

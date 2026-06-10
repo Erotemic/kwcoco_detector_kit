@@ -197,13 +197,19 @@ def protocol_id(protocol: EvalProtocol) -> str:
 @dataclass(frozen=True)
 class DatasetBinding:
     """The measurement target. ``dataset_id`` is content-derived
-    (kwcoco file hash or probe manifest hash)."""
+    (kwcoco file hash or probe manifest hash).
+
+    Identity is **purely content**: only ``dataset_id`` is hashed. The
+    ``role`` is informational (drill-down/labels) — two roles bound to the
+    same bytes are the same comparison space, so e.g. in-loop scores on
+    the full vali file automatically satisfy a re-rank axis bound to the
+    same file."""
     role: str          # vali | probe | vali_full | test | ...
     dataset_id: str
     n_images: Optional[int] = None   # informational; not hashed
 
     def to_jsonable(self) -> Dict[str, Any]:
-        return {"role": self.role, "dataset_id": self.dataset_id}
+        return {"dataset_id": self.dataset_id}
 
 
 @dataclass(frozen=True)
@@ -239,7 +245,8 @@ def definition_of(protocol: EvalProtocol, dataset: DatasetBinding) -> Dict[str, 
     return {
         "protocol": protocol.to_jsonable(),
         "protocol_id": protocol_id(protocol),
-        "dataset": {**dataset.to_jsonable(), "n_images": dataset.n_images},
+        "dataset": {**dataset.to_jsonable(), "role": dataset.role,
+                    "n_images": dataset.n_images},
     }
 
 

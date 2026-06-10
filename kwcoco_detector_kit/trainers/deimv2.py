@@ -949,6 +949,18 @@ class DEIMv2Trainer:
             train_wds_skip_empty=bool((extra or {}).get("train_wds_skip_empty", False)),
         )
 
+        # Checkpoint-selection journal emit (docs/planning/
+        # checkpoint_selection.md): when a journal dir is configured, the
+        # patched DEIMv2 solver stages every epoch's state dict and appends
+        # `epoch_staged`/`train_complete` rows; `kcd_skip_inloop_val`
+        # additionally hands the entire eval job to the detached selection
+        # worker (empty test_stats no-ops the best_stg machinery).
+        selection_journal_dpath = (extra or {}).get("selection_journal_dpath")
+        if selection_journal_dpath:
+            yml["kcd_journal_dir"] = str(selection_journal_dpath)
+            yml["kcd_skip_inloop_val"] = bool(
+                (extra or {}).get("skip_inloop_val", False))
+
         cfg_fpath.write_text(yaml.safe_dump(yml, sort_keys=False))
         # Resolved-effective-config side-by-side sidecar — Phase 1 emits a
         # copy of the generator's view; the upstream __include__ expansion

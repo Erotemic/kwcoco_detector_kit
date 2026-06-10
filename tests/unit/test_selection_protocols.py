@@ -45,6 +45,10 @@ def test_fingerprint_is_protocol_compose_dataset():
     # n_images is informational, never part of the identity
     ds_a2 = DatasetBinding(role="probe", dataset_id="aaaa", n_images=50)
     assert fingerprint(p, ds_a) == fingerprint(p, ds_a2)
+    # role is informational too: identity is purely content, so in-loop
+    # scores on a file satisfy a rerank axis bound to the same file
+    ds_a3 = DatasetBinding(role="vali_full", dataset_id="aaaa")
+    assert fingerprint(p, ds_a) == fingerprint(p, ds_a3)
 
 
 def test_probe_is_same_protocol_different_dataset():

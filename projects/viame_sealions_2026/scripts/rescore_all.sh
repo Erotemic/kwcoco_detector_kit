@@ -32,6 +32,7 @@ scheme_args() {
         pup_vs_nonpup) echo "pup,nonpup_sealion|" ;;
         single_sealion) echo "sealion|" ;;
         lifestage_6cls) echo "bull,subadult_male,female,juvenile,pup,northern_fur_seal|northern_fur_seal" ;;
+        full_8cls) echo "juvenile,bull,female,subadult_male,pup,dead_pup,northern_fur_seal,dead_nonpup|northern_fur_seal" ;;
         *) echo "" ;;
     esac
 }
@@ -41,6 +42,7 @@ scheme_of() {
         pup_vs_nonpup_*) echo pup_vs_nonpup ;;
         single_sealion_*) echo single_sealion ;;
         lifestage_6cls_*) echo lifestage_6cls ;;
+        full_8cls_*) echo full_8cls ;;
         *) echo "" ;;
     esac
 }

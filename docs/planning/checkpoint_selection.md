@@ -237,9 +237,57 @@ A whole-image project sets `evaluators: [whole_image]`, one bucket
 `(whole_640, mAP, k:1)`, `rerank.primary: whole_640·mAP` → exactly
 today's behavior.
 
-The per-project **val-regime knob** (which evaluators run, default on/off
-per project type) is **still open** — but because today's behavior is a
-special case, the knob is just a default config, not a separate code path.
+## Decided defaults (2026-06-10)
+
+All overridable per project; chosen to be correct out of the box for the
+common case and *visible* (materialized into the run's resolved config and
+logged), never magic.
+
+### Val-regime default — project-type-derived knob
+
+The val-regime is a per-project knob whose **default value is derived from
+project type**, always written into the resolved config and logged:
+
+- trains on a **tile cache** → `evaluators: [whole_image, tile_probe]`,
+  `primary: true_tiled·AP@0.5`
+- trains on **whole images** → `evaluators: [whole_image]`,
+  `primary: whole_640·mAP`
+
+Rationale: "off by default" silently mis-serves every tiled project until
+someone flips it (we already got burned selecting on the wrong regime);
+pure auto-magic is non-inspectable. Explicit-knob-with-project-type-default
+gives correct out-of-box behavior *and* a value you can see and override.
+"Am I tiling my training data?" is a near-perfect proxy for "do I care
+about tiled performance?"
+
+### Final re-rank policy default — `argmax` on `primary`, frontier persisted
+
+The auto-deployed pick defaults to `policy: argmax` on the declared
+`primary` `(protocol, metric)` — deterministic, reproducible, no hidden
+multi-objective weighting baked into the deploy choice. The full
+`candidate × fingerprint-metric` matrix **and** the Pareto frontier are
+always computed and persisted regardless of policy, so the
+jack-of-all-trades pick is a deliberate, **zero-recompute** follow-up
+(tiebreak or manual) at any later time. `pareto`/`aggregate` remain opt-in
+for runs that want the generalist auto-selected.
+
+### Mechanics defaults
+
+- **Rare-class buckets:** auto-disable any per-class bucket whose class
+  support (in the probe/val) is below **50 instances**; `log()` the
+  disable. Keeps noisy rare-class leaderboards (e.g. `ap/dead_nonpup`, 49
+  corpus-wide) from thrashing the retained union.
+- **Probe:** **frozen per scheme** (a rebuild = a new `probe_id` = a new
+  fingerprint), budget **1500** tiles, class-stratified with pup/rare-
+  positive enrichment + a realistic empty ratio, **fixed seed**.
+- **EMA axis:** evaluate **EMA weights past `stop_epoch`, raw before**
+  (mirrors today's stg1/stg2); deployable = EMA.
+- **Combined metric:** `combined_v1 = harmonic_mean(true_tiled·AP@0.5,
+  whole_640·AP@0.5)` — harmonic mean punishes being weak on *either* axis,
+  which is precisely the generalist signal. Defined in the registry but
+  **opt-in** via `rerank.protocols`.
+- **Checkpoint I/O:** stage-copy `last.pth → epoch_N.pth` and GC run
+  **off the training critical path** (background), never blocking a step.
 
 ## Where it lives: DEIMv2 emits, kit decides
 
@@ -257,23 +305,25 @@ numbers, updates leaderboards, GCs staging down to the retained union.
 
 ## Open points for the implementer
 
-1. **Rare-class leaderboard noise.** `true_tiled·ap/dead_nonpup` (49
-   instances corpus-wide) will thrash. Auto-disable buckets whose class
-   support is below a floor (and `log()` it), or require a displacement
-   margin / metric smoothing.
-2. **Probe construction & freeze.** Fixed seed, class-stratified, pup-
-   enriched, realistic empty ratio, **frozen for the life of a scheme** so
-   cross-run numbers compare. Needs an offline builder + a manifest hash
-   (`probe_id`, like the tile-cache `b9540ace` ids). A probe rebuild is
-   visibly a new fingerprint, never silently compared across.
-3. **EMA axis.** Evaluate EMA weights for leaderboards past `stop_epoch`
-   (deployable), raw before — the stg1/stg2 split becomes a per-metric
-   attribute, not two files.
-4. **`combined` metric definitions.** Where derived/aggregate metrics are
-   defined (same code registry as protocols) and how their provenance
-   composes from their inputs.
-5. **Per-epoch checkpoint I/O.** Confirm staging-copy cost and GC timing
-   don't stall the training loop (do it async / off the critical path).
+The policy defaults are decided (see "Decided defaults" above); these are
+the *implementation* questions those defaults leave open:
+
+1. **Rare-class noise — beyond the floor.** Default is auto-disable below
+   50 support. Decide whether a displacement margin / metric smoothing is
+   *also* wanted for classes just above the floor that still wobble.
+2. **Probe builder.** Implement the offline builder producing a frozen,
+   hashed (`probe_id`) probe at budget 1500 with the stratify/enrichment
+   default. Decide the exact stratify target ratios and how "empty" is
+   defined per scheme.
+3. **EMA axis plumbing.** Wire EMA-past-`stop_epoch` / raw-before through
+   the evaluator so each ScoreRecord's `weights.kind` is correct.
+4. **`combined` metric composition.** Implement `combined_v1` (harmonic
+   mean) in the registry and define how its provenance composes from its
+   input fingerprints (it references two protocols, so its context must
+   embed both).
+5. **Async checkpoint I/O.** Implement the off-critical-path stage-copy +
+   GC; confirm it doesn't stall the training step under the data-drive's
+   I/O.
 
 ## Related project context
 

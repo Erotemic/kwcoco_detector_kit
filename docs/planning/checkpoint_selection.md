@@ -211,6 +211,21 @@ Policy:
   epochs, which is post-collapse exactly when you need it. The anchors
   are "the best known-good states", derived from machinery that already
   exists, with no new mechanism.
+- **Anchors on the primary board only — decided (2026-06-10).**
+  Secondary boards (e.g. whole-image) and per-class boards get slim
+  copies; their recovery path is a **warm start** (re-init optimizer from
+  the slim weights) — workable, just not an exact resume. Two reasons
+  this is enough: (1) the primary board is the mission criterion, so it
+  guards collapse in exactly the case we care about; (2) the primary
+  metric is class-agnostic AP on the **rare-positive-enriched probe**, so
+  a binding-class collapse (e.g. pup) necessarily drags the primary score
+  and freezes the anchors pre-collapse — the "per-class collapse
+  invisible to the primary board" scenario is largely closed by probe
+  construction, not by extra anchors. One board decides recovery and the
+  same board decides deployment. A future extension may allow
+  `anchors.board` to take a list of buckets; deliberately **not built
+  now** — no observed failure motivates it, and warm start covers the
+  hypothetical.
 - Everything else in the union is slim. The worker strips lazily: when an
   epoch loses anchor status (displaced from top-M by a better epoch), its
   optimizer state is dropped. Scores are immutable, so displacement is

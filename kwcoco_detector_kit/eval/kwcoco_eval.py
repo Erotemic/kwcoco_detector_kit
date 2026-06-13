@@ -505,12 +505,25 @@ def run_kwcoco_eval(
         from kwcoco_detector_kit._provenance import provenance_dict
         m = _json.loads(metrics_fpath.read_text())
         m.setdefault("provenance", provenance_dict())
-        m.setdefault("eval_inputs", {
+        # eval_mode + tile params make the AP self-describing (KCD-EVAL-02):
+        # never compare a tiled AP to a whole-image AP by accident again.
+        eval_inputs = {
             "test_kwcoco": str(test_kwcoco),
             "score_thresh": float(score_thresh),
             "candidate_id": str(candidate_id),
             "category_names": list(category_names),
-        })
+            "eval_mode": "tiled" if bool(tiled_eval) else "whole_image",
+            "eval_device": str(device),
+        }
+        if bool(tiled_eval):
+            eval_inputs["tiled_eval"] = {
+                "window": tiled_window,
+                "overlap": float(tiled_overlap),
+                "nms_thresh": float(tiled_nms_thresh),
+                "keep_full": bool(tiled_keep_full),
+                "batch": int(tiled_batch),
+            }
+        m.setdefault("eval_inputs", eval_inputs)
         metrics_fpath.write_text(_json.dumps(m, indent=2))
     except Exception as ex:
         print(f"  warn: failed to stamp provenance into {metrics_fpath}: {ex}")

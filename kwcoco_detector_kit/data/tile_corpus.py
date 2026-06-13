@@ -65,7 +65,10 @@ class TileCorpusConfig(scfg.DataConfig):
 
 def _load_spec(spec_fpath: Path) -> dict:
     import json
-    text = Path(spec_fpath).expanduser().read_text()
+    from kwcoco_detector_kit.configs import expand_env_vars
+    # Expand ${VAR}/${VAR:-default} so specs can be host-portable (KCD-CFG-01).
+    text = expand_env_vars(
+        Path(spec_fpath).expanduser().read_text(), source=str(spec_fpath))
     try:
         import yaml
         data = yaml.safe_load(text)

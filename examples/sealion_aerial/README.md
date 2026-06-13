@@ -1,3 +1,8 @@
+<!-- 2026-06-13: SUPERSEDED as the live path. The active, real sea-lion campaign
+lives at projects/viame_sealions_2026/. This directory is kept as a minimal,
+single-file example of the aerial small-object setup; it is not maintained in
+lockstep with the kit. For current work see ../../projects/viame_sealions_2026/. -->
+
 # sealion_aerial — NOAA Steller Sea Lion Population Count
 
 Aerial single-class detection on the NOAA Steller Sea Lion dataset (Kaggle 2017 challenge). Each source image is ~5616×3744 RGB; annotations are colored dot markers per class. Trains a DEIMv2 DINOv3-S detector at 640×640 input, tier L/XL single-GPU or 4×L DDP.

@@ -47,6 +47,13 @@ This kit ships agent-readable engineering memory in [`dev/`](dev/) — 19 docume
 
 Phase 1 in flight (port + RGB + tier M/L single-GPU). See [`CHANGELOG.md`](CHANGELOG.md) and [`PLAN.md`](PLAN.md) for the full roadmap.
 
+Phase-3 (webdataset / multispectral / cloud) ship-vs-deferred status is tracked in [`docs/phase3_status.md`](docs/phase3_status.md).
+
+## `examples/` vs `projects/`
+
+- **`examples/`** — minimal, self-contained demonstrations of one capability (e.g. `kwcoco_demo/` the 90 s CPU smoke). Not maintained as live campaigns. The `sealion_aerial/` and `viame_sealions_2026/` example dirs are **superseded** historical references (banners at their top).
+- **`projects/`** — real, ongoing experimental campaigns with their own scripts, class schemes, and run registry. `projects/viame_sealions_2026/` is the live sea-lion project and the reference shape new projects copy.
+
 ## License
 
 Apache-2.0.

@@ -26,6 +26,14 @@ Schema (``schema: recipe.v1``)
         train_kwcoco: <path>                # required
         vali_kwcoco:  <path>                # required
         test_kwcoco:  <path>                # required
+        tiled: true                         # optional; declares the training
+                                            #   data is pre-tiled (e.g. a
+                                            #   tile-corpus). Drives eval.mode:auto.
+        expect:                             # optional guard (KCD-DATA-01): assert
+            n_images: 10671                 #   the train bundle's true contents
+            n_annots: 22600                 #   before any GPU time. A filename is
+            categories: [poop]              #   not a contract; this is.
+        expect_mode: fail                   # fail (default) | warn
         tile_store: kwcoco_jpeg | webdataset   # default: kwcoco_jpeg
         train_wds_shards: <path>            # required when tile_store: webdataset
                                             #   output of kwcoco_dataloader's
@@ -59,6 +67,18 @@ Schema (``schema: recipe.v1``)
         do_export: true
         do_eval: true
         do_bench: true
+    eval:                                   # first-class eval mode (KCD-EVAL-01)
+        mode: auto                          # whole_image | tiled | auto (default)
+                                            #   auto -> tiled iff training is
+                                            #   tiled (data.tiled or a
+                                            #   multiscale matrix train_policy).
+        window: null                        # optional window px (default: model
+                                            #   eval_spatial_size = train tile)
+        overlap: 0.25                       # fractional window overlap
+        nms_thresh: 0.5                     # cross-window NMS IoU
+        keep_full: true                     # also run a whole-image pass + merge
+        batch: 64                           # windows per forward pass
+        device: cpu                         # cpu | cuda (cuda recommended)
     eligibility:
         max_desktop_ms: 80.0
         min_device_fps: 1.0                 # walk-and-scan use case
@@ -106,7 +126,9 @@ class RecipeRunConfig(scfg.DataConfig):
 def _load_recipe(fpath: Path) -> Dict[str, Any]:
     if not fpath.exists():
         raise FileNotFoundError(f"recipe file not found: {fpath}")
-    text = fpath.read_text()
+    # Expand ${VAR}/${VAR:-default} so recipes can be host-portable (KCD-CFG-01).
+    from kwcoco_detector_kit.configs import expand_env_vars
+    text = expand_env_vars(fpath.read_text(), source=str(fpath))
     parsed = yaml.safe_load(text)
     if not isinstance(parsed, dict):
         raise ValueError(f"recipe must be a YAML mapping; got {type(parsed).__name__}")
@@ -214,10 +236,21 @@ def _build_sweep_data(recipe: Dict[str, Any], cli_overrides: Dict[str, Any]) -> 
         "num_gpus", "distributed", "keep_going",
         "do_export", "do_eval", "do_bench",
         "init_checkpoint",
+        # Tiled-eval knobs under sweep: (back-compat; the `eval:` block is the
+        # preferred interface — see _resolve_eval_block). These were silently
+        # dropped before KCD-EVAL-01, which is why shitspotter v13's
+        # `sweep.tiled_eval: true` never engaged.
+        "tiled_eval", "tiled_eval_window", "tiled_eval_overlap",
+        "tiled_eval_nms_thresh", "tiled_eval_keep_full", "tiled_eval_batch",
+        "eval_device", "eval_read_workers",
     }
     for k in passthrough_keys:
         if k in sweep:
             sweep_data[k] = sweep[k]
+
+    # First-class eval mode (KCD-EVAL-01). The `eval:` block is the clean
+    # interface and, when present, overrides any legacy sweep.tiled_eval*.
+    _resolve_eval_block(recipe, sweep_data)
 
     # Webdataset training-input plumbing. Recipe authors set the
     # storage backend declaratively under data.tile_store; the
@@ -251,6 +284,85 @@ def _build_sweep_data(recipe: Dict[str, Any], cli_overrides: Dict[str, Any]) -> 
 
     # Seed env var is read by trainer plugins; not part of SweepConfig.
     return sweep_data
+
+
+_EVAL_MODES = ("whole_image", "tiled", "auto")
+
+
+def _training_is_tiled(recipe: Dict[str, Any]) -> Optional[str]:
+    """Return a human reason string if training is tiled, else None.
+
+    Used to resolve ``eval.mode: auto``. Signals (any one is sufficient):
+      * ``data.tiled: true`` — explicit author declaration (e.g. a pre-built
+        tile-corpus, where train_policy is `fixed` but the DATA is multi-scale).
+      * any matrix cell whose ``train_policy`` starts with ``multiscale``.
+    """
+    data = recipe.get("data") or {}
+    if bool(data.get("tiled")):
+        return "data.tiled is set"
+    for cell in recipe.get("sweep", {}).get("matrix", []) or []:
+        policy = str(cell.get("train_policy", ""))
+        if policy.startswith("multiscale"):
+            return f"matrix cell train_policy={policy!r}"
+    return None
+
+
+def _resolve_eval_block(recipe: Dict[str, Any], sweep_data: Dict[str, Any]) -> None:
+    """Resolve the recipe ``eval:`` block into SweepConfig tiled_eval* keys.
+
+    First-class eval mode (KCD-EVAL-01). ``eval.mode`` is one of:
+      * ``whole_image`` — resize each test image to the model input (the
+        classic protocol; understates small-object AP for tile-trained models).
+      * ``tiled`` — slide native-resolution windows and merge (TiledPredictor).
+      * ``auto`` (default) — ``tiled`` iff training is tiled (see
+        ``_training_is_tiled``), else ``whole_image``.
+
+    The resolution is logged loudly so eval mode is never a silent surprise.
+    When the ``eval:`` block is absent, a legacy ``sweep.tiled_eval`` (already
+    passed through) is honored as-is for back-compat.
+    """
+    eval_block = recipe.get("eval")
+    sweep = recipe.get("sweep") or {}
+
+    if eval_block is None:
+        # No eval: block. Honor legacy sweep.tiled_eval (already in sweep_data)
+        # but still record the effective mode for the loud log + downstream.
+        if "tiled_eval" in sweep:
+            mode = "tiled" if bool(sweep.get("tiled_eval")) else "whole_image"
+            print(f"[recipe] eval mode = {mode} (legacy sweep.tiled_eval; "
+                  f"prefer an `eval:` block)")
+        return
+
+    if not isinstance(eval_block, dict):
+        raise ValueError("recipe.eval must be a mapping")
+    mode = str(eval_block.get("mode", "auto"))
+    if mode not in _EVAL_MODES:
+        raise ValueError(
+            f"recipe.eval.mode must be one of {_EVAL_MODES}; got {mode!r}")
+
+    if mode == "auto":
+        reason = _training_is_tiled(recipe)
+        resolved = "tiled" if reason else "whole_image"
+        print(f"[recipe] eval.mode=auto resolved to {resolved!r} "
+              f"({reason or 'no tiled-training signal'})")
+    else:
+        resolved = mode
+        print(f"[recipe] eval.mode = {resolved!r}")
+
+    sweep_data["tiled_eval"] = (resolved == "tiled")
+    # Optional tuning fields map onto the SweepConfig knobs.
+    _eval_field_map = {
+        "window": "tiled_eval_window",
+        "overlap": "tiled_eval_overlap",
+        "nms_thresh": "tiled_eval_nms_thresh",
+        "keep_full": "tiled_eval_keep_full",
+        "batch": "tiled_eval_batch",
+        "device": "eval_device",
+        "read_workers": "eval_read_workers",
+    }
+    for src_key, sweep_key in _eval_field_map.items():
+        if src_key in eval_block:
+            sweep_data[sweep_key] = eval_block[src_key]
 
 
 def _build_eligibility_data(recipe: Dict[str, Any]) -> Dict[str, Any]:
@@ -302,6 +414,33 @@ def _check_input_paths(recipe: Dict[str, Any]) -> None:
             )
 
 
+def _assert_data_expectations(recipe: Dict[str, Any]) -> None:
+    """Assert the train bundle matches a declared ``data.expect:`` block (KCD-DATA-01).
+
+    Guards the "filenames lie" class of bug: a recipe author who knows the
+    training set should have N images declares ``data.expect.n_images: N`` and
+    the run fails loudly before any GPU time if the bundle disagrees. No-op when
+    no ``expect`` block is present. Set ``data.expect_mode: warn`` to downgrade a
+    mismatch to a warning.
+    """
+    data = recipe.get("data") or {}
+    expect = data.get("expect")
+    if not expect:
+        return
+    from kwcoco_detector_kit.data.manifest import compute_manifest, assert_expected
+    strict = str(data.get("expect_mode", "fail")) != "warn"
+    man = compute_manifest(data["train_kwcoco"])
+    mismatches = assert_expected(
+        man, expect, source="recipe.data.expect", strict=strict)
+    if mismatches and not strict:
+        print("[recipe] WARNING: data.expect mismatch(es) (expect_mode=warn):")
+        for msg in mismatches:
+            print(f"  - {msg}")
+    else:
+        print(f"[recipe] data.expect OK (train: {man.get('n_images')} images, "
+              f"{man.get('n_annots')} annots, hash {man.get('content_hash')})")
+
+
 def run(config) -> None:
     recipe_path = Path(str(config.recipe)).expanduser().resolve()
     recipe = _load_recipe(recipe_path)
@@ -330,6 +469,7 @@ def run(config) -> None:
         return
 
     _check_input_paths(recipe)
+    _assert_data_expectations(recipe)
     _apply_reproducibility(recipe)
 
     # Create the workspace before either subcommand touches it.

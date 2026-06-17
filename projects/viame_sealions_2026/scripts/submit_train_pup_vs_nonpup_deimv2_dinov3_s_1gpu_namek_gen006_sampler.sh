@@ -105,6 +105,8 @@ export KCD_BALANCE_MAX_OVERSAMPLE=1
 export KCD_NO_SLURM=1
 # Use auto-profile image rebuilt with sampler patches.
 export KCD_IMAGE="${KCD_IMAGE:-kwcoco-detector-kit:ogdino-auto}"
+# Tile cache lives on the SSD (standard ssd-data symlink pattern).
+export KCD_TILE_CACHE_DPATH=/data/users/jon.crall/kcd_sealion/ssd-data/tile_cache
 
 # ============================================================
 # Workers — conservative for a single-socket workstation

@@ -82,6 +82,29 @@ def test_compute_index_weights_via_forest_contract(tmp_path):
     assert w[0] > w[3]
 
 
+def test_max_oversample_cap(tmp_path):
+    # StubForest gives equal mass per STRATUM; 1 pup tile vs 99 empty tiles
+    # -> pup stratum (1 tile) and empty stratum (99 tiles) each get 0.5 mass
+    # -> pup tile weight = 0.5, each empty tile weight = 0.5/99 ≈ 0.005
+    fpath = _mscoco(tmp_path, n_pup=1, n_bull=0, n_empty=99)
+
+    def factory(grid, rng):
+        return StubForest(grid, rng)
+
+    w_uncapped = compute_index_weights(fpath, forest_factory=factory)
+    assert w_uncapped[0] == pytest.approx(0.5)       # pup gets half the mass
+
+    # max_oversample=1: cap at 1/100 per index, then renormalize.
+    # Pup (0.5) gets capped down to 0.01; empty tiles (each ~0.005) are
+    # below the cap and rise slightly after renorm.
+    w_capped = compute_index_weights(
+        fpath, forest_factory=factory, max_oversample=1)
+    assert sum(w_capped) == pytest.approx(1.0)
+    # pup was capped to exactly the cap boundary (1/100), before renorm
+    assert w_capped[0] < w_uncapped[0]           # cap reduced pup's share
+    assert w_capped[0] <= 1.0 / 100 + 1e-9  # at or below the cap
+
+
 def test_missing_index_weights_is_a_clear_error(tmp_path):
     fpath = _mscoco(tmp_path)
 

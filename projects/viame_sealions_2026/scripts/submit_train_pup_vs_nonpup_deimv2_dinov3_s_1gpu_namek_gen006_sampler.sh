@@ -89,8 +89,14 @@ export KCD_USE_WEBDATASET=0
 # a balance_weights.json sidecar in the run directory.
 export KCD_BALANCE_MODE=sampler
 export KCD_BALANCE_TARGET_JSON='{"<empty>": 0.4, "pup": 0.2, "nonpup_sealion": 0.4}'
-# MAX_OVERSAMPLE applies only to file mode; sampler mode ignores it.
-# Leave it set to suppress the "no balance" fast-path in _launch_train.sh.
+# Natural fit epoch size: N_pup / target_frac_pup = 63062 / 0.2 = 315310.
+# At this epoch length each pup tile appears ~1x per epoch on average
+# (same as file-mode MAX_OVERSAMPLE=1).  Without this, the full 925k-tile
+# dataset drives 15-hour epochs and each pup tile is seen ~37x per epoch.
+export KCD_BALANCE_EPOCH_LENGTH=315000
+# Sampler-mode cap: max expected appearances per tile per epoch = 1.
+# Prevents data-starved strata (e.g. dead_nonpup at 261 tiles) from
+# dominating a future run with a broader target JSON.
 export KCD_BALANCE_MAX_OVERSAMPLE=1
 
 # ============================================================
@@ -103,8 +109,8 @@ export KCD_IMAGE="${KCD_IMAGE:-kwcoco-detector-kit:ogdino-auto}"
 # ============================================================
 # Workers — conservative for a single-socket workstation
 # ============================================================
-export KCD_TRAIN_NUM_WORKERS="${KCD_TRAIN_NUM_WORKERS:-4}"
-export KCD_VAL_NUM_WORKERS="${KCD_VAL_NUM_WORKERS:-2}"
+export KCD_TRAIN_NUM_WORKERS="${KCD_TRAIN_NUM_WORKERS:-8}"
+export KCD_VAL_NUM_WORKERS="${KCD_VAL_NUM_WORKERS:-4}"
 
 # ============================================================
 # Eval: tiled (same as gen005 baseline for fair comparison)

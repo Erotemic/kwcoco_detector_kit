@@ -134,10 +134,9 @@ if [ "$profile" = "auto" ]; then
     if [ -z "$host_cuda" ]; then
         echo "Could not detect host CUDA (tried nvidia-smi, nvcc, version.json)." >&2
         echo "Override with one of:" >&2
-        echo "  HOST_CUDA_VERSION=13.2                    # let auto pick the profile" >&2
-        echo "  KCD_DOCKER_CUDA_PROFILE=aiq               # aiq-gpu: Blackwell sm_120 + cu132" >&2
-        echo "  KCD_DOCKER_CUDA_PROFILE=cu132             # arisia: Ampere sm_86 + cu132" >&2
-        echo "  KCD_DOCKER_CUDA_PROFILE=cu130             # stable cu130" >&2
+        echo "  HOST_CUDA_VERSION=13.2   # let auto pick the profile from the version" >&2
+        echo "  KCD_DOCKER_CUDA_PROFILE=cu132             # CUDA 13.2 nightly" >&2
+        echo "  KCD_DOCKER_CUDA_PROFILE=cu130             # CUDA 13.0 stable" >&2
         exit 1
     fi
     if _version_ge "$host_cuda" "13.2"; then
@@ -151,16 +150,6 @@ if [ "$profile" = "auto" ]; then
 fi
 
 case "$profile" in
-    aiq|blackwell)
-        # aiq-gpu: 4x RTX PRO 6000 Blackwell (sm_120) + CUDA 13.2.
-        # Same cu132 base as arisia; only the arch list and image tag differ.
-        profile="cu132"
-        VARIANT_IMAGE_TAG="${VARIANT_IMAGE_TAG:-kwcoco-detector-kit:ogdino-cu132-aiq}"
-        BASE_IMAGE="${BASE_IMAGE:-nvidia/cuda:13.2.0-devel-ubuntu24.04}"
-        TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/nightly/cu132}"
-        TORCH_PRE="${TORCH_PRE:-1}"
-        TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-12.0}"
-        ;;
     cu132|cuda132|arisia)
         profile="cu132"
         VARIANT_IMAGE_TAG="${VARIANT_IMAGE_TAG:-kwcoco-detector-kit:ogdino-cu132-arisia}"
@@ -176,7 +165,7 @@ case "$profile" in
         TORCH_PRE="${TORCH_PRE:-0}"
         ;;
     *)
-        echo "Unknown KCD_DOCKER_CUDA_PROFILE=$profile; expected auto, aiq, cu130, or cu132." >&2
+        echo "Unknown KCD_DOCKER_CUDA_PROFILE=$profile; expected auto, cu130, or cu132." >&2
         exit 1
         ;;
 esac

@@ -166,26 +166,34 @@ def compute_index_weights(
         k = int(max_oversample)
         if k <= 0:
             raise ValueError(f"max_oversample must be > 0; got {k}")
-        # Iterative cap: after each renorm some weights may creep back above
-        # the cap (because renorm divides by a total < 1 when indices were
-        # capped).  Repeat until stable — converges in O(distinct-strata)
-        # iterations in the worst case, usually 2-3 in practice.
+        # Iterative cap (numpy): after each renorm some weights may creep back
+        # above the cap (renorm divides by total < 1 when indices were capped).
+        # Repeat until stable — converges in O(distinct-strata) iterations,
+        # usually 2-3 in practice (worst case ~30 for highly skewed data).
+        # Use numpy throughout so each O(N) pass is vectorised, not a Python
+        # loop.  Also bound the outer loop at a constant: the Python-list
+        # version used range(len(weights)+1) which could run 900k+ times once
+        # FP rounding prevented strict convergence, tying up the process for
+        # many hours on large datasets.
+        import numpy as np
+        w_arr = np.array(weights, dtype=np.float64)
+        cap = k / len(w_arr)
         n_capped_total = 0
-        for _ in range(len(weights) + 1):
-            cap = k / len(weights)
-            over = [i for i, w in enumerate(weights) if w > cap]
-            if not over:
+        for _ in range(512):
+            over = w_arr > cap
+            if not over.any():
                 break
-            n_capped_total += len(over)
-            weights = [min(w, cap) for w in weights]
-            total = sum(weights)
+            n_capped_total += int(over.sum())
+            np.minimum(w_arr, cap, out=w_arr)
+            total = w_arr.sum()
             if total <= 0:
                 raise ValueError(
                     f"all weights capped to zero with max_oversample={k}")
-            weights = [w / total for w in weights]
+            w_arr /= total
+        weights = w_arr.tolist()
         if n_capped_total:
-            print(f"[balanced_sampler] max_oversample={k}: capped indices "
-                  f"in {n_capped_total} total passes; renormalized.")
+            print(f"[balanced_sampler] max_oversample={k}: capped "
+                  f"{n_capped_total} index-iterations; renormalized.")
 
     return weights
 

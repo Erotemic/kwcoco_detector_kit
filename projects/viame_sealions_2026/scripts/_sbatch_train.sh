@@ -205,11 +205,20 @@ echo "[_sbatch_train.sh] forwarding ${#KCD_ENV_FLAGS[@]} KCD_* values to docker 
 # nvidia runtime registered, so --runtime=nvidia fails there. Select with
 # KCD_DOCKER_GPU_MODE: "runtime" (default, arisia) or "gpus".
 if [ "${KCD_DOCKER_GPU_MODE:-runtime}" = "gpus" ]; then
-    GPU_FLAG=(--gpus "${KCD_GPUS:-all}")
     if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
+        # Slurm path: pin docker to exactly the devices slurm reserved.
+        # --gpus all would expose every physical GPU to every container;
+        # concurrent 2-GPU jobs both get CONTAINER_CUDA_VISIBLE=0,1 but
+        # then collide on the same physical GPUs 0+1 (same bug as gen002
+        # 2026-05-30 jobs 2508+2537 on arisia).
+        GPU_FLAG=(--gpus "device=${CUDA_VISIBLE_DEVICES}")
         n_gpus=$(echo "$CUDA_VISIBLE_DEVICES" | awk -F',' '{print NF}')
         CONTAINER_CUDA_VISIBLE=$(seq -s, 0 $((n_gpus - 1)))
     else
+        # No slurm allocation (standalone/manual invocation). Fall back to
+        # an explicit KCD_GPUS (e.g. "device=0" for yardrat single-GPU) or
+        # expose all if nothing is specified.
+        GPU_FLAG=(--gpus "${KCD_GPUS:-all}")
         CONTAINER_CUDA_VISIBLE=""
     fi
 elif [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then

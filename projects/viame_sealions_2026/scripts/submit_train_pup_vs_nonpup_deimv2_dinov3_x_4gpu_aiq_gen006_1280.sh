@@ -1,38 +1,35 @@
 #!/usr/bin/env bash
-# Generation 6 — pup_vs_nonpup, 1280px, dinov3_X, aiq-gpu Blackwell.
+# Generation 6 — pup_vs_nonpup, 1280px, dinov3_X, aiq-gpu Blackwell, 4-GPU.
 #
 #   scheme:   pup_vs_nonpup
 #   variant:  deimv2_dinov3_x   (50.3M params)
-#   gpus:     4 (aiq-gpu: 4x RTX PRO 6000 Blackwell, 96GB each)
+#   gpus:     4 (aiq-gpu: 4x RTX PRO 6000 Blackwell, 96 GB each)
 #   res:      1280 (uses the prebuilt 0441d89e tile cache)
 #   launcher: slurm
 #
-# ABLATIVE QUESTION: Does stacking BOTH gen005 winners (X backbone + 1280
-# resolution) unlock further pup AP gains beyond either lever alone?
+# This is the scaled-up successor to gen006 X@1280 2-GPU (job 23, pup AP 0.875).
+# Memory analysis (2026-06-21, dev/analyze_gpu_memory.py) found:
+#   peak max_mem at batch=2/GPU: 23,824 MB per GPU (linear estimate at batch=4:
+#   ~47,648 MB conservative; ~35,600 MB const+linear — both well within 96 GB).
+# → batch=4/GPU is safe; 74 GB headroom at batch=2 leaves room for 2× growth.
 #
-# gen005 baseline results (tiled AP):
-#   S@640  (arisia 2-GPU):  pup ~0.840, overall ~0.858
-#   X@640  (aiq 4-GPU):     pup ~0.864, overall ~0.892  (+0.03 uniform)
-#   S@1280 (aiq 4-GPU):     pending
+# LR: held at 4e-4 (same as 2-GPU reference). Historical runs (gen005 X@640
+# 4-GPU) show no linear LR scaling is applied across batch changes; 4e-4 is
+# the proven value for this config.
 #
-# If the resolution and backbone gains are additive, X@1280 should exceed
-# both. If not, the interaction tells us which lever dominates.
+# Epochs: 45 instead of 30.  Kit auto-sets flat_epoch = epochs//2 = 22 (vs 15
+# in the 30-epoch run), giving 7 more high-LR epochs.  The 30-epoch run's in-
+# loop mAP was still rising at ep29 (+0.001/epoch) but the LR was already at
+# its minimum — training from scratch with more epochs is the correct lever.
 #
-# MEMORY: X at 1280px is the hardest memory regime we've run. ViT attention
-# at 1280px / 14px patch = 8281 tokens; X has 50M params. Starting with
-# per_gpu_batch=1 (total 4) — conservative for the first run. Watch `max mem`
-# over epochs 0-2 (Mosaic kicks in at epoch 2); raise KCD_PER_GPU_BATCH
-# to 2 if headroom permits, and scale LR proportionally.
-#
-# BALANCE: file mode (same as all gen005 1280 runs) — one lever at a time.
-# The sampler-vs-file ablation is covered by namek + arisia gen006.
-#
-# Submit (slurm writes to slurm_logs; follow with follow_job.sh <jobid>):
-#   KCD_IMAGE=kwcoco-detector-kit:ogdino-cu132-aiq \
-#   KCD_TILE_CACHE_DPATH=/data/users/jon.crall/kcd_sealion/ssd-data/tile_cache \
-#     bash projects/viame_sealions_2026/scripts/submit_train_pup_vs_nonpup_deimv2_dinov3_x_4gpu_aiq_gen006_1280.sh
+# BALANCE: file mode (sampler diverged to NaN in gen006 X@640 sampler run).
 #
 # Pre-flight: 0441d89e (1280px) tile cache must exist on aiq.
+#
+# Submit (slurm writes to slurm_logs; follow with follow_job.sh <jobid>):
+#   aiq-gpu$ KCD_IMAGE=kwcoco-detector-kit:ogdino-cu132-aiq \
+#   KCD_TILE_CACHE_DPATH=/data/users/jon.crall/kcd_sealion/ssd-data/tile_cache \
+#     bash projects/viame_sealions_2026/scripts/submit_train_pup_vs_nonpup_deimv2_dinov3_x_4gpu_aiq_gen006_1280.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,15 +41,16 @@ export KCD_SCHEME=pup_vs_nonpup
 export KCD_CATEGORY_NAMES=pup,nonpup_sealion
 export KCD_VARIANT=deimv2_dinov3_x
 export KCD_NUM_GPUS="${KCD_NUM_GPUS:-4}"
-# Conservative for X@1280 — raise to 2 if max-mem shows headroom after ep0.
-export KCD_PER_GPU_BATCH="${KCD_PER_GPU_BATCH:-1}"    # total = 4 * 1 = 4
+# batch=4/GPU confirmed safe by memory analysis: peak 23,824 MB at batch=2/GPU;
+# linear estimate at 4/GPU ≈ 47,648 MB (conservative); well within 96 GB.
+export KCD_PER_GPU_BATCH="${KCD_PER_GPU_BATCH:-4}"    # total = 4 * 4 = 16
 export KCD_VAL_BATCH_MULT="${KCD_VAL_BATCH_MULT:-1}"
-export KCD_NUM_EPOCHS="${KCD_NUM_EPOCHS:-30}"
+# 45 epochs: flat_epoch=22 (7 more high-LR epochs than 30-epoch ref).
+export KCD_NUM_EPOCHS="${KCD_NUM_EPOCHS:-45}"
 export KCD_INPUT_HW="${KCD_INPUT_HW:-[1280, 1280]}"
 export KCD_TRAIN_POLICY=fixed
-# LR scaled from 5e-4 @ total-batch-32 (gen005 X@640) to total-batch-4:
-# keeping the gen005 S@1280 4e-4 value (same total batch of 8 → 4 is even
-# smaller; hold at 4e-4 as a floor and tune up if training is unstable).
+# LR unchanged from 2-GPU reference (job 23, pup AP 0.875). No linear
+# scaling applied — consistent with gen005 X@640 4-GPU practice.
 export KCD_LR="${KCD_LR:-4e-4}"
 export KCD_BACKBONE_LR="${KCD_BACKBONE_LR:-2e-5}"
 export KCD_USE_AMP=true

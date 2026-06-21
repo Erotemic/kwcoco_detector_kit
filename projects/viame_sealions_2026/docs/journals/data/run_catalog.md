@@ -1,0 +1,37 @@
+# Run catalog
+
+Generated 2026-06-21. 102 job records across 29 unique run names.
+
+Columns: `clean=Y` means no training failures (export failures are post-training and do not affect the clean flag).
+
+| run_name | gen | scheme | backbone | res | n_gpu | batch | lr_head | balance | outcome | clean | failures | n_jobs | ep_done | peak_MB | best_mAP | nocls_AP | eval_src | wall_h | cls:bull | cls:dead_nonpup | cls:dead_pup | cls:female | cls:juvenile | cls:nonpup_sealion | cls:northern_fur_seal | cls:pup | cls:sealion | cls:subadult_male |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| full_8cls_deimv2_dinov3_x_4gpu_aiq_gen005_640 | gen005 | full_8cls | dinov3_x | 640 | 4 | 64 | 5.000e-04 | none | completed | N | killed | 3 | 30 | 52735 | 0.1890 | 0.8292 | tiled | 5.9300 | 0.8648 | 0.3569 | 0.5424 | 0.8938 | 0.7426 |  | 0.9108 | 0.8613 |  | 0.3904 |
+| lifestage_6cls_deimv2_dinov3_s_2gpu_arisia_gen005_v2splits | gen005 | lifestage_6cls | dinov3_s | 640 | 2 | 16 | 5.000e-04 | none | completed | Y |  | 1 | 30 | 12240 | 0.1800 | 0.8099 | tiled | 24.4000 | 0.8490 |  |  | 0.8840 | 0.7186 |  | 0.8805 | 0.8364 |  | 0.3873 |
+| lifestage_6cls_deimv2_hgnetv2_n_1gpu_arisia_gen002 | gen002 | lifestage_6cls | hgnetv2_n | 320 | 1 | 12 | 4.900e-04 | none | completed | N | killed | 3 | 30 |  | 0.0060 | 0.0091 | standard | 29.5000 | 0.0161 |  |  | 0.0244 | 0.0033 |  | 2.602e-05 | 4.305e-04 |  | 8.374e-04 |
+| lifestage_6cls_deimv2_hgnetv2_n_1gpu_arisia_v1 | v1 | lifestage_6cls | hgnetv2_n | 320 | 1 | 128 | 0.0016 | none | killed | N | killed | 1 | 26 |  | 0.000e+00 |  |  | 47.9100 |  |  |  |  |  |  |  |  |  |  |
+| lifestage_6cls_deimv2_hgnetv2_n_1gpu_arisia_v3 | v3 | lifestage_6cls | hgnetv2_n | 320 | 1 | 32 | 8.000e-04 | none | oom | N | oom | 1 | 1 |  |  |  |  | 0.4400 |  |  |  |  |  |  |  |  |  |  |
+| lifestage_6cls_deimv2_hgnetv2_n_1gpu_arisia_v4 | v4 | lifestage_6cls | hgnetv2_n | 320 | 1 | 12 | 4.900e-04 | none | completed | N | killed | 9 | 30 |  | 0.0500 | 0.0943 | standard | 47.9600 | 0.4406 |  |  | 0.1790 | 0.0285 |  | 0.0674 | 0.0104 |  | 0.1167 |
+| pup_vs_nonpup_deimv2_dinov3_s_1gpu_namek_gen006_sampler | gen006 | pup_vs_nonpup | dinov3_s | 640 | 1 | 4 | 5.000e-04 | sampler | partial | N | oom, prior_crash_noted | 2 | 4 | 4291 | 0.0780 |  |  | 47.3700 |  |  |  |  |  |  |  |  |  |  |
+| pup_vs_nonpup_deimv2_dinov3_s_2gpu_arisia_gen004_balanced | gen004 | pup_vs_nonpup | dinov3_s | 640 | 2 | 16 | 5.000e-04 | none | killed | N | killed, oom | 3 | 10 |  | 0.1750 | 0.5650 | per_checkpoint | 19.9000 |  |  |  |  |  | 0.7196 |  | 0.1019 |  |  |
+| pup_vs_nonpup_deimv2_dinov3_s_2gpu_arisia_gen004_balanced_resume | gen004 | pup_vs_nonpup | dinov3_s | 640 | 2 | 32 | 5.000e-04 | none | oom | N | killed, oom | 2 | 9 |  | 0.1580 |  |  | 0.5400 |  |  |  |  |  |  |  |  |  |  |
+| pup_vs_nonpup_deimv2_dinov3_s_2gpu_arisia_gen005_v2splits | gen005 | pup_vs_nonpup | dinov3_s | 640 | 2 | 16 | 5.000e-04 | none | completed | N | killed, oom | 4 | 30 |  | 0.1400 | 0.8606 | tiled | 29.0700 |  |  |  |  |  | 0.8824 |  | 0.8402 |  |  |
+| pup_vs_nonpup_deimv2_dinov3_s_4gpu_aiq_gen005_640 | gen005 | pup_vs_nonpup | dinov3_s | 640 | 4 | 32 | 5.000e-04 | none | completed | Y |  | 1 | 30 |  | 0.1380 | 0.8573 | tiled | 6.7300 |  |  |  |  |  | 0.8794 |  | 0.8371 |  |  |
+| pup_vs_nonpup_deimv2_dinov3_x_2gpu_aiq_gen006_1280 | gen006 | pup_vs_nonpup | dinov3_x | 1280 | 2 | 4 | 4.000e-04 | file | completed | N | export_failed, killed | 2 | 30 | 23824 | 0.3420 | 0.8993 | standard | 20.4900 |  |  |  |  |  | 0.9204 |  | 0.8748 |  |  |
+| pup_vs_nonpup_deimv2_dinov3_x_2gpu_aiq_gen006_sampler | gen006 | pup_vs_nonpup | dinov3_x | 640 | 2 | 16 | 5.000e-04 | sampler | killed | N | killed, nan_loss, prior_crash_noted | 3 | 2 | 13400 | 0.0940 |  |  | 2.0400 |  |  |  |  |  |  |  |  |  |  |
+| pup_vs_nonpup_deimv2_dinov3_x_4gpu_aiq_gen005_640 | gen005 | pup_vs_nonpup | dinov3_x | 640 | 4 | 64 | 5.000e-04 | none | completed | N | export_failed, killed, nan_loss, oom | 7 | 30 | 43328 | 0.1590 | 0.8917 | tiled | 6.4700 |  |  |  |  |  | 0.9075 |  | 0.8627 |  |  |
+| pup_vs_nonpup_deimv2_hgnetv2_n_1gpu_arisia_gen002 | gen002 | pup_vs_nonpup | hgnetv2_n | 320 | 1 | 16 | 5.660e-04 | none | completed | N | killed, oom | 23 | 30 |  | 0.0070 | 0.0245 | standard | 18.0600 |  |  |  |  |  | 0.0314 |  | 1.768e-04 |  |  |
+| pup_vs_nonpup_deimv2_hgnetv2_n_1gpu_arisia_gen004_balanced | gen004 | pup_vs_nonpup | hgnetv2_n | 320 | 1 | 16 | 5.660e-04 | none | killed | N | killed | 3 | 11 |  | 0.0060 |  |  | 47.9900 |  |  |  |  |  |  |  |  |  |  |
+| pup_vs_nonpup_deimv2_hgnetv2_n_1gpu_arisia_v1 | v1 | pup_vs_nonpup | hgnetv2_n | 320 | 1 | 32 | 8.000e-04 | none | killed | N | killed | 6 | 1 |  |  |  |  | 0.2300 |  |  |  |  |  |  |  |  |  |  |
+| pup_vs_nonpup_deimv2_hgnetv2_n_1gpu_arisia_v2 | v2 | pup_vs_nonpup | hgnetv2_n | 320 | 1 | 128 | 0.0016 | none | killed | N | killed, oom | 4 | 26 |  | 0.000e+00 |  |  | 47.7500 |  |  |  |  |  |  |  |  |  |  |
+| pup_vs_nonpup_deimv2_hgnetv2_n_1gpu_arisia_v3 | v3 | pup_vs_nonpup | hgnetv2_n | 320 | 1 | 64 | 0.0011 | none | oom | N | oom | 1 | 1 |  |  |  |  | 0.0800 |  |  |  |  |  |  |  |  |  |  |
+| pup_vs_nonpup_deimv2_hgnetv2_n_1gpu_arisia_v4 | v4 | pup_vs_nonpup | hgnetv2_n | 320 | 1 | 48 | 9.800e-04 | none | oom | N | oom | 2 | 1 |  |  |  |  | 0.2500 |  |  |  |  |  |  |  |  |  |  |
+| pup_vs_nonpup_deimv2_hgnetv2_n_1gpu_arisia_v5 | v5 | pup_vs_nonpup | hgnetv2_n | 320 | 1 | 32 | 8.000e-04 | none | oom | N | oom | 2 | 6 |  | 0.0230 |  |  | 4.7900 |  |  |  |  |  |  |  |  |  |  |
+| pup_vs_nonpup_deimv2_hgnetv2_n_1gpu_arisia_v6 | v6 | pup_vs_nonpup | hgnetv2_n | 320 | 1 | 16 | 5.660e-04 | none | completed | Y |  | 1 | 30 |  | 0.0360 | 0.1987 | standard | 40.6600 |  |  |  |  |  | 0.2630 |  | 0.0104 |  |  |
+| single_sealion_deimv2_dinov3_s_2gpu_arisia_gen004_balanced | gen004 | single_sealion | dinov3_s | 640 | 2 | 16 | 5.000e-04 | none | killed | N | killed | 1 | 22 |  | 0.2330 | 0.5807 | per_checkpoint | 19.9000 |  |  |  |  |  |  |  |  | 0.5807 |  |
+| single_sealion_deimv2_dinov3_s_2gpu_arisia_gen005_v2splits | gen005 | single_sealion | dinov3_s | 640 | 2 | 16 | 5.000e-04 | none | killed | N | killed | 2 | 16 |  | 0.1890 | 0.8644 | tiled | 47.9400 |  |  |  |  |  |  |  |  | 0.8644 |  |
+| single_sealion_deimv2_hgnetv2_n_1gpu_arisia_gen002 | gen002 | single_sealion | hgnetv2_n | 320 | 1 | 16 | 5.660e-04 | none | completed | N | killed | 4 | 30 |  | 0.0120 | 0.0239 | standard | 26.9900 |  |  |  |  |  |  |  |  | 0.0239 |  |
+| single_sealion_deimv2_hgnetv2_n_1gpu_arisia_gen003 | gen003 | single_sealion | hgnetv2_n | 320 | 1 | 16 | 5.660e-04 | none | partial | N | killed | 4 | 12 |  | 0.000e+00 |  |  | 38.6700 |  |  |  |  |  |  |  |  |  |  |
+| single_sealion_deimv2_hgnetv2_n_1gpu_arisia_v1 | v1 | single_sealion | hgnetv2_n | 320 | 1 | 128 | 0.0016 | none | killed | N | killed | 1 | 26 |  | 0.000e+00 |  |  | 47.5800 |  |  |  |  |  |  |  |  |  |  |
+| single_sealion_deimv2_hgnetv2_n_1gpu_arisia_v4 | v4 | single_sealion | hgnetv2_n | 320 | 1 | 24 | 6.930e-04 | none | oom | N | oom | 1 | 10 |  | 0.0340 |  |  | 10.4300 |  |  |  |  |  |  |  |  |  |  |
+| single_sealion_deimv2_hgnetv2_n_1gpu_arisia_v5 | v5 | single_sealion | hgnetv2_n | 320 | 1 | 16 | 5.660e-04 | none | completed | N | killed | 5 | 30 |  | 0.0480 | 0.1767 | standard | 43.2200 |  |  |  |  |  |  |  |  | 0.1767 |  |

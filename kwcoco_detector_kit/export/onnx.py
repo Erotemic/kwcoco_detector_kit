@@ -196,6 +196,9 @@ def _export_deimv2(
     ckpt = trainer.find_checkpoint(workdir)
     cfg = workdir / "generated_configs" / "train.yml"
 
+    # Read policy early — needed for both the simplify decision and write_modelspec.
+    policy = _read_policy(workdir)
+
     # DEIMv2's tools/deployment/export_onnx.py has no `-o`/`--output` flag —
     # it derives the output path from `--resume`:
     #     output_file = args.resume.replace('.pth', '.onnx')
@@ -208,7 +211,12 @@ def _export_deimv2(
         "--check",
         "--opset", str(int(opset)),
     ]
-    if importlib.util.find_spec("onnxsim") is not None:
+    # onnxsim cannot simplify dinov3-based models: the RoPE embedding subgraph
+    # references tensors that onnxsim's C extension can't resolve, producing
+    # "Input .../rope_embed/... is undefined!". Other backbones (hgnetv2, etc.)
+    # are fine with simplify. Skip it only for dinov3.
+    _variant = policy.get("variant", "")
+    if importlib.util.find_spec("onnxsim") is not None and "dinov3" not in _variant:
         args.append("--simplify")
 
     derived_onnx = Path(str(ckpt).replace(".pth", ".onnx"))
@@ -272,7 +280,6 @@ def _export_deimv2(
             f"{out_fpath} exist on disk."
         )
 
-    policy = _read_policy(workdir)
     write_modelspec(
         out_fpath,
         input_hw=(H, W),

@@ -1,7 +1,7 @@
 {
   "catalog_generated": "2026-06-21",
-  "n_logs": 102,
-  "n_unique_run_names": 29,
+  "n_logs": 103,
+  "n_unique_run_names": 30,
   "runs": [
     {
       "log_file": "/data/users/jon.crall/slurm_logs/full_8cls_deimv2_dinov3_x_4gpu_aiq_gen005_640-11.out",
@@ -4438,7 +4438,8 @@
       "had_failures": true,
       "failure_events": [
         "prior_crash_noted",
-        "nan_loss"
+        "nan_loss",
+        "killed"
       ],
       "global_peak_mem_mb": 23456.0,
       "mem_by_epoch": [
@@ -4590,8 +4591,8 @@
         }
       ],
       "wall_time_start": "2026-06-19T18:09:24",
-      "wall_time_end": "2026-06-21T14:38:45",
-      "wall_time_hours": 44.49,
+      "wall_time_end": "2026-06-21T14:50:07",
+      "wall_time_hours": 44.68,
       "eval_results": [],
       "config_validation": {
         "match": true,
@@ -5669,6 +5670,440 @@
             "nonpup_sealion": 0.7352895302538083
           },
           "eval_timestamp": "2026-06-08T232630+0"
+        }
+      ],
+      "config_validation": {
+        "match": true,
+        "mismatches": []
+      }
+    },
+    {
+      "log_file": "/data/users/jon.crall/slurm_logs/pup_vs_nonpup_deimv2_dinov3_x_4gpu_aiq_gen006_1280-25.out",
+      "run_name": "pup_vs_nonpup_deimv2_dinov3_x_4gpu_aiq_gen006_1280",
+      "slurm_job_id": 25,
+      "generation": "gen006",
+      "is_slurm": true,
+      "host": "aiq-gpu",
+      "gpu_model": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+      "gpu_vram_mb": 98304,
+      "n_gpus": 4,
+      "scheme": "pup_vs_nonpup",
+      "variant": "deimv2_dinov3_x",
+      "backbone": "dinov3_x",
+      "categories": [
+        "pup",
+        "nonpup_sealion"
+      ],
+      "input_hw": [
+        1280,
+        1280
+      ],
+      "resolution": 1280,
+      "tile_cache_hash": "0441d89e",
+      "per_gpu_batch": 4,
+      "total_batch": 16,
+      "n_epochs_planned": 45,
+      "lr_head": 0.0004,
+      "lr_backbone": 2e-05,
+      "use_amp": true,
+      "balance_mode": "file",
+      "kcd_root": "/data/users/jon.crall/kcd_sealion/runs/pup_vs_nonpup_deimv2_dinov3_x_4gpu_aiq_gen006_1280",
+      "flat_epoch": 22,
+      "no_aug_epoch": 4,
+      "lr_gamma": 0.5,
+      "lrscheduler": "flatcosine",
+      "use_ema": true,
+      "num_classes": 2,
+      "aug_policy_epochs": [
+        4,
+        78,
+        148
+      ],
+      "outcome": "completed",
+      "n_epochs_completed": 45,
+      "had_failures": false,
+      "failure_events": [
+        "export_failed"
+      ],
+      "global_peak_mem_mb": 50808.0,
+      "mem_by_epoch": [
+        {
+          "epoch": 0,
+          "peak_max_mem_mb": 19142.0
+        },
+        {
+          "epoch": 1,
+          "peak_max_mem_mb": 19142.0
+        },
+        {
+          "epoch": 2,
+          "peak_max_mem_mb": 19142.0
+        },
+        {
+          "epoch": 3,
+          "peak_max_mem_mb": 23609.0
+        },
+        {
+          "epoch": 4,
+          "peak_max_mem_mb": 23609.0
+        },
+        {
+          "epoch": 5,
+          "peak_max_mem_mb": 26482.0
+        },
+        {
+          "epoch": 6,
+          "peak_max_mem_mb": 26482.0
+        },
+        {
+          "epoch": 7,
+          "peak_max_mem_mb": 37550.0
+        },
+        {
+          "epoch": 8,
+          "peak_max_mem_mb": 37550.0
+        },
+        {
+          "epoch": 9,
+          "peak_max_mem_mb": 37550.0
+        },
+        {
+          "epoch": 10,
+          "peak_max_mem_mb": 37550.0
+        },
+        {
+          "epoch": 11,
+          "peak_max_mem_mb": 37550.0
+        },
+        {
+          "epoch": 12,
+          "peak_max_mem_mb": 37550.0
+        },
+        {
+          "epoch": 13,
+          "peak_max_mem_mb": 37550.0
+        },
+        {
+          "epoch": 14,
+          "peak_max_mem_mb": 37550.0
+        },
+        {
+          "epoch": 15,
+          "peak_max_mem_mb": 37550.0
+        },
+        {
+          "epoch": 16,
+          "peak_max_mem_mb": 37550.0
+        },
+        {
+          "epoch": 17,
+          "peak_max_mem_mb": 37550.0
+        },
+        {
+          "epoch": 18,
+          "peak_max_mem_mb": 37550.0
+        },
+        {
+          "epoch": 19,
+          "peak_max_mem_mb": 37550.0
+        },
+        {
+          "epoch": 20,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 21,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 22,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 23,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 24,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 25,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 26,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 27,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 28,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 29,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 30,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 31,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 32,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 33,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 34,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 35,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 36,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 37,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 38,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 39,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 40,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 41,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 42,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 43,
+          "peak_max_mem_mb": 50808.0
+        },
+        {
+          "epoch": 44,
+          "peak_max_mem_mb": 50808.0
+        }
+      ],
+      "in_loop_map": [
+        {
+          "epoch": 0,
+          "map": 0.205
+        },
+        {
+          "epoch": 1,
+          "map": 0.236
+        },
+        {
+          "epoch": 2,
+          "map": 0.255
+        },
+        {
+          "epoch": 3,
+          "map": 0.269
+        },
+        {
+          "epoch": 4,
+          "map": 0.278
+        },
+        {
+          "epoch": 5,
+          "map": 0.282
+        },
+        {
+          "epoch": 6,
+          "map": 0.285
+        },
+        {
+          "epoch": 7,
+          "map": 0.289
+        },
+        {
+          "epoch": 8,
+          "map": 0.293
+        },
+        {
+          "epoch": 9,
+          "map": 0.297
+        },
+        {
+          "epoch": 10,
+          "map": 0.301
+        },
+        {
+          "epoch": 11,
+          "map": 0.306
+        },
+        {
+          "epoch": 12,
+          "map": 0.31
+        },
+        {
+          "epoch": 13,
+          "map": 0.313
+        },
+        {
+          "epoch": 14,
+          "map": 0.316
+        },
+        {
+          "epoch": 15,
+          "map": 0.318
+        },
+        {
+          "epoch": 16,
+          "map": 0.32
+        },
+        {
+          "epoch": 17,
+          "map": 0.322
+        },
+        {
+          "epoch": 18,
+          "map": 0.324
+        },
+        {
+          "epoch": 19,
+          "map": 0.327
+        },
+        {
+          "epoch": 20,
+          "map": 0.328
+        },
+        {
+          "epoch": 21,
+          "map": 0.329
+        },
+        {
+          "epoch": 22,
+          "map": 0.331
+        },
+        {
+          "epoch": 23,
+          "map": 0.332
+        },
+        {
+          "epoch": 24,
+          "map": 0.333
+        },
+        {
+          "epoch": 25,
+          "map": 0.335
+        },
+        {
+          "epoch": 26,
+          "map": 0.336
+        },
+        {
+          "epoch": 27,
+          "map": 0.337
+        },
+        {
+          "epoch": 28,
+          "map": 0.338
+        },
+        {
+          "epoch": 29,
+          "map": 0.339
+        },
+        {
+          "epoch": 30,
+          "map": 0.34
+        },
+        {
+          "epoch": 31,
+          "map": 0.341
+        },
+        {
+          "epoch": 32,
+          "map": 0.342
+        },
+        {
+          "epoch": 33,
+          "map": 0.343
+        },
+        {
+          "epoch": 34,
+          "map": 0.344
+        },
+        {
+          "epoch": 35,
+          "map": 0.345
+        },
+        {
+          "epoch": 36,
+          "map": 0.345
+        },
+        {
+          "epoch": 37,
+          "map": 0.346
+        },
+        {
+          "epoch": 38,
+          "map": 0.346
+        },
+        {
+          "epoch": 39,
+          "map": 0.347
+        },
+        {
+          "epoch": 40,
+          "map": 0.347
+        },
+        {
+          "epoch": 41,
+          "map": 0.348
+        },
+        {
+          "epoch": 42,
+          "map": 0.348
+        },
+        {
+          "epoch": 43,
+          "map": 0.348
+        },
+        {
+          "epoch": 44,
+          "map": 0.252
+        }
+      ],
+      "wall_time_start": "2026-06-21T15:18:22",
+      "wall_time_end": "2026-06-22T01:13:39",
+      "wall_time_hours": 9.92,
+      "eval_results": [
+        {
+          "path": "/data/users/jon.crall/kcd_sealion/runs/pup_vs_nonpup_deimv2_dinov3_x_4gpu_aiq_gen006_1280/eval/deimv2_dinov3_x_1280x1280_fixed/eval/detect_metrics.json",
+          "eval_type": "standard",
+          "nocls_ap": 0.8819133632042494,
+          "realpos_total": 57444.0,
+          "per_class_ap": {
+            "pup": 0.8692717154532041,
+            "nonpup_sealion": 0.9074014285764517
+          },
+          "eval_timestamp": "2026-06-22T013615+0"
         }
       ],
       "config_validation": {
@@ -10995,12 +11430,12 @@
         148
       ],
       "outcome": "partial",
-      "n_epochs_completed": 4,
+      "n_epochs_completed": 5,
       "had_failures": true,
       "failure_events": [
         "prior_crash_noted"
       ],
-      "global_peak_mem_mb": 4291.0,
+      "global_peak_mem_mb": 5412.0,
       "mem_by_epoch": [
         {
           "epoch": 0,
@@ -11017,6 +11452,10 @@
         {
           "epoch": 3,
           "peak_max_mem_mb": 4291.0
+        },
+        {
+          "epoch": 4,
+          "peak_max_mem_mb": 5412.0
         }
       ],
       "in_loop_map": [
@@ -11031,11 +11470,15 @@
         {
           "epoch": 2,
           "map": 0.069
+        },
+        {
+          "epoch": 3,
+          "map": 0.038
         }
       ],
       "wall_time_start": "2026-06-19T16:28:36",
-      "wall_time_end": "2026-06-21T15:51:05",
-      "wall_time_hours": 47.37,
+      "wall_time_end": "2026-06-22T02:32:33",
+      "wall_time_hours": 58.07,
       "eval_results": [],
       "config_validation": {
         "match": true,

@@ -1,6 +1,6 @@
 # Run catalog
 
-Generated 2026-06-21. 102 job records across 29 unique run names.
+Generated 2026-06-21. 103 job records across 30 unique run names.
 
 Columns: `clean=Y` means no training failures (export failures are post-training and do not affect the clean flag).
 
@@ -12,7 +12,7 @@ Columns: `clean=Y` means no training failures (export failures are post-training
 | lifestage_6cls_deimv2_hgnetv2_n_1gpu_arisia_v1 | v1 | lifestage_6cls | hgnetv2_n | 320 | 1 | 128 | 0.0016 | none | killed | N | killed | 1 | 26 |  | 0.000e+00 |  |  | 47.9100 |  |  |  |  |  |  |  |  |  |  |
 | lifestage_6cls_deimv2_hgnetv2_n_1gpu_arisia_v3 | v3 | lifestage_6cls | hgnetv2_n | 320 | 1 | 32 | 8.000e-04 | none | oom | N | oom | 1 | 1 |  |  |  |  | 0.4400 |  |  |  |  |  |  |  |  |  |  |
 | lifestage_6cls_deimv2_hgnetv2_n_1gpu_arisia_v4 | v4 | lifestage_6cls | hgnetv2_n | 320 | 1 | 12 | 4.900e-04 | none | completed | N | killed | 9 | 30 |  | 0.0500 | 0.0943 | standard | 47.9600 | 0.4406 |  |  | 0.1790 | 0.0285 |  | 0.0674 | 0.0104 |  | 0.1167 |
-| pup_vs_nonpup_deimv2_dinov3_s_1gpu_namek_gen006_sampler | gen006 | pup_vs_nonpup | dinov3_s | 640 | 1 | 4 | 5.000e-04 | sampler | partial | N | oom, prior_crash_noted | 2 | 4 | 4291 | 0.0780 |  |  | 47.3700 |  |  |  |  |  |  |  |  |  |  |
+| pup_vs_nonpup_deimv2_dinov3_s_1gpu_namek_gen006_sampler | gen006 | pup_vs_nonpup | dinov3_s | 640 | 1 | 4 | 5.000e-04 | sampler | partial | N | oom, prior_crash_noted | 2 | 5 | 5412 | 0.0780 |  |  | 58.0700 |  |  |  |  |  |  |  |  |  |  |
 | pup_vs_nonpup_deimv2_dinov3_s_2gpu_arisia_gen004_balanced | gen004 | pup_vs_nonpup | dinov3_s | 640 | 2 | 16 | 5.000e-04 | none | killed | N | killed, oom | 3 | 10 |  | 0.1750 | 0.5650 | per_checkpoint | 19.9000 |  |  |  |  |  | 0.7196 |  | 0.1019 |  |  |
 | pup_vs_nonpup_deimv2_dinov3_s_2gpu_arisia_gen004_balanced_resume | gen004 | pup_vs_nonpup | dinov3_s | 640 | 2 | 32 | 5.000e-04 | none | oom | N | killed, oom | 2 | 9 |  | 0.1580 |  |  | 0.5400 |  |  |  |  |  |  |  |  |  |  |
 | pup_vs_nonpup_deimv2_dinov3_s_2gpu_arisia_gen005_v2splits | gen005 | pup_vs_nonpup | dinov3_s | 640 | 2 | 16 | 5.000e-04 | none | completed | N | killed, oom | 4 | 30 |  | 0.1400 | 0.8606 | tiled | 29.0700 |  |  |  |  |  | 0.8824 |  | 0.8402 |  |  |
@@ -20,6 +20,7 @@ Columns: `clean=Y` means no training failures (export failures are post-training
 | pup_vs_nonpup_deimv2_dinov3_x_2gpu_aiq_gen006_1280 | gen006 | pup_vs_nonpup | dinov3_x | 1280 | 2 | 4 | 4.000e-04 | file | completed | N | export_failed, killed | 2 | 30 | 23824 | 0.3420 | 0.8993 | standard | 20.4900 |  |  |  |  |  | 0.9204 |  | 0.8748 |  |  |
 | pup_vs_nonpup_deimv2_dinov3_x_2gpu_aiq_gen006_sampler | gen006 | pup_vs_nonpup | dinov3_x | 640 | 2 | 16 | 5.000e-04 | sampler | killed | N | killed, nan_loss, prior_crash_noted | 3 | 2 | 13400 | 0.0940 |  |  | 2.0400 |  |  |  |  |  |  |  |  |  |  |
 | pup_vs_nonpup_deimv2_dinov3_x_4gpu_aiq_gen005_640 | gen005 | pup_vs_nonpup | dinov3_x | 640 | 4 | 64 | 5.000e-04 | none | completed | N | export_failed, killed, nan_loss, oom | 7 | 30 | 43328 | 0.1590 | 0.8917 | tiled | 6.4700 |  |  |  |  |  | 0.9075 |  | 0.8627 |  |  |
+| pup_vs_nonpup_deimv2_dinov3_x_4gpu_aiq_gen006_1280 | gen006 | pup_vs_nonpup | dinov3_x | 1280 | 4 | 16 | 4.000e-04 | file | completed | Y | export_failed | 1 | 45 | 50808 | 0.3480 | 0.8819 | standard | 9.9200 |  |  |  |  |  | 0.9074 |  | 0.8693 |  |  |
 | pup_vs_nonpup_deimv2_hgnetv2_n_1gpu_arisia_gen002 | gen002 | pup_vs_nonpup | hgnetv2_n | 320 | 1 | 16 | 5.660e-04 | none | completed | N | killed, oom | 23 | 30 |  | 0.0070 | 0.0245 | standard | 18.0600 |  |  |  |  |  | 0.0314 |  | 1.768e-04 |  |  |
 | pup_vs_nonpup_deimv2_hgnetv2_n_1gpu_arisia_gen004_balanced | gen004 | pup_vs_nonpup | hgnetv2_n | 320 | 1 | 16 | 5.660e-04 | none | killed | N | killed | 3 | 11 |  | 0.0060 |  |  | 47.9900 |  |  |  |  |  |  |  |  |  |  |
 | pup_vs_nonpup_deimv2_hgnetv2_n_1gpu_arisia_v1 | v1 | pup_vs_nonpup | hgnetv2_n | 320 | 1 | 32 | 8.000e-04 | none | killed | N | killed | 6 | 1 |  |  |  |  | 0.2300 |  |  |  |  |  |  |  |  |  |  |

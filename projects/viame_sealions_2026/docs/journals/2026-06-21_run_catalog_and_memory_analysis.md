@@ -34,14 +34,19 @@ shaking down the pipeline.
 
 ## AP progression: pup_vs_nonpup (primary scheme)
 
-| generation | backbone   | res  | nocls_AP | pup_AP | notes |
-|-----------|------------|------|----------|--------|-------|
-| gen002    | hgnetv2_n  | 320  | 0.025    | 0.000  | training_ready_v1 (20% subset) |
-| v6        | hgnetv2_n  | 320  | 0.199    | 0.010  | training_ready_v1, fixed LR/batch |
-| gen004    | dinov3_s   | 640  | 0.565    | 0.102  | training_ready_v1, balanced corpus |
-| gen005    | dinov3_s   | 640  | 0.861    | 0.840  | **detection_v1 full corpus** |
-| gen005    | dinov3_x   | 640  | 0.892    | 0.863  | detection_v1 |
-| gen006    | dinov3_x   | 1280 | 0.899    | 0.875  | detection_v1 |
+All APs are standard (whole-image) eval unless noted. Tiled eval pending for
+all 1280px runs.
+
+| generation | backbone   | res  | gpus | b/gpu | nocls_AP | pup_AP | notes |
+|-----------|------------|------|------|-------|----------|--------|-------|
+| gen002    | hgnetv2_n  | 320  |  1   |  16   | 0.025    | 0.000  | training_ready_v1 (20% subset) |
+| v6        | hgnetv2_n  | 320  |  1   |  16   | 0.199    | 0.010  | training_ready_v1, fixed LR/batch |
+| gen004    | dinov3_s   | 640  |  2   |   8   | 0.565    | 0.102  | training_ready_v1, balanced corpus |
+| gen005    | dinov3_s   | 640  |  2   |   8   | 0.861    | 0.840  | **detection_v1 full corpus** |
+| gen005    | dinov3_x   | 640  |  4   |  16   | 0.892    | 0.863  | detection_v1 |
+| gen006    | dinov3_x   | 1280 |  2   |   2   | 0.899    | 0.875  | detection_v1; job 23 |
+| gen006    | dinov3_x   | 1280 |  4   |   4   | 0.882    | 0.869  | LR unchanged at 4e-4; job 25 |
+| gen007    | dinov3_x   | 1280 |  4   |   6   | 0.892    | 0.870  | LR=1e-3 (sqrt-scaled); job 26 |
 
 Key inflection points:
 
@@ -112,12 +117,14 @@ secondary augmentation parameter change.  This jump does NOT appear in
 
 | backbone  | res  | host  | b/gpu | total_b | ep0 MB | ep4 MB | peak MB | vram MB | util% |
 |-----------|------|-------|-------|---------|--------|--------|---------|---------|-------|
-| dinov3_s  | 640  | arisia|  8    |  16     | 6,099  | 11,255 | 12,240  | 49,152  |  25%  |
-| dinov3_s  | 640  | namek |  8    |   8     | 6,897  | 10,201 | 10,201  | 24,576  |  41%  |
+| dinov3_s  | 640  | arisia|  8    |  16     |  6,099 | 11,255 | 12,240  | 49,152  |  25%  |
+| dinov3_s  | 640  | namek |  8    |   8     |  6,897 | 10,201 | 10,201  | 24,576  |  41%  |
 | dinov3_x  | 640  | aiq   |  8    |  16     | 13,400 | 17,305 | 23,456  | 98,304  |  24%  |
 | dinov3_x  | 640  | aiq   | 16    |  64     | 28,524 | 34,772 | 43,328  | 98,304  |  44%  |
 | dinov3_x  | 640  | aiq   | 16    |  64†   | 25,785 | 41,219 | 52,735  | 98,304  |  54%  |
 | dinov3_x  | 1280 | aiq   |  2    |   4     | 10,182 | 21,683 | 23,824  | 98,304  |  24%  |
+| dinov3_x  | 1280 | aiq   |  4    |  16     | 19,142 | 23,609 | 50,808  | 98,304  |  52%  |
+| dinov3_x  | 1280 | aiq   |  6    |  24     | 28,124 | 34,825 | 55,131  | 98,304  |  56%  |
 
 `†` full_8cls (8 classes adds ~9 GB at peak vs 2-class config at same batch)
 
@@ -135,11 +142,35 @@ The activation component does NOT scale linearly (3.9 → 21.4 is ~5.5×, not
 2×), which suggests the Mosaic augmentation's cache and composite image
 generation contribute significantly beyond just the batch gradient tensors.
 
-For the 1280px configuration, at batch=2/GPU the ep4 activation is 11,501 MB.
-A linear extrapolation to batch=4/GPU would give ≈ 23 GB activation + 10 GB
-overhead ≈ 33 GB per GPU — comfortably within 96 GB.  See the 4-GPU design
-journal (`2026-06-21_gpu_memory_analysis_and_4gpu_design.md`) for the detailed
-batch-scaling analysis.
+### Three-point 1280px memory model (corrected 2026-06-22)
+
+Three measured data points for dinov3_x@1280 on Blackwell 96 GB:
+
+| b/gpu | total_b | ep0 MB  | ep4 MB  | peak MB | peak epoch |
+|-------|---------|---------|---------|---------|------------|
+|  2    |   4     | 10,182  | 21,683  | 23,824  | ep15+      |
+|  4    |  16     | 19,142  | 23,609  | 50,808  | ep20+      |
+|  6    |  24     | 28,124  | 34,825  | 55,131  | ep23+      |
+
+The linear model fitted to the first two points (`peak ≈ −3,160 + 13,492 × b`)
+predicted 77,792 MB at batch=6 — the actual was 55,131 MB, a 41% overestimate.
+
+**Why the linear model fails at 1280px**: memory grows in discrete step-wise
+jumps during training, not at a predictable per-batch rate. The per-epoch peak
+memory for the batch=4 and batch=6 runs tracks almost identically from ep3–ep13,
+then batch=6 pulls ahead slowly through late training. The initial Mosaic phase
+(ep0–3) scales more directly with batch (compositing 4×batch images), but the
+steady-state peak is dominated by later-epoch activation patterns that grow more
+slowly with batch size.
+
+**Practical rule for 1280px dinov3_x on Blackwell 96 GB:**
+- batch=4/GPU → peak ~51 GB (52%)  ← measured
+- batch=6/GPU → peak ~55 GB (56%)  ← measured
+- batch=8/GPU → actual headroom is roughly 40 GB; batch=8 may be feasible
+  but the non-linear growth makes a firm prediction unreliable without a test run
+
+The safe ceiling on 45-epoch steady-state is 55 GB at batch=6. For planning
+purposes, treat batch=6 as the verified safe point and batch=8 as untested.
 
 ### Number of classes and memory
 
@@ -181,21 +212,28 @@ is batch=16/GPU (≈13 GB at 320px with a 48 GB GPU).
 
 ## What the catalog does NOT cover
 
-- **Tiled eval for gen006_1280**: the run directory has `eval/…/detect_metrics.json`
-  (standard, whole-image eval at 1280px = 0.899 nocls / 0.875 pup AP) but NOT a
-  tiled eval.  Tiled eval at 1280px would likely show higher AP-small.
+- **Tiled eval for any 1280px run**: gen006 2-GPU (job 23), gen006 4-GPU (job 25),
+  and gen007 (job 26) all have only standard/whole-image eval results.  Tiled eval
+  at 1280px would show higher AP-small for pups.
 - **per-epoch LR**: captured in step logs but not extracted into the catalog.
-  LR schedule diagnostics are in the 2026-06-21 memory/design journal.
+  LR schedule diagnostics are in `2026-06-21_gpu_memory_analysis_and_4gpu_design.md`.
 - **namek best_stg2.pth**: the `pup_vs_nonpup_deimv2_dinov3_s_1gpu_namek_gen006_sampler`
   partial run has no eval result in the catalog; checkpoint scoring pending.
 
 ---
 
-## Next decision: 4-GPU X@1280 run (pending aiq slot)
+## 4-GPU scaling comparison (standard/whole-image eval, updated 2026-06-22)
 
-Submitted script:
-`projects/viame_sealions_2026/scripts/submit_train_pup_vs_nonpup_deimv2_dinov3_x_4gpu_aiq_gen006_1280.sh`
+Three 4-GPU variants of the X@1280 run:
 
-Expected peak memory at batch=4/GPU: ~33–47 GB (24% headroom min).
-Expected pup AP target: >0.875 (current gen006 2-GPU benchmark).
-Expected wall time: ~15 hours (vs 20.5 h for the 2-GPU 30-epoch run).
+| job | run | b/gpu | total_b | LR   | ep | nocls_AP | pup_AP | wall_h |
+|-----|-----|-------|---------|------|----|----------|--------|--------|
+| 23  | gen006 2-GPU | 2 | 4  | 4e-4 | 30 | 0.899 | 0.875 | 20.5 |
+| 25  | gen006 4-GPU | 4 | 16 | 4e-4 | 45 | 0.882 | 0.869 |  9.9 |
+| 26  | gen007 4-GPU | 6 | 24 | 1e-3 | 45 | 0.892 | 0.870 |  8.3 |
+
+Gen007 (sqrt-scaled LR) recovered most of the gen006 4-GPU regression but
+remains a few points below the 2-GPU baseline on standard eval.  All three
+need tiled eval for a definitive comparison.  The LR/batch interaction is
+likely still the limiting factor — gen007 used sqrt(6)×LR; linear scaling
+(6×LR = 2.4e-3) was not tested.

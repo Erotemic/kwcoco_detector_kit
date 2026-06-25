@@ -111,6 +111,7 @@ markers = [
     "requires_torch: tests that import torch",
     "requires_gpu: tests that require a CUDA-capable GPU",
     "requires_deimv2: tests that drive through the DEIMv2 submodule's engine.core.YAMLConfig",
+    "requires_onnx: tests that need onnxruntime and onnx installed",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning:kwcoco.*",

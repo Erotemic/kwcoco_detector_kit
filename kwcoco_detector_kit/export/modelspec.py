@@ -23,6 +23,17 @@ DEFAULT_NORMALIZE_MEAN = (0.0, 0.0, 0.0)
 DEFAULT_NORMALIZE_STD = (1.0, 1.0, 1.0)
 
 
+def write_labels_txt(onnx_fpath: Path, category_names: Sequence[str]) -> Path:
+    """Write ``<onnx_fpath>.labels.txt`` next to ``onnx_fpath``.
+
+    One category name per line, 0-indexed.  No ``__background__`` prefix —
+    DEIMv2 outputs labels 0…N-1 for N real classes.
+    """
+    labels_fpath = Path(onnx_fpath).with_suffix(".labels.txt")
+    labels_fpath.write_text("\n".join(category_names) + "\n")
+    return labels_fpath
+
+
 def write_modelspec(
     onnx_fpath: Path,
     *,
@@ -79,4 +90,6 @@ def write_modelspec(
     }
     out_fpath = onnx_fpath.with_suffix(".modelspec.json")
     out_fpath.write_text(json.dumps(spec, indent=2))
+    if category_names:
+        write_labels_txt(onnx_fpath, list(category_names))
     return out_fpath

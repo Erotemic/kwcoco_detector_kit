@@ -31,6 +31,23 @@ from kwcoco_detector_kit.export.modelspec import write_modelspec
 DEFAULT_OPSET = 18
 
 
+def _embed_onnx_metadata(model, *, category_names, score_thresh, H, W):
+    """Embed inference params into ONNX model.metadata_props in-place.
+
+    Keyed as: category_names (comma-joined), score_thresh, input_hw ("H,W").
+    OnnxPredictor reads these as a fallback when the .modelspec.json sidecar
+    is absent via session.get_modelmeta().custom_metadata_map.
+    """
+    for key, value in [
+        ("category_names", ",".join(category_names)),
+        ("score_thresh", str(score_thresh)),
+        ("input_hw", f"{H},{W}"),
+    ]:
+        prop = model.metadata_props.add()
+        prop.key = key
+        prop.value = value
+
+
 def _read_policy(workdir: Path) -> dict:
     p = workdir / "policy.json"
     if p.exists():
@@ -140,6 +157,15 @@ def _export_inproc(
         do_constant_folding=True,
         dynamic_axes={"images": {0: "N"}, "orig_target_sizes": {0: "N"}},
     )
+
+    try:
+        import onnx as _onnx
+        _m = _onnx.load(str(out_fpath), load_external_data=True)
+        _embed_onnx_metadata(_m, category_names=category_names,
+                             score_thresh=score_thresh, H=H, W=W)
+        _onnx.save(_m, str(out_fpath), save_as_external_data=False)
+    except ImportError:
+        pass
 
     write_modelspec(
         out_fpath,
@@ -251,6 +277,8 @@ def _export_deimv2(
             import onnx
             model = onnx.load(str(derived_onnx),
                               load_external_data=True)
+            _embed_onnx_metadata(model, category_names=category_names,
+                                 score_thresh=score_thresh, H=H, W=W)
             onnx.save(model, str(out_fpath),
                       save_as_external_data=False)
             derived_onnx.unlink()

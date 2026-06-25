@@ -505,12 +505,13 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
     return workdir
 
 
-def _run_export(trainer, *, workdir: Path, cell, force: bool = False) -> Path:
+def _run_export(trainer, *, workdir: Path, cell, category_names, force: bool = False) -> Path:
     from kwcoco_detector_kit.export.onnx import export_onnx
     return export_onnx(
         trainer=trainer,
         workdir=workdir,
         input_hw=tuple(cell["input_hw"]),
+        category_names=category_names,
         force=force,
     )
 
@@ -680,6 +681,7 @@ def run(config):
                 try:
                     _run_export(
                         trainer, workdir=workdir, cell=cell,
+                        category_names=_parse_category_names(config.category_names),
                         force=bool(config.force_export),
                     )
                 except Exception as ex:

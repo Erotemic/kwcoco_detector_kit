@@ -13,7 +13,6 @@ Subcommands::
   round-loop      Round-based hard-negative-mining loop.
   export-onnx     Export a trained checkpoint to ONNX.
   parity          Check torch <-> ONNX parity on the exported model.
-  eval            Run kwcoco eval against a trained checkpoint.
   bench           Run desktop ONNX bench.
   package-build   Build a portable package from a trained workdir.
   predict         Run packaged detector inference over kwcoco data.
@@ -136,7 +135,10 @@ def _register_subcommands():
     import kwcoco_detector_kit.orchestration.setup_audit as _audit
     import kwcoco_detector_kit.configs as _configs
     import kwcoco_detector_kit.export.package as _package
+    import kwcoco_detector_kit.export.onnx as _export_onnx
+    import kwcoco_detector_kit.export.parity as _parity
     import kwcoco_detector_kit.export.labelme as _labelme
+    import kwcoco_detector_kit.eval.bench as _bench
     import kwcoco_detector_kit.trainers.sam2 as _sam2
     import kwcoco_detector_kit.data.distill as _distill
     import kwcoco_detector_kit.predict as _predict
@@ -153,6 +155,9 @@ def _register_subcommands():
     _register_module("round-loop", _round)
     _register_module("manifest", _elig)
     _register_module("check-env", _audit)
+    _register_module("export-onnx", _export_onnx)
+    _register_module("parity", _parity)
+    _register_module("bench", _bench)
     _register_module("package-build", _package)
     _register_module("predict", _predict)
     _register_module("export-labelme", _labelme)

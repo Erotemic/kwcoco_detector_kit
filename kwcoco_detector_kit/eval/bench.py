@@ -11,6 +11,8 @@ import json
 import time
 from pathlib import Path
 
+import scriptconfig as scfg
+
 
 def run_onnx_bench(
     *,
@@ -72,3 +74,25 @@ def run_onnx_bench(
     out_fpath.write_text(json.dumps(payload, indent=2))
     print(f"  wrote {out_fpath} (mean={payload['mean_ms']:.1f}ms)")
     return out_fpath
+
+
+class BenchConfig(scfg.DataConfig):
+    """Benchmark the exported ONNX model's CPU inference latency."""
+
+    workdir = scfg.Value(None, position=1, required=True,
+                         help="trained workdir (must contain export/*.onnx)")
+    warmup = scfg.Value(3, help="number of warm-up runs before timing")
+    iters = scfg.Value(20, help="number of timed iterations")
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs, strict=True)
+        workdir = Path(str(config.workdir)).expanduser().resolve()
+        run_onnx_bench(workdir=workdir, warmup=int(config.warmup), iters=int(config.iters))
+
+
+def run(config):
+    BenchConfig.main(argv=False, **{k: v for k, v in config.items()})
+
+
+__cli__ = BenchConfig

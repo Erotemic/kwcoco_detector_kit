@@ -608,12 +608,14 @@ def _dump_policy_json(workdir: Path, *, candidate_id: str, variant: str,
                      input_hw, policy_name: str, policy: _PolicyResolution,
                      batch: int, val_batch: int, num_epochs: int,
                      lr: float, backbone_lr: float, use_amp: bool,
-                     init_ckpt: str, generated_cfg_fpath: Path):
+                     init_ckpt: str, generated_cfg_fpath: Path,
+                     category_names=None):
     H, W = int(input_hw[0]), int(input_hw[1])
     obj = {
         "candidate_id": candidate_id,
         "variant": _resolve_variant(variant),
         "candidate_kind": "real",
+        "category_names": list(category_names) if category_names else [],
         "run_tag": os.environ.get("KCD_RUN_TAG", ""),
         "export_input_h": H,
         "export_input_w": W,
@@ -1016,6 +1018,7 @@ class DEIMv2Trainer:
             use_amp=bool(use_amp),
             init_ckpt=str(_effective_init_ckpt or ""),
             generated_cfg_fpath=cfg_fpath,
+            category_names=category_names,
         )
 
         return cfg_fpath

@@ -23,6 +23,8 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence, Tuple
 
+import scriptconfig as scfg
+
 from kwcoco_detector_kit.export.modelspec import write_modelspec
 
 
@@ -291,3 +293,74 @@ def _export_deimv2(
         extra_meta={"opset": int(opset)},
     )
     return out_fpath
+
+
+class ExportOnnxConfig(scfg.DataConfig):
+    """Export a trained checkpoint to ONNX.
+
+    Reads variant and input size from the workdir's policy.json.
+    category_names defaults to policy.json when present (written for
+    workdirs generated after this fix); pass --category-names explicitly
+    for older workdirs that lack it.
+    """
+
+    workdir = scfg.Value(None, position=1, required=True,
+                         help="trained workdir (contains policy.json + checkpoint)")
+    category_names = scfg.Value(
+        None,
+        help="comma-separated category names; defaults to policy.json when present",
+    )
+    force = scfg.Value(False, isflag=True, help="re-export even if .onnx already exists")
+    score_thresh = scfg.Value(0.30, help="score threshold written into the modelspec")
+    opset = scfg.Value(DEFAULT_OPSET, help="ONNX opset version")
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        import kwcoco_detector_kit.trainers  # noqa: F401 — register plugins
+        from kwcoco_detector_kit.trainers._registry import get_trainer
+
+        config = cls.cli(argv=argv, data=kwargs, strict=True)
+        workdir = Path(str(config.workdir)).expanduser().resolve()
+        policy = _read_policy(workdir)
+
+        # Infer trainer from variant prefix (e.g. "deimv2_dinov3_x" → "deimv2").
+        variant = policy.get("variant", "")
+        trainer_name = variant.split("_")[0] if variant else "deimv2"
+        trainer = get_trainer(trainer_name)
+
+        H = int(policy.get("export_input_h", 640))
+        W = int(policy.get("export_input_w", 640))
+
+        # Resolve category_names: CLI arg takes precedence, then policy.json.
+        raw = config.category_names
+        if raw is None:
+            names_from_policy = policy.get("category_names") or []
+            if not names_from_policy:
+                raise ValueError(
+                    "--category-names is required: policy.json in this workdir "
+                    "predates the category_names fix. "
+                    "Pass e.g. --category-names pup,nonpup_sealion"
+                )
+            category_names = list(names_from_policy)
+        elif isinstance(raw, (list, tuple)):
+            category_names = [str(n).strip() for n in raw if str(n).strip()]
+        else:
+            category_names = [s.strip() for s in str(raw).split(",") if s.strip()]
+
+        out = export_onnx(
+            trainer=trainer,
+            workdir=workdir,
+            input_hw=(H, W),
+            category_names=category_names,
+            score_thresh=float(config.score_thresh),
+            opset=int(config.opset),
+            force=bool(config.force),
+        )
+        print(f"[export-onnx] wrote {out}")
+
+
+def run(config):
+    ExportOnnxConfig.main(argv=False, **{k: v for k, v in config.items()})
+
+
+__cli__ = ExportOnnxConfig

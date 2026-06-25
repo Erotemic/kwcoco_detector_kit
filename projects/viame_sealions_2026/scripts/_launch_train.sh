@@ -431,6 +431,7 @@ export_mscoco(src='$TRAIN_KWCOCO', dst='$UNBALANCED_MSCOCO',
                 --src "$UNBALANCED_MSCOCO" \
                 --dst "$BALANCE_WEIGHTS_JSON" \
                 ${KCD_BALANCE_TARGET_JSON:+--class_weights "$KCD_BALANCE_TARGET_JSON"} \
+                ${KCD_BALANCE_MAX_OVERSAMPLE:+--max_oversample "$KCD_BALANCE_MAX_OVERSAMPLE"} \
                 --seed "${KCD_BALANCE_SEED:-0}"
         else
             echo "  Reusing $BALANCE_WEIGHTS_JSON (KCD_FORCE_REBALANCE=1 to redo)."

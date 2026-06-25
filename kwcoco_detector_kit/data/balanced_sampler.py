@@ -113,6 +113,7 @@ def compute_index_weights(
     class_weights: Optional[Dict[str, float]] = None,
     subdivide_keys: Sequence[str] = ("classes",),
     seed: int = 0,
+    max_oversample: Optional[int] = None,
     forest_factory=_default_forest_factory,
 ) -> List[float]:
     """Flat per-index sample weights from hierarchical stratified balance.
@@ -120,6 +121,16 @@ def compute_index_weights(
     ``class_weights`` (e.g. the ``KCD_BALANCE_TARGET_JSON`` dict, with
     ``<empty>`` for annotation-free images) biases the ``classes``
     subdivision; omitted classes get the forest's default handling.
+
+    ``max_oversample`` caps how many times any single index may appear per
+    epoch on average.  The cap is ``max_oversample / N`` per index (where
+    ``N`` is the dataset size); after capping, weights are renormalized.
+    This mirrors the ``max_oversample`` parameter in file-mode
+    ``balance_mscoco``: both prevent data-starved strata from dominating
+    the epoch and guard against per-tile memorization.  ``None`` means no
+    cap (forest weights used as-is, which can produce very high oversample
+    ratios for rare classes against large datasets).
+
     Weights are normalized to sum to 1.
     """
     grid = build_sample_grid_from_mscoco(mscoco_fpath)
@@ -127,8 +138,8 @@ def compute_index_weights(
         raise ValueError(f"no images in {mscoco_fpath}")
     forest = forest_factory(grid, rng=seed)
     for key in subdivide_keys:
-        weights = class_weights if key == "classes" else None
-        forest.subdivide(key, weights=weights)
+        w = class_weights if key == "classes" else None
+        forest.subdivide(key, weights=w)
 
     if not hasattr(forest, "index_weights"):
         raise NotImplementedError(
@@ -149,7 +160,42 @@ def compute_index_weights(
     total = sum(weights)
     if total <= 0:
         raise ValueError("index weights sum to zero")
-    return [w / total for w in weights]
+    weights = [w / total for w in weights]
+
+    if max_oversample is not None:
+        k = int(max_oversample)
+        if k <= 0:
+            raise ValueError(f"max_oversample must be > 0; got {k}")
+        # Iterative cap (numpy): after each renorm some weights may creep back
+        # above the cap (renorm divides by total < 1 when indices were capped).
+        # Repeat until stable — converges in O(distinct-strata) iterations,
+        # usually 2-3 in practice (worst case ~30 for highly skewed data).
+        # Use numpy throughout so each O(N) pass is vectorised, not a Python
+        # loop.  Also bound the outer loop at a constant: the Python-list
+        # version used range(len(weights)+1) which could run 900k+ times once
+        # FP rounding prevented strict convergence, tying up the process for
+        # many hours on large datasets.
+        import numpy as np
+        w_arr = np.array(weights, dtype=np.float64)
+        cap = k / len(w_arr)
+        n_capped_total = 0
+        for _ in range(512):
+            over = w_arr > cap
+            if not over.any():
+                break
+            n_capped_total += int(over.sum())
+            np.minimum(w_arr, cap, out=w_arr)
+            total = w_arr.sum()
+            if total <= 0:
+                raise ValueError(
+                    f"all weights capped to zero with max_oversample={k}")
+            w_arr /= total
+        weights = w_arr.tolist()
+        if n_capped_total:
+            print(f"[balanced_sampler] max_oversample={k}: capped "
+                  f"{n_capped_total} index-iterations; renormalized.")
+
+    return weights
 
 
 def write_balance_weights(fpath, weights: Sequence[float],
@@ -272,6 +318,11 @@ class BalancedSamplerConfig(scfg.DataConfig):
         "semantics; use '<empty>' for annotation-free images)"))
     subdivide_keys = scfg.Value("classes", type=str, help=(
         "CSV of grid keys to stratify over, outermost first"))
+    max_oversample = scfg.Value(None, type=int, help=(
+        "Cap per-index weight at max_oversample/N before normalizing. "
+        "Mirrors balance_mscoco's max_oversample: prevents data-starved "
+        "strata from dominating and limits per-tile repetition. "
+        "None = no cap (forest weights as-is)."))
     seed = scfg.Value(0, type=int)
 
     @classmethod
@@ -286,6 +337,7 @@ class BalancedSamplerConfig(scfg.DataConfig):
             config.src,
             class_weights=class_weights,
             subdivide_keys=keys,
+            max_oversample=config.max_oversample,
             seed=int(config.seed),
         )
         out = write_balance_weights(config.dst, weights, meta={

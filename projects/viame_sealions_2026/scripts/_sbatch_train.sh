@@ -180,80 +180,52 @@ done < <(compgen -v | grep -E '^KCD_' | sort -u)
 echo "[_sbatch_train.sh] forwarding ${#KCD_ENV_FLAGS[@]} KCD_* values to docker run (${#KCD_ENV_FLAGS[@]} = 2 * n_vars)"
 
 # Respect slurm's per-job GPU allocation. CUDA_VISIBLE_DEVICES is set
-# by slurm to the host-side indices of the GPUs assigned to this
-# job (e.g. "0" for job A, "1" for job B). `--gpus all` would
-# override slurm's allocation by exposing every physical GPU to
-# every container; concurrent jobs then all default to "GPU 0"
-# inside the container and collide on the same physical device
-# (gen002 OOM 2026-05-30: jobs 2508 + 2537 both landed on UUID
-# ebfc1af1 with 45 GB held by the other). `--gpus device=<idx>`
-# pins docker to exactly the GPUs slurm reserved.
-# Docker --gpus=device=<host-idx> exposes ONLY that physical GPU to the
-# container, but inside the container that GPU is remapped to logical
-# index 0 (the only visible device). So:
-#   - host side: CUDA_VISIBLE_DEVICES=1 (slurm's pin to physical GPU 1)
-#   - --gpus=device=1 → container sees one device, at logical idx 0
-#   - container side: CUDA_VISIBLE_DEVICES MUST be "0" to match the
-#     post-remap logical index, or "" to let torch see all visible
-#     devices. Forwarding the host idx (1) makes torch look for logical
-#     device 1 inside the container — which doesn't exist — and silently
-#     ends up with zero usable GPUs, model stays on CPU, DDP errors
-#     ("module parameters {device(type='cpu')}"). gen002 2544 hit this.
-# GPU exposure mechanism. arisia's docker has a broken --gpus value
-# parser (see below), so it uses --runtime=nvidia + NVIDIA_VISIBLE_DEVICES.
-# Other hosts (aiq-gpu) work with the modern --gpus and may NOT have the
-# nvidia runtime registered, so --runtime=nvidia fails there. Select with
-# KCD_DOCKER_GPU_MODE: "runtime" (default, arisia) or "gpus".
-if [ "${KCD_DOCKER_GPU_MODE:-runtime}" = "gpus" ]; then
-    GPU_FLAG=(--gpus "${KCD_GPUS:-all}")
-    if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
-        n_gpus=$(echo "$CUDA_VISIBLE_DEVICES" | awk -F',' '{print NF}')
-        CONTAINER_CUDA_VISIBLE=$(seq -s, 0 $((n_gpus - 1)))
-    else
-        CONTAINER_CUDA_VISIBLE=""
-    fi
-elif [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
-    # Multi-GPU on arisia: docker's --gpus value parser is broken
-    # for comma-separated device lists in the version installed.
-    # We tried:
-    #   --gpus=device=0,1     → splits on ',' → reads "1" as Count
-    #                            → "cannot set both Count and DeviceIDs"
-    #                            (job 2572, 2026-06-01)
-    #   --gpus device=0,1     → same bug (job 2574)
-    #   --gpus device=UUID1,UUID2 → parser tries to read UUID2 as a
-    #                            count → "value must be either 'all'
-    #                            or an integer" (job after 1cb28cf)
-    # All three forms route through the same broken value parser.
-    #
-    # Workaround: bypass --gpus entirely. The pre-19.03 nvidia-
-    # docker2 path uses --runtime=nvidia plus NVIDIA_VISIBLE_DEVICES
-    # env var — same effect, doesn't touch the buggy parser.
-    # NVIDIA_VISIBLE_DEVICES is read by the runtime hook before
-    # the container starts, exposes exactly the listed GPUs, and
-    # accepts comma-separated UUIDs or indices.
-    #
-    # We use UUIDs (not indices) so the env var matches what the
-    # slurm-context log echoes and so concurrent jobs can't have
-    # subtle ordering ambiguity. nvidia-smi resolves the slurm-
-    # pinned indices to UUIDs.
+# by slurm to the host-side indices of the GPUs assigned to this job.
+# `--gpus all` exposes every physical GPU to every container, so two
+# concurrent 2-GPU jobs both receive CONTAINER_CUDA_VISIBLE=0,1 and
+# collide on the same physical devices (gen002 OOM 2026-05-30).
+#
+# The modern Docker `--gpus device=X,Y` comma-separated form is broken
+# in the Docker versions on both arisia AND aiq-gpu:
+#   --gpus device=0,1  → "cannot set both Count and DeviceIDs"
+#   --gpus device=UUID1,UUID2 → parser reads UUID2 as a Count int
+# All forms route through the same broken value parser.
+#
+# Workaround (same on all hosts): use --runtime=nvidia +
+# NVIDIA_VISIBLE_DEVICES env var. The runtime hook reads
+# NVIDIA_VISIBLE_DEVICES before the container starts and restricts
+# GPU exposure at the device-cgroup level — no --gpus parser involved.
+# Comma-separated UUIDs are accepted. The container then only sees the
+# assigned GPUs; CONTAINER_CUDA_VISIBLE remaps them to logical 0,1,...
+#
+# KCD_DOCKER_GPU_MODE is kept for the standalone (no-slurm) fallback
+# path only, where CUDA_VISIBLE_DEVICES is unset. For slurm jobs the
+# UUID approach is always used regardless of mode.
+if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
+    # Slurm path (both arisia and aiq): restrict to exactly the GPUs
+    # slurm allocated via NVIDIA_VISIBLE_DEVICES + uuid lookup.
     GPU_UUIDS=$(nvidia-smi --query-gpu=uuid --format=csv,noheader \
                   -i "$CUDA_VISIBLE_DEVICES" 2>/dev/null \
                 | tr '\n' ',' | sed 's/,$//')
     if [ -z "$GPU_UUIDS" ]; then
-        # Fall back to indices if nvidia-smi lookup fails.
-        # NVIDIA_VISIBLE_DEVICES accepts both forms.
+        # Fall back to indices if nvidia-smi lookup fails (e.g. smi not
+        # on PATH). NVIDIA_VISIBLE_DEVICES accepts both index and UUID.
         GPU_UUIDS="$CUDA_VISIBLE_DEVICES"
-        echo "WARN: nvidia-smi UUID lookup failed; using indices" >&2
+        echo "WARN: nvidia-smi UUID lookup failed; using indices for NVIDIA_VISIBLE_DEVICES" >&2
     fi
     GPU_FLAG=(--runtime=nvidia \
               -e "NVIDIA_VISIBLE_DEVICES=${GPU_UUIDS}" \
               -e "NVIDIA_DRIVER_CAPABILITIES=compute,utility")
-    # Build container-side device list: 0,1,2,... up to the count slurm
-    # gave us. Slurm sets CUDA_VISIBLE_DEVICES to a comma-separated host
-    # index list ("0", "1,2", etc.); count its entries.
     n_gpus=$(echo "$CUDA_VISIBLE_DEVICES" | awk -F',' '{print NF}')
     CONTAINER_CUDA_VISIBLE=$(seq -s, 0 $((n_gpus - 1)))
+elif [ "${KCD_DOCKER_GPU_MODE:-runtime}" = "gpus" ]; then
+    # Standalone / no-slurm path on hosts using modern --gpus (aiq with
+    # KCD_NO_SLURM=1, or when CUDA_VISIBLE_DEVICES is unset).
+    # KCD_GPUS lets the caller pin a device (e.g. "device=0" for yardrat).
+    GPU_FLAG=(--gpus "${KCD_GPUS:-all}")
+    CONTAINER_CUDA_VISIBLE=""
 else
+    # Standalone / no-slurm path on hosts using legacy runtime (arisia).
     GPU_FLAG=(--runtime=nvidia \
               -e "NVIDIA_VISIBLE_DEVICES=all" \
               -e "NVIDIA_DRIVER_CAPABILITIES=compute,utility")

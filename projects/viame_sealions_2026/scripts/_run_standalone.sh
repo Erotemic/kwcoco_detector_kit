@@ -86,6 +86,9 @@ fi
 if [ "${KCD_DEV_MOUNT_DEIMV2:-0}" = "1" ]; then
     DEV_MOUNTS+=(-v "$KCD_KIT_DPATH/tpl/DEIMv2:/opt/kwcoco_detector_kit/tpl/DEIMv2")
 fi
+if [ "${KCD_DEV_MOUNT_KWCOCO_DATALOADER:-0}" = "1" ]; then
+    DEV_MOUNTS+=(-v "$KCD_KIT_DPATH/tpl/kwcoco_dataloader:/opt/kwcoco_detector_kit/tpl/kwcoco_dataloader")
+fi
 
 echo "=== standalone docker run (no slurm) ==="
 echo "  run_name: $KCD_RUN_NAME"

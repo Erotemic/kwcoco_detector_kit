@@ -28,15 +28,67 @@ _version_ge() {
     [ "$lhs" -ge "$rhs" ]
 }
 
+_find_nvidia_smi() {
+    # Try PATH first, then common system locations (aiq-gpu and other managed
+    # clusters may not have nvidia-smi on the login-shell PATH).
+    local p
+    for p in nvidia-smi /usr/bin/nvidia-smi /usr/local/cuda/bin/nvidia-smi \
+              /usr/lib/nvidia-smi /opt/nvidia/bin/nvidia-smi; do
+        if command -v "$p" >/dev/null 2>&1 || [ -x "$p" ]; then
+            printf '%s\n' "$p"
+            return 0
+        fi
+    done
+    return 1
+}
+
 _detect_host_cuda() {
     if [ -n "${HOST_CUDA_VERSION:-}" ]; then
         printf '%s\n' "$HOST_CUDA_VERSION"
         return 0
     fi
-    if ! command -v nvidia-smi >/dev/null 2>&1; then
-        return 1
+
+    # Primary: nvidia-smi (most authoritative — reports driver CUDA level).
+    local smi ver
+    smi="$(_find_nvidia_smi 2>/dev/null || true)"
+    if [ -n "$smi" ]; then
+        ver="$("$smi" 2>/dev/null | sed -n 's/.*CUDA Version: \([0-9][0-9.]*\).*/\1/p' | head -1)"
+        if [ -n "$ver" ]; then
+            printf '%s\n' "$ver"
+            return 0
+        fi
     fi
-    nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: \([0-9][0-9.]*\).*/\1/p' | head -1
+
+    # Fallback 1: nvcc --version (toolkit, may lag the driver slightly).
+    local nvcc_out
+    nvcc_out="$(nvcc --version 2>/dev/null || true)"
+    ver="$(printf '%s\n' "$nvcc_out" | sed -n 's/.*release \([0-9][0-9.]*\).*/\1/p' | head -1)"
+    if [ -n "$ver" ]; then
+        echo "NOTE: nvidia-smi not found on PATH; CUDA version detected from nvcc." >&2
+        printf '%s\n' "$ver"
+        return 0
+    fi
+
+    # Fallback 2: CUDA version.json (present in CUDA 11.4+ toolkit installs).
+    local vf
+    for vf in /usr/local/cuda/version.json /usr/local/cuda-*/version.json; do
+        [ -f "$vf" ] || continue
+        ver="$(python3 -c "
+import json, sys
+try:
+    d = json.load(open('$vf'))
+    print(d.get('cuda', d).get('version', ''))
+except Exception:
+    pass
+" 2>/dev/null || true)"
+        if [ -n "$ver" ]; then
+            echo "NOTE: nvidia-smi not found on PATH; CUDA version detected from $vf." >&2
+            printf '%s\n' "$ver"
+            return 0
+        fi
+    done
+
+    return 1
 }
 
 _detect_arch_list() {
@@ -46,12 +98,14 @@ _detect_arch_list() {
     # sm_120) produces an image that fails at runtime with "no kernel image
     # is available for execution on the device". Override by exporting
     # TORCH_CUDA_ARCH_LIST yourself.
-    if ! command -v nvidia-smi >/dev/null 2>&1; then
+    local smi
+    smi="$(_find_nvidia_smi 2>/dev/null || true)"
+    if [ -z "$smi" ]; then
         return 1
     fi
     # compute_cap is reported like "8.6", "9.0", "12.0". Take the unique
     # set across all GPUs and join with ';' so a mixed box still works.
-    nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null \
+    "$smi" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null \
         | awk 'NF' | sort -u | paste -sd';' -
 }
 
@@ -78,8 +132,11 @@ host_cuda="$(_detect_host_cuda || true)"
 
 if [ "$profile" = "auto" ]; then
     if [ -z "$host_cuda" ]; then
-        echo "Could not detect host CUDA with nvidia-smi." >&2
-        echo "Set HOST_CUDA_VERSION=13.0 or KCD_DOCKER_CUDA_PROFILE=cu130/cu132." >&2
+        echo "Could not detect host CUDA (tried nvidia-smi, nvcc, version.json)." >&2
+        echo "Override with one of:" >&2
+        echo "  HOST_CUDA_VERSION=13.2   # let auto pick the profile from the version" >&2
+        echo "  KCD_DOCKER_CUDA_PROFILE=cu132             # CUDA 13.2 nightly" >&2
+        echo "  KCD_DOCKER_CUDA_PROFILE=cu130             # CUDA 13.0 stable" >&2
         exit 1
     fi
     if _version_ge "$host_cuda" "13.2"; then

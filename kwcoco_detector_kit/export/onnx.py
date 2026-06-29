@@ -58,6 +58,57 @@ def _read_policy(workdir: Path) -> dict:
     return {}
 
 
+def _checkpoint_fingerprint(ckpt) -> Optional[dict]:
+    """Content fingerprint of the source ``.pth`` for provenance.
+
+    Returns ``{name, path, sha256, size_bytes}`` or ``None`` if the
+    checkpoint can't be read. Hashing a few-hundred-MB checkpoint is a
+    one-time export cost.
+    """
+    import hashlib
+    try:
+        ckpt = Path(ckpt)
+        if not ckpt.is_file():
+            return None
+        h = hashlib.sha256()
+        with open(ckpt, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return {
+            "name": ckpt.name,
+            "path": str(ckpt),
+            "sha256": h.hexdigest(),
+            "size_bytes": ckpt.stat().st_size,
+        }
+    except Exception:
+        return None
+
+
+def _modelspec_provenance(*, trainer, workdir: Path, ckpt=None,
+                          category_names, imputed):
+    """Assemble (category_names, source_checkpoint, provenance, imputed) for
+    the modelspec. Never fabricates class names: if none are supplied, the
+    absence is recorded as imputed/unknown rather than written as truth.
+    """
+    from kwcoco_detector_kit._provenance import provenance_dict
+    if ckpt is None:
+        try:
+            ckpt = trainer.find_checkpoint(workdir)
+        except Exception:
+            ckpt = None
+    fingerprint = _checkpoint_fingerprint(ckpt) if ckpt is not None else None
+    prov = provenance_dict()
+    names = [str(n).strip() for n in (category_names or []) if str(n).strip()]
+    imp = {k: v for k, v in dict(imputed or {}).items() if v}
+    if not names:
+        imp.setdefault(
+            "category_names",
+            "no class names supplied to the exporter; ONNX class indices are "
+            "undecodable until re-exported with --category-names",
+        )
+    return names, fingerprint, prov, imp
+
+
 def export_onnx(
     *,
     trainer,
@@ -66,7 +117,9 @@ def export_onnx(
     out_fpath: Optional[Path] = None,
     opset: int = DEFAULT_OPSET,
     score_thresh: float = 0.30,
-    category_names: Sequence[str] = ("widget",),
+    category_names: Optional[Sequence[str]] = None,
+    category_names_source: Optional[str] = None,
+    imputed: Optional[dict] = None,
     force: bool = False,
 ) -> Path:
     """Dispatch to the trainer-appropriate ONNX exporter.
@@ -76,6 +129,12 @@ def export_onnx(
     Other trainer plugins should implement their own export path; this
     function falls back to the mock_tiny path if the trainer has the
     expected structure.
+
+    ``category_names`` is no longer defaulted to a placeholder — passing
+    ``None``/empty records the absence as imputed/unknown in the modelspec
+    instead of fabricating class names. ``category_names_source`` is a note
+    on where the names came from; ``imputed`` maps any inferred-not-derived
+    metadata field to a reason string (see ``write_modelspec``).
     """
     workdir = Path(workdir)
     if trainer.name == "deimv2":
@@ -87,6 +146,8 @@ def export_onnx(
             opset=opset,
             score_thresh=score_thresh,
             category_names=category_names,
+            category_names_source=category_names_source,
+            imputed=imputed,
             force=force,
         )
     # Default: torch.onnx.export against the predictor's underlying model.
@@ -98,6 +159,8 @@ def export_onnx(
         opset=opset,
         score_thresh=score_thresh,
         category_names=category_names,
+        category_names_source=category_names_source,
+        imputed=imputed,
         force=force,
     )
 
@@ -110,7 +173,9 @@ def _export_inproc(
     out_fpath: Optional[Path],
     opset: int,
     score_thresh: float,
-    category_names: Sequence[str],
+    category_names: Optional[Sequence[str]],
+    category_names_source: Optional[str] = None,
+    imputed: Optional[dict] = None,
     force: bool,
 ) -> Path:
     """In-process torch.onnx.export for trainer plugins (mock_tiny etc.).
@@ -158,10 +223,15 @@ def _export_inproc(
         dynamic_axes={"images": {0: "N"}, "orig_target_sizes": {0: "N"}},
     )
 
+    names, fingerprint, prov, imp = _modelspec_provenance(
+        trainer=trainer, workdir=workdir,
+        category_names=category_names, imputed=imputed,
+    )
+
     try:
         import onnx as _onnx
         _m = _onnx.load(str(out_fpath), load_external_data=True)
-        _embed_onnx_metadata(_m, category_names=category_names,
+        _embed_onnx_metadata(_m, category_names=names,
                              score_thresh=score_thresh, H=H, W=W)
         _onnx.save(_m, str(out_fpath), save_as_external_data=False)
     except ImportError:
@@ -172,9 +242,13 @@ def _export_inproc(
         input_hw=(H, W),
         postprocess_score_thresh=float(score_thresh),
         variant=variant,
-        category_names=category_names,
+        category_names=names,
         candidate_kind=candidate_kind,
         model_id=policy.get("candidate_id"),
+        category_names_source=category_names_source,
+        source_checkpoint=fingerprint,
+        provenance=prov,
+        imputed=imp,
         extra_meta={"opset": int(opset)},
     )
     return out_fpath
@@ -188,7 +262,9 @@ def _export_deimv2(
     out_fpath: Optional[Path],
     opset: int,
     score_thresh: float,
-    category_names: Sequence[str],
+    category_names: Optional[Sequence[str]],
+    category_names_source: Optional[str] = None,
+    imputed: Optional[dict] = None,
     force: bool,
 ) -> Path:
     """Subprocess DEIMv2's ``tools/deployment/export_onnx.py``.
@@ -310,14 +386,22 @@ def _export_deimv2(
             f"{out_fpath} exist on disk."
         )
 
+    names, fingerprint, prov, imp = _modelspec_provenance(
+        trainer=trainer, workdir=workdir, ckpt=ckpt,
+        category_names=category_names, imputed=imputed,
+    )
     write_modelspec(
         out_fpath,
         input_hw=(H, W),
         postprocess_score_thresh=float(score_thresh),
         variant=policy.get("variant", "deimv2"),
-        category_names=category_names,
+        category_names=names,
         candidate_kind=policy.get("candidate_kind", "real"),
         model_id=policy.get("candidate_id"),
+        category_names_source=category_names_source,
+        source_checkpoint=fingerprint,
+        provenance=prov,
+        imputed=imp,
         extra_meta={"opset": int(opset)},
     )
     return out_fpath
@@ -337,6 +421,21 @@ class ExportOnnxConfig(scfg.DataConfig):
     category_names = scfg.Value(
         None,
         help="comma-separated category names; defaults to policy.json when present",
+    )
+    category_names_source = scfg.Value(
+        None,
+        help=(
+            "note recorded in the modelspec on where category_names came from "
+            "(e.g. 'train_kwcoco', 'cli', 'imputed:class_schemes.yaml:pup_vs_nonpup'). "
+            "Defaults to 'cli' or 'policy.json' based on resolution."
+        ),
+    )
+    category_names_imputed = scfg.Value(
+        False, isflag=True,
+        help=(
+            "mark category_names as imputed (inferred from a secondary artifact, "
+            "not a clean data-driven source) so downstream systems distrust them"
+        ),
     )
     force = scfg.Value(False, isflag=True, help="re-export even if .onnx already exists")
     score_thresh = scfg.Value(0.30, help="score threshold written into the modelspec")
@@ -361,6 +460,7 @@ class ExportOnnxConfig(scfg.DataConfig):
 
         # Resolve category_names: CLI arg takes precedence, then policy.json.
         raw = config.category_names
+        names_source = config.category_names_source
         if raw is None:
             names_from_policy = policy.get("category_names") or []
             if not names_from_policy:
@@ -370,16 +470,25 @@ class ExportOnnxConfig(scfg.DataConfig):
                     "Pass e.g. --category-names pup,nonpup_sealion"
                 )
             category_names = list(names_from_policy)
+            names_source = names_source or "policy.json"
         elif isinstance(raw, (list, tuple)):
             category_names = [str(n).strip() for n in raw if str(n).strip()]
+            names_source = names_source or "cli"
         else:
             category_names = [s.strip() for s in str(raw).split(",") if s.strip()]
+            names_source = names_source or "cli"
+
+        imputed = None
+        if bool(config.category_names_imputed):
+            imputed = {"category_names": f"imputed via {names_source}"}
 
         out = export_onnx(
             trainer=trainer,
             workdir=workdir,
             input_hw=(H, W),
             category_names=category_names,
+            category_names_source=names_source,
+            imputed=imputed,
             score_thresh=float(config.score_thresh),
             opset=int(config.opset),
             force=bool(config.force),

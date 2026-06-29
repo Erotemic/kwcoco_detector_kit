@@ -38,9 +38,15 @@ def test_export_args_do_not_include_o_flag(tmp_path, monkeypatch):
     (cfg_dpath / "train.yml").write_text("# stub\n")
     (workdir / "policy.json").write_text("{}")
 
+    import subprocess as _sp
+    _real_run = _sp.run
     captured = {}
 
     def _fake_run(args, **kwargs):
+        # Only intercept the DEIMv2 export subprocess; defer auxiliary calls
+        # (e.g. the git provenance probe) to the real subprocess.run.
+        if "export_onnx.py" not in " ".join(map(str, args)):
+            return _real_run(args, **kwargs)
         captured["args"] = list(args)
         # Materialise the "derived" .onnx so the kit's move-after-success
         # path has a file to move.
@@ -96,7 +102,14 @@ def test_derived_onnx_moves_to_canonical_path(tmp_path, monkeypatch):
     (cfg_dpath / "train.yml").write_text("# stub\n")
     (workdir / "policy.json").write_text("{}")
 
+    import subprocess as _sp
+    _real_run = _sp.run
+
     def _fake_run(args, **kwargs):
+        # Only intercept the DEIMv2 export subprocess; defer auxiliary calls
+        # (e.g. the git provenance probe) to the real subprocess.run.
+        if "export_onnx.py" not in " ".join(map(str, args)):
+            return _real_run(args, **kwargs)
         # Upstream writes <ckpt>.replace('.pth', '.onnx').
         derived = Path(str(ckpt_fpath).replace(".pth", ".onnx"))
         derived.write_bytes(b"fake_onnx_bytes")
@@ -148,7 +161,13 @@ def test_recovery_works_when_simplify_crashes(tmp_path, monkeypatch):
     (cfg_dpath / "train.yml").write_text("# stub\n")
     (workdir / "policy.json").write_text("{}")
 
+    _real_run = _sp.run
+
     def _fake_run_crashes_after_writing_onnx(args, **kwargs):
+        # Only intercept the DEIMv2 export subprocess; defer auxiliary calls
+        # (e.g. the git provenance probe) to the real subprocess.run.
+        if "export_onnx.py" not in " ".join(map(str, args)):
+            return _real_run(args, **kwargs)
         # Upstream writes the .onnx before --simplify, then --simplify crashes.
         derived = Path(str(ckpt_fpath).replace(".pth", ".onnx"))
         derived.write_bytes(b"unsimplified_onnx")

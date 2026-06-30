@@ -47,7 +47,15 @@ def run_onnx_predictor(package: Path, image_np: np.ndarray) -> None:
         for i, (box, score, cidx) in enumerate(
             zip(top.boxes.to_ltrb().data, top.scores, top.class_idxs)
         ):
-            name = pred.category_names[int(cidx)] if pred.category_names else str(cidx)
+            ci = int(cidx)
+            names = pred.category_names or []
+            # An undecodable index (e.g. a stale ['widget'] modelspec on a
+            # multi-class model) must not abort the smoke test — fall back to
+            # the raw integer and flag it.
+            if 0 <= ci < len(names):
+                name = names[ci]
+            else:
+                name = f"<cidx={ci} undecodable>"
             x0, y0, x1, y1 = box
             print(f"  [{i}] {name:20s}  score={score:.3f}  "
                   f"box=[{x0:.0f},{y0:.0f},{x1:.0f},{y1:.0f}]")

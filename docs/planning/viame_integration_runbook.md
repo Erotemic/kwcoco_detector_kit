@@ -7,15 +7,23 @@ The integration is intentionally thin: the kit exports a self-describing ONNX
 package, and a VIAME kwiver plugin (`kwcoco_detector_kit_detector.py`) runs it
 through `onnxruntime` with **no PyTorch at inference time**.
 
-- Plugin + template + tests live on the VIAME branch **`kwcoco-detector-kit-main`**
-  (based on VIAME `main`):
+**VIAME inference does not depend on `kwcoco_detector_kit` being installed.** The
+`OnnxPredictor` is *vendored* into VIAME — the kit owns the canonical copy and a
+vendoring tool stamps provenance into the VIAME copy, so VIAME can pin/resync
+deliberately instead of tracking the fast-moving kit live (the kit may break
+ONNX-package compatibility on purpose as it evolves).
+
+- Plugin + template + the **vendored predictor** + tests live on the VIAME branch
+  **`kwcoco-detector-kit-main`** (based on VIAME `main`):
   - `plugins/pytorch/kwcoco_detector_kit_detector.py`
+  - `plugins/pytorch/kwcoco_detector_kit_onnx_predictor.py` ← vendored `OnnxPredictor`
   - `configs/pipelines/templates/detector_kwcoco_detector_kit.pipe`
-  - registered (unguarded) in `plugins/pytorch/CMakeLists.txt`
-- The kit side provides the predictor, the in-container setup script, and a
-  standalone smoke test:
-  - `kwcoco_detector_kit/predictors/onnx.py` → `OnnxPredictor`
-  - `dev/viame_container_setup.sh`
+  - both `.py` registered (unguarded) in `plugins/pytorch/CMakeLists.txt`
+- The kit side owns the canonical predictor, the vendoring tool, the runtime-dep
+  setup script, and a standalone smoke test:
+  - `kwcoco_detector_kit/predictors/onnx.py` → `OnnxPredictor` (**canonical**)
+  - `dev/vendor_onnx_to_viame.py` → re-vendors the predictor into VIAME (`--check` detects drift)
+  - `dev/viame_container_setup.sh` → installs onnxruntime + kwconf into VIAME python
   - `dev/viame_onnx_smoke.py`
 
 ## 0. Prerequisite — an exported ONNX package
@@ -67,19 +75,22 @@ docker run --gpus=all \
 The third mount makes the exported ONNX package (under `/data/...`) visible at
 the same path inside the container.
 
-## 3. Wire in the kit + onnxruntime (one-time per container)
+## 3. Install runtime deps (one-time per container)
+
+The plugin and the vendored predictor are already baked into the image by the
+build. Only two torch-free packages are missing from a stock VIAME python —
+`onnxruntime` and `kwconf` (the plugin's config lib):
 
 ```bash
 # inside the container
 source /opt/noaa/viame/setup_viame.sh
-bash /host-kwcoco-detector-kit/dev/viame_container_setup.sh
+bash viame_container_setup.sh   # (copy the script in, or mount the kit just for this)
 ```
 
-This installs `onnxruntime-gpu` + the kwimage/kwcoco stack and the kit itself
-with `--no-deps` (so it never pulls torch over VIAME's source-built torch),
-then verifies the torch-free import chain and the VIAME plugin import. If
-`onnxruntime-gpu` mismatches the container's cuDNN, rerun with
-`KCD_ORT_PACKAGE=onnxruntime` for a CPU-only plumbing test.
+No kit install, no editable mount, no symlinks. The script verifies the
+vendored predictor imports (printing its `kit_git_sha` provenance) and the
+plugin registers. If `onnxruntime-gpu` mismatches the container's cuDNN, rerun
+with `KCD_ORT_PACKAGE=onnxruntime` for a CPU-only plumbing test.
 
 ## 4. Standalone smoke test (no pipeline)
 
@@ -139,14 +150,20 @@ VIAME CSV format:
 The kwcoco→VIAME-CSV converter is the only remaining code to write for a
 closed scoring loop; inference (steps 1–5) is complete.
 
-## Live iteration without a rebuild
+## Editing the predictor → re-vendor
 
-When editing the plugin on the host, re-run the setup script with symlinks so
-host edits take effect immediately:
+The canonical predictor is `kwcoco_detector_kit/predictors/onnx.py` in the kit.
+After editing it, re-vendor the copy into VIAME and rebuild (or re-copy the file
+into the container's `viame.pytorch` package):
 
 ```bash
-KCD_SYMLINK=1 bash /host-kwcoco-detector-kit/dev/viame_container_setup.sh
+# in the kwcoco_detector_kit repo
+python dev/vendor_onnx_to_viame.py --viame-root ~/code/VIAME
+
+# CI / pre-commit guard — fail if the vendored copy drifted from canonical:
+python dev/vendor_onnx_to_viame.py --viame-root ~/code/VIAME --check
 ```
 
-Editing `predictors/onnx.py` needs no symlink — the kit was installed editable
-(`-e`), so host changes are already live.
+The vendored file carries a provenance header (`__vendored_provenance__` with
+the kit git SHA + a content hash of the source); `--check` recomputes the hash
+to detect drift. Never edit the vendored copy by hand.

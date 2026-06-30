@@ -324,18 +324,37 @@ def _export_deimv2(
         args.append("--simplify")
 
     derived_onnx = Path(str(ckpt).replace(".pth", ".onnx"))
+
+    def _mtime(p):
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return None
+
+    # Snapshot the candidate artifacts BEFORE the export so a recovery can
+    # only ever pick up a file THIS run actually (re)wrote. A stale .onnx left
+    # over from an older export must never be passed off as a fresh one — that
+    # silently ships an outdated graph under a freshly-written modelspec, the
+    # exact provenance failure this exporter exists to avoid.
+    _pre_mtimes = {derived_onnx: _mtime(derived_onnx), out_fpath: _mtime(out_fpath)}
     try:
         subprocess.run(args, check=True, cwd=str(repo))
     except subprocess.CalledProcessError as ex:
-        # Recover the unsimplified .onnx if the subprocess crashed during
-        # --simplify (failure #10). Upstream may have written the .onnx
-        # to either the derived path (next to the checkpoint) or the kit's
-        # intended path (if we ever land an upstream patch that honors -o).
-        if not (derived_onnx.exists() or out_fpath.exists()):
+        # Recover the unsimplified .onnx ONLY when the crash happened during a
+        # late stage (e.g. --simplify, failure #10) that had already written
+        # the artifact this run. A config-load crash (e.g. an absolute
+        # __include__ baked for the docker image but run on the host) writes
+        # nothing new, so there is nothing legitimate to recover -> re-raise.
+        fresh = [
+            p for p in (derived_onnx, out_fpath)
+            if _mtime(p) is not None and _mtime(p) != _pre_mtimes[p]
+        ]
+        if not fresh:
             raise
         print(
-            f"[export.onnx] DEIMv2 exporter exited {ex.returncode} but "
-            f"a .onnx artifact exists — recovering unsimplified output."
+            f"[export.onnx] DEIMv2 exporter exited {ex.returncode} but a "
+            f"freshly-written .onnx artifact exists — recovering unsimplified "
+            f"output ({fresh[0]})."
         )
 
     # Move the upstream-derived artifact to the kit's canonical path.

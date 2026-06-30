@@ -235,7 +235,7 @@ def main(argv=None):
 
         out_pkg = workdir / ("package.zip" if config.archive else "package")
         pkg_cmd = _cli(
-            "package-build", str(workdir),
+            "package-build", "--workdir", str(workdir),
             "--trainer", "deimv2",
             "--variant", variant,
             "--category-names", ",".join(names),

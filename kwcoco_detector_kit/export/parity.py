@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Tuple
 
-import scriptconfig as scfg
+import kwconf
 
 
 def check_parity(
@@ -77,13 +77,13 @@ def check_parity(
     }
 
 
-class ParityConfig(scfg.DataConfig):
+class ParityConfig(kwconf.Config):
     """Check torch ↔ ONNX output parity for a trained workdir."""
 
-    workdir = scfg.Value(None, position=1, required=True,
+    workdir = kwconf.Value(None, position=1, required=True,
                          help="trained workdir (must contain export/*.onnx and checkpoint)")
-    rtol = scfg.Value(1e-3, help="relative tolerance for allclose check")
-    atol = scfg.Value(1e-3, help="absolute tolerance for allclose check")
+    rtol = kwconf.Value(1e-3, help="relative tolerance for allclose check")
+    atol = kwconf.Value(1e-3, help="absolute tolerance for allclose check")
 
     @classmethod
     def main(cls, argv=1, **kwargs):

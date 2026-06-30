@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
-import scriptconfig as scfg
+import kwconf
 import yaml
 
 
@@ -442,19 +442,19 @@ def interactive_edit(configs: List[Tuple[str, Path, YamlDict]]) -> int:
         fields[idx] = (label, fpath, data, key, new_value)
 
 
-class ConfigInitConfig(scfg.DataConfig):
+class ConfigInitConfig(kwconf.Config):
     """Write editable environment and dataset YAML configs."""
 
-    env = scfg.Value("kcd.environment.yaml", help="output environment config YAML")
-    dataset = scfg.Value("kcd.dataset.yaml", help="output dataset config YAML")
-    train_kwcoco = scfg.Value(None, help="training kwcoco path")
-    vali_kwcoco = scfg.Value(None, help="validation kwcoco path")
-    test_kwcoco = scfg.Value(None, help="test kwcoco path")
-    name = scfg.Value(None, help="dataset name")
-    category_names = scfg.Value(None, help="comma-separated category names (train order)")
-    execution = scfg.Value(None, help="host, docker, or slurm-docker")
-    docker_image = scfg.Value(None, help="docker image tag to put in the environment config")
-    overwrite = scfg.Value(False, isflag=True, help="replace existing YAML files")
+    env = kwconf.Value("kcd.environment.yaml", help="output environment config YAML")
+    dataset = kwconf.Value("kcd.dataset.yaml", help="output dataset config YAML")
+    train_kwcoco = kwconf.Value(None, help="training kwcoco path")
+    vali_kwcoco = kwconf.Value(None, help="validation kwcoco path")
+    test_kwcoco = kwconf.Value(None, help="test kwcoco path")
+    name = kwconf.Value(None, help="dataset name")
+    category_names = kwconf.Value(None, help="comma-separated category names (train order)")
+    execution = kwconf.Value(None, help="host, docker, or slurm-docker")
+    docker_image = kwconf.Value(None, help="docker image tag to put in the environment config")
+    overwrite = kwconf.Value(False, isflag=True, help="replace existing YAML files")
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -462,12 +462,12 @@ class ConfigInitConfig(scfg.DataConfig):
         return init_configs(config)
 
 
-class ConfigInspectConfig(scfg.DataConfig):
+class ConfigInspectConfig(kwconf.Config):
     """Show current config values and introspected suggestions."""
 
-    env = scfg.Value("kcd.environment.yaml", help="environment config YAML")
-    dataset = scfg.Value("kcd.dataset.yaml", help="dataset config YAML")
-    refresh = scfg.Value(False, isflag=True, help="refresh suggestions from host and kwcoco files")
+    env = kwconf.Value("kcd.environment.yaml", help="environment config YAML")
+    dataset = kwconf.Value("kcd.dataset.yaml", help="dataset config YAML")
+    refresh = kwconf.Value(False, isflag=True, help="refresh suggestions from host and kwcoco files")
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -475,13 +475,13 @@ class ConfigInspectConfig(scfg.DataConfig):
         return inspect_configs(config)
 
 
-class ConfigEditConfig(scfg.DataConfig):
+class ConfigEditConfig(kwconf.Config):
     """Edit YAML configs with a small text UI or dotted --set overrides."""
 
-    env = scfg.Value("kcd.environment.yaml", help="environment config YAML")
-    dataset = scfg.Value("kcd.dataset.yaml", help="dataset config YAML")
-    set = scfg.Value([], nargs="*", help="dotted overrides, e.g. environment.slurm.gres=gpu:4")
-    non_interactive = scfg.Value(False, isflag=True, help="apply --set and exit without prompting")
+    env = kwconf.Value("kcd.environment.yaml", help="environment config YAML")
+    dataset = kwconf.Value("kcd.dataset.yaml", help="dataset config YAML")
+    set = kwconf.Value([], nargs="*", help="dotted overrides, e.g. environment.slurm.gres=gpu:4")
+    non_interactive = kwconf.Value(False, isflag=True, help="apply --set and exit without prompting")
 
     @classmethod
     def main(cls, argv=1, **kwargs):

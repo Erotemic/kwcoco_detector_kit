@@ -4,7 +4,7 @@ the Phase-3 TileStore abstraction for alternative on-disk layouts.
 
 Public surface:
 
-  tile.TileConfig          scriptconfig CLI / DataConfig for tiling.
+  tile.TileConfig          kwconf CLI / Config for tiling.
   tile.run                 programmatic entry point.
   merge.MergeConfig        positive + negative tile merger CLI.
   mine.MineConfig          offline hard-negative miner CLI.

@@ -4,7 +4,7 @@ Environment audit / `--check-env` probe + optional install.
 Front-loads discovery of transitive runtime deps so the first GPU minute
 isn't burned on a `ModuleNotFoundError` (failure #11). Covers:
 
-- Core kwcoco / kwimage / torch / scriptconfig.
+- Core kwcoco / kwimage / torch / kwconf.
 - ONNX trio (failures #9 + #10): onnx, onnxruntime, onnxscript, onnxsim.
 - DEIMv2 trainer hidden deps: faster_coco_eval, calflops, transformers,
   tensorboard, scipy.
@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 
-import scriptconfig as scfg
+import kwconf
 
 
 @dataclass
@@ -41,7 +41,7 @@ PROBES: List[Probe] = [
     Probe("kwcoco",         "kwcoco",         "core",      ("data",)),
     Probe("kwimage",        "kwimage",        "core",      ("data",)),
     Probe("ubelt",          "ubelt",          "core",      ("*",)),
-    Probe("scriptconfig",   "scriptconfig",   "core",      ("*",)),
+    Probe("kwconf",         "kwconf",         "core",      ("*",)),
     Probe("numpy",          "numpy",          "core",      ("*",)),
     Probe("yaml",           "pyyaml",         "core",      ("trainers",)),
     Probe("torch",          None,             "core",      ("trainers",)),
@@ -182,7 +182,8 @@ def install_missing(missing: List[Probe], *, python_executable: Optional[str] = 
 
 
 def _parse_groups(value) -> List[str]:
-    """Tolerate both 'a,b,c' and ['a','b','c'] inputs (scriptconfig smartcast)."""
+    """Tolerate both 'a,b,c' and ['a','b','c'] inputs (kwconf keeps the raw
+    string; a pre-split list may still arrive from programmatic callers)."""
     if isinstance(value, (list, tuple)):
         items = [str(v) for v in value]
     else:
@@ -190,22 +191,22 @@ def _parse_groups(value) -> List[str]:
     return [g.strip().strip("'\"") for g in items if g.strip().strip("'\"")]
 
 
-class CheckEnvConfig(scfg.DataConfig):
+class CheckEnvConfig(kwconf.Config):
     """Audit the env for every transitive runtime dep the kit + its trainers need."""
 
-    groups = scfg.Value(
+    groups = kwconf.Value(
         "core,onnx",
         help="comma-separated groups to probe: core,onnx,deimv2,opengroundingdino",
     )
-    install = scfg.Value(
+    install = kwconf.Value(
         False, isflag=True,
         help="attempt to pip install missing modules",
     )
-    strict_import = scfg.Value(
+    strict_import = kwconf.Value(
         False, isflag=True,
         help="real __import__ for every probe (catches version conflicts)",
     )
-    runtime = scfg.Value(
+    runtime = kwconf.Value(
         False, isflag=True,
         help=(
             "in addition to module probes, verify GPU availability, the "
@@ -213,7 +214,7 @@ class CheckEnvConfig(scfg.DataConfig):
             "Use this inside the docker image as the first health check."
         ),
     )
-    require_gpu = scfg.Value(
+    require_gpu = kwconf.Value(
         True, isflag=True,
         help="when --runtime is set, exit non-zero if no CUDA device is visible",
     )

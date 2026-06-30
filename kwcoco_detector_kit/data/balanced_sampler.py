@@ -50,7 +50,7 @@ import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-import scriptconfig as scfg
+import kwconf
 
 __all__ = [
     "EMPTY_KEY",
@@ -308,22 +308,22 @@ def sampler_from_weights_file(
 # CLI
 # ---------------------------------------------------------------------------
 
-class BalancedSamplerConfig(scfg.DataConfig):
+class BalancedSamplerConfig(kwconf.Config):
     """Compute per-index balance weights for dataloader-level sampling."""
 
-    src = scfg.Value(None, required=True, help="unbalanced .mscoco.json")
-    dst = scfg.Value(None, required=True, help="output balance_weights.json")
-    class_weights = scfg.Value(None, type=str, help=(
+    src = kwconf.Value(None, required=True, help="unbalanced .mscoco.json")
+    dst = kwconf.Value(None, required=True, help="output balance_weights.json")
+    class_weights = kwconf.Value(None, parser=str, help=(
         "JSON dict of per-class target weights (KCD_BALANCE_TARGET_JSON "
         "semantics; use '<empty>' for annotation-free images)"))
-    subdivide_keys = scfg.Value("classes", type=str, help=(
+    subdivide_keys = kwconf.Value("classes", parser=str, help=(
         "CSV of grid keys to stratify over, outermost first"))
-    max_oversample = scfg.Value(None, type=int, help=(
+    max_oversample = kwconf.Value(None, parser=int, help=(
         "Cap per-index weight at max_oversample/N before normalizing. "
         "Mirrors balance_mscoco's max_oversample: prevents data-starved "
         "strata from dominating and limits per-tile repetition. "
         "None = no cap (forest weights as-is)."))
-    seed = scfg.Value(0, type=int)
+    seed = kwconf.Value(0, parser=int)
 
     @classmethod
     def main(cls, argv=1, **kwargs):

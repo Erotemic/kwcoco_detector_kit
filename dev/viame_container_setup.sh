@@ -82,14 +82,15 @@ esac
 # `pip uninstall opencv*` is just as bad: it deletes files shared with fletch's
 # cv2. So we neither install nor uninstall opencv.
 #
-# VIAME's python already ships kwimage / kwcoco / scriptconfig / kwutil, so the
-# only things actually missing are onnxruntime and the kit itself. We name the
-# kw* packages so a bare VIAME without them still gets them; when already
-# present pip is a no-op and pulls no opencv.
+# VIAME's python already ships kwimage / kwcoco / kwutil, so the only things
+# actually missing are onnxruntime, kwconf (the kit's config lib, successor to
+# scriptconfig — not shipped by VIAME), and the kit itself. We name the kw*
+# packages so a bare VIAME without them still gets them; when already present
+# pip is a no-op and pulls no opencv.
 echo "[kcd-viame-setup] installing onnxruntime + kw* stack (no opencv) ..."
 "$PY" -m pip install --no-input \
     "$KCD_ORT_PACKAGE" \
-    kwimage kwcoco kwutil scriptconfig
+    kwimage kwcoco kwutil kwconf
 
 # Install the kit WITHOUT deps so torch/torchvision (and opencv) are never pulled.
 echo "[kcd-viame-setup] installing kwcoco_detector_kit (--no-deps, editable) ..."

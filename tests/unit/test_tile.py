@@ -51,7 +51,7 @@ def test_unknown_mode_raises(synthetic_kwcoco, tmp_path):
         },
     )
     with pytest.raises(Exception):
-        # scriptconfig's choices may reject INVALID at parse-time; otherwise
+        # kwconf's choices may reject INVALID at parse-time; otherwise
         # _run_* dispatches and falls through to the ValueError.
         run(cfg)
 

@@ -3,7 +3,7 @@ ONNX inference backend — wraps a kit-exported ONNX package for deployment
 without PyTorch.
 
 Requires:  onnxruntime, numpy, kwimage
-No-import: torch, DEIMv2, kwcoco, scriptconfig, yaml
+No-import: torch, DEIMv2, kwcoco, kwconf, yaml
 """
 from __future__ import annotations
 

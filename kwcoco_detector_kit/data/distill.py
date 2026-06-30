@@ -30,7 +30,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-import scriptconfig as scfg
+import kwconf
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +176,7 @@ def generate_distill_policy(
 # CLI
 # ---------------------------------------------------------------------------
 
-class PseudoLabelConfig(scfg.DataConfig):
+class PseudoLabelConfig(kwconf.Config):
     """Generate pseudo-label annotations from a teacher model over unlabeled images.
 
     Runs the teacher predictor over ``src``, filters by ``score_thresh``,
@@ -184,16 +184,16 @@ class PseudoLabelConfig(scfg.DataConfig):
     Images with fewer than ``min_annotations`` surviving detections are dropped.
     """
 
-    teacher_package = scfg.Value(None, required=True, position=1,
+    teacher_package = kwconf.Value(None, required=True, position=1,
                                  help="packaged teacher model (directory, archive, or package.yaml)")
-    src = scfg.Value(None, required=True, help="source kwcoco dataset or image directory")
-    dst = scfg.Value(None, required=True, help="output pseudo-label kwcoco path")
-    device = scfg.Value("cpu", help="torch device")
-    score_thresh = scfg.Value(None, type=float, help="override teacher score threshold")
-    nms_thresh = scfg.Value(None, type=float, help="override NMS threshold")
-    min_annotations = scfg.Value(1, type=int,
+    src = kwconf.Value(None, required=True, help="source kwcoco dataset or image directory")
+    dst = kwconf.Value(None, required=True, help="output pseudo-label kwcoco path")
+    device = kwconf.Value("cpu", help="torch device")
+    score_thresh = kwconf.Value(None, parser=float, help="override teacher score threshold")
+    nms_thresh = kwconf.Value(None, parser=float, help="override NMS threshold")
+    min_annotations = kwconf.Value(1, parser=int,
                                  help="drop images with fewer than this many pseudo-labels")
-    workdir = scfg.Value(None, help="optional persistent materialized workdir")
+    workdir = kwconf.Value(None, help="optional persistent materialized workdir")
 
     @classmethod
     def main(cls, argv=1, **kwargs):

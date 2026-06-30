@@ -29,7 +29,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-import scriptconfig as scfg
+import kwconf
 
 from kwcoco_detector_kit.export.package import materialize_workdir, open_package
 
@@ -242,17 +242,17 @@ def predict_kwcoco(
 # CLI
 # ---------------------------------------------------------------------------
 
-class PredictConfig(scfg.DataConfig):
+class PredictConfig(kwconf.Config):
     """Run packaged detector inference over a kwcoco dataset or image directory."""
 
-    package = scfg.Value(None, required=True, help="package directory, archive, or package.yaml")
-    src = scfg.Value(None, required=True, help="source kwcoco dataset or image directory")
-    dst = scfg.Value(None, required=True, help="prediction kwcoco output path")
-    device = scfg.Value("cpu", help="torch device, e.g. cpu, cuda, cuda:0")
-    score_thresh = scfg.Value(None, type=float, help="override detection score threshold")
-    nms_thresh = scfg.Value(None, type=float, help="override NMS IoU threshold")
-    workdir = scfg.Value(None, help="optional persistent materialized predictor workdir")
-    create_labelme = scfg.Value(False, isflag=True,
+    package = kwconf.Value(None, required=True, help="package directory, archive, or package.yaml")
+    src = kwconf.Value(None, required=True, help="source kwcoco dataset or image directory")
+    dst = kwconf.Value(None, required=True, help="prediction kwcoco output path")
+    device = kwconf.Value("cpu", help="torch device, e.g. cpu, cuda, cuda:0")
+    score_thresh = kwconf.Value(None, parser=float, help="override detection score threshold")
+    nms_thresh = kwconf.Value(None, parser=float, help="override NMS IoU threshold")
+    workdir = kwconf.Value(None, help="optional persistent materialized predictor workdir")
+    create_labelme = kwconf.Value(False, isflag=True,
                                 help="write LabelMe sidecars after prediction (polygon annotations only)")
 
     @classmethod

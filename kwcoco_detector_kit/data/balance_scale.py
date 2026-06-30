@@ -30,26 +30,26 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import scriptconfig as scfg
+import kwconf
 
 
-class BalanceScaleConfig(scfg.DataConfig):
+class BalanceScaleConfig(kwconf.Config):
     """Materialize a scale + positive/negative balanced kwcoco from a tiled corpus."""
 
-    src = scfg.Value(None, position=1, required=True,
+    src = kwconf.Value(None, position=1, required=True,
                      help="input tiled corpus kwcoco (output of tile-corpus)")
-    dst = scfg.Value(None, position=2, required=True,
+    dst = kwconf.Value(None, position=2, required=True,
                      help="output balanced kwcoco")
-    target_size = scfg.Value(None,
+    target_size = kwconf.Value(None,
                              help="number of image entries to draw; default len(src)//5")
-    pos_fraction = scfg.Value(0.4,
+    pos_fraction = kwconf.Value(0.4,
                               help="target fraction of drawn tiles (per scale) that "
                                    "contain >=1 annotation")
-    scale_weights = scfg.Value(None,
+    scale_weights = kwconf.Value(None,
                                help='optional JSON {scale_bucket: weight}; default '
                                     'uniform over the detected buckets')
-    n_trees = scfg.Value(16, help="BalancedSampleForest tree count")
-    rng = scfg.Value(0, help="sampling seed (reproducible)")
+    n_trees = kwconf.Value(16, help="BalancedSampleForest tree count")
+    rng = kwconf.Value(0, help="sampling seed (reproducible)")
 
     @classmethod
     def main(cls, argv=1, **kwargs):

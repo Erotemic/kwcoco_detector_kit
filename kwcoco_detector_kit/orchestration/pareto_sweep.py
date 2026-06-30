@@ -18,7 +18,7 @@ import traceback
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-import scriptconfig as scfg
+import kwconf
 
 from kwcoco_detector_kit.trainers._registry import get_trainer
 
@@ -28,16 +28,16 @@ from kwcoco_detector_kit.trainers._registry import get_trainer
 # ---------------------------------------------------------------------------
 
 
-class SweepConfig(scfg.DataConfig):
+class SweepConfig(kwconf.Config):
     """Drive a Pareto sweep across (variant x input_hw x train_policy) cells."""
 
-    train_kwcoco = scfg.Value(None, required=True, help="training kwcoco bundle")
-    vali_kwcoco = scfg.Value(None, required=True, help="validation kwcoco bundle")
-    test_kwcoco = scfg.Value(None, required=True, help="test kwcoco bundle (for eval stage)")
-    kcd_root = scfg.Value(None, help="root for runs/, eval/, sweeps/. Defaults to $KCD_ROOT")
+    train_kwcoco = kwconf.Value(None, required=True, help="training kwcoco bundle")
+    vali_kwcoco = kwconf.Value(None, required=True, help="validation kwcoco bundle")
+    test_kwcoco = kwconf.Value(None, required=True, help="test kwcoco bundle (for eval stage)")
+    kcd_root = kwconf.Value(None, help="root for runs/, eval/, sweeps/. Defaults to $KCD_ROOT")
 
-    trainer = scfg.Value("mock_tiny", help="trainer plugin name")
-    matrix = scfg.Value(
+    trainer = kwconf.Value("mock_tiny", help="trainer plugin name")
+    matrix = kwconf.Value(
         None,
         help=(
             "YAML/JSON file or inline string describing the sweep matrix. "
@@ -45,20 +45,19 @@ class SweepConfig(scfg.DataConfig):
             "If unset, sweeps a single cell using --variant/--input_hw/--train_policy."
         ),
     )
-    variant = scfg.Value("mock_tiny", help="single-cell fallback")
-    # type=str sidesteps scriptconfig's smartcast (the "string with
-    # commas" deprecation warning). Parsing happens via kwutil.Yaml.coerce
-    # in _normalize_input_hw so a YAML-style "[H, W]" or a bare scalar
-    # "S" all resolve to a [H, W] pair downstream.
-    input_hw = scfg.Value("[256, 256]", type=str, help="single-cell fallback (HxW); YAML-style list")
-    train_policy = scfg.Value("fixed", help="single-cell fallback")
+    variant = kwconf.Value("mock_tiny", help="single-cell fallback")
+    # parser=str keeps the raw string (kwconf never comma-splits). Parsing
+    # happens via kwutil.Yaml.coerce in _normalize_input_hw so a YAML-style
+    # "[H, W]" or a bare scalar "S" all resolve to a [H, W] pair downstream.
+    input_hw = kwconf.Value("[256, 256]", parser=str, help="single-cell fallback (HxW); YAML-style list")
+    train_policy = kwconf.Value("fixed", help="single-cell fallback")
 
-    num_epochs = scfg.Value(2)
-    batch_size = scfg.Value(2)
-    val_batch_size = scfg.Value(2)
-    train_num_workers = scfg.Value(4, help="DataLoader workers for the train loop")
-    val_num_workers = scfg.Value(2, help="DataLoader workers for the val loop")
-    train_wds_shards_dpath = scfg.Value(
+    num_epochs = kwconf.Value(2)
+    batch_size = kwconf.Value(2)
+    val_batch_size = kwconf.Value(2)
+    train_num_workers = kwconf.Value(4, help="DataLoader workers for the train loop")
+    val_num_workers = kwconf.Value(2, help="DataLoader workers for the val loop")
+    train_wds_shards_dpath = kwconf.Value(
         None,
         help=(
             "Optional path to a directory of kwcoco_dataloader WebDataset "
@@ -69,7 +68,7 @@ class SweepConfig(scfg.DataConfig):
             "MSCOCO either way."
         ),
     )
-    train_wds_epoch_length = scfg.Value(
+    train_wds_epoch_length = kwconf.Value(
         0,
         help=(
             "Nominal samples per epoch for the WebDataset train loader. 0 = "
@@ -77,12 +76,12 @@ class SweepConfig(scfg.DataConfig):
             "train_wds_shards_dpath is set."
         ),
     )
-    train_wds_source_to_target = scfg.Value(
+    train_wds_source_to_target = kwconf.Value(
         None,
-        # type=str disables scriptconfig's smartcast comma-split that
-        # would otherwise turn a JSON object string like {"B":"x","S":"y"}
-        # into a set of fragments. We json.loads() ourselves in _run_train.
-        type=str,
+        # parser=str keeps the raw string (kwconf never comma-splits), so a
+        # JSON object string like {"B":"x","S":"y"} survives intact. We
+        # json.loads() ourselves in _run_train.
+        parser=str,
         help=(
             "JSON string mapping raw source category names (as written into "
             "shards by build_detection_webdataset's `source_category` field) "
@@ -92,9 +91,9 @@ class SweepConfig(scfg.DataConfig):
             "sample's annotations."
         ),
     )
-    train_wds_bucket_weights = scfg.Value(
+    train_wds_bucket_weights = kwconf.Value(
         None,
-        type=str,
+        parser=str,
         help=(
             "JSON object mapping bucket directory name (one of the "
             "<shards>/dominant_raw_class_EQ_*/ subdirs) to a float weight "
@@ -104,7 +103,7 @@ class SweepConfig(scfg.DataConfig):
             "set in submit script, NOT via env."
         ),
     )
-    balance_weights_fpath = scfg.Value(
+    balance_weights_fpath = kwconf.Value(
         None,
         help=(
             "Optional balance_weights.json (from "
@@ -116,19 +115,19 @@ class SweepConfig(scfg.DataConfig):
             "Experiment-defining: set in submit script, NOT via env."
         ),
     )
-    balance_epoch_length = scfg.Value(
-        0, type=int,
+    balance_epoch_length = kwconf.Value(
+        0, parser=int,
         help=(
             "Total samples per epoch (across ranks) for sampler-mode "
             "balance. 0 -> len(dataset). Weighted draws are with "
             "replacement, so epoch length is a free knob."
         ),
     )
-    balance_seed = scfg.Value(
-        0, type=int,
+    balance_seed = kwconf.Value(
+        0, parser=int,
         help="Seed for the weighted sampler's (seed, epoch, rank) streams.",
     )
-    train_wds_skip_empty = scfg.Value(
+    train_wds_skip_empty = kwconf.Value(
         False,
         help=(
             "If True, drop samples whose post-scheme-collapse annotation "
@@ -138,7 +137,7 @@ class SweepConfig(scfg.DataConfig):
             "Experiment-defining: set in submit script, NOT via env."
         ),
     )
-    category_names = scfg.Value(
+    category_names = kwconf.Value(
         "widget",
         help=(
             "comma-separated category names to train on. Order determines "
@@ -147,14 +146,14 @@ class SweepConfig(scfg.DataConfig):
             "the length of this list."
         ),
     )
-    lr = scfg.Value(1e-2)
-    backbone_lr = scfg.Value(1e-2)
-    use_amp = scfg.Value(False)
-    scale_tier = scfg.Value("S")
-    num_gpus = scfg.Value(1)
-    distributed = scfg.Value(False, isflag=True, help="enable torch.distributed.run for num_gpus > 1")
+    lr = kwconf.Value(1e-2)
+    backbone_lr = kwconf.Value(1e-2)
+    use_amp = kwconf.Value(False)
+    scale_tier = kwconf.Value("S")
+    num_gpus = kwconf.Value(1)
+    distributed = kwconf.Value(False, isflag=True, help="enable torch.distributed.run for num_gpus > 1")
 
-    init_checkpoint = scfg.Value(
+    init_checkpoint = kwconf.Value(
         None,
         help=(
             "Optional path to a pretrained detector checkpoint to fine-tune "
@@ -164,7 +163,7 @@ class SweepConfig(scfg.DataConfig):
             "data typically loses 5-10 AP vs. fine-tuning from a COCO init."
         ),
     )
-    resume = scfg.Value(
+    resume = kwconf.Value(
         None,
         help=(
             "Optional path to a *.pth checkpoint produced by a prior incomplete "
@@ -174,7 +173,7 @@ class SweepConfig(scfg.DataConfig):
             "epoch 0. Use this after a slurm walltime kill."
         ),
     )
-    distractor_classes = scfg.Value(
+    distractor_classes = kwconf.Value(
         None,
         help=(
             "Comma-separated list of CATEGORY NAMES that the model learns to "
@@ -190,7 +189,7 @@ class SweepConfig(scfg.DataConfig):
             "predictions don't count as positive sea-lion detections."
         ),
     )
-    tiled_eval = scfg.Value(
+    tiled_eval = kwconf.Value(
         False, isflag=True,
         help=(
             "Run EVAL with windowed (tiled) inference instead of resizing each "
@@ -203,40 +202,40 @@ class SweepConfig(scfg.DataConfig):
             "training. See eval/tiled_predictor.py."
         ),
     )
-    tiled_eval_window = scfg.Value(
-        None, type=int,
+    tiled_eval_window = kwconf.Value(
+        None, parser=int,
         help="tiled-eval window size (square, source px). Default: model eval_spatial_size.",
     )
-    tiled_eval_overlap = scfg.Value(
+    tiled_eval_overlap = kwconf.Value(
         0.25, help="tiled-eval fractional window overlap in [0, 0.9].")
-    tiled_eval_nms_thresh = scfg.Value(
+    tiled_eval_nms_thresh = kwconf.Value(
         0.5, help="tiled-eval cross-window NMS IoU threshold.")
-    tiled_eval_keep_full = scfg.Value(
+    tiled_eval_keep_full = kwconf.Value(
         True, isflag=True,
         help="tiled-eval: also run one whole-image pass and merge it in "
              "(protects large-object recall).")
-    eval_device = scfg.Value(
+    eval_device = kwconf.Value(
         "cpu",
         help="device for the eval inference predictor ('cpu' or 'cuda'). "
              "Default 'cpu' preserves prior behavior; set 'cuda' for tiled "
              "eval, which runs many windows per image and is impractical on "
              "CPU at scale.")
-    tiled_eval_batch = scfg.Value(
+    tiled_eval_batch = kwconf.Value(
         64, help="tiled-eval: windows scored per GPU forward pass. Raise to "
                  "fill GPU memory (eval is often <2GB at 16); lower if OOM.")
-    eval_read_workers = scfg.Value(
+    eval_read_workers = kwconf.Value(
         4, help="background threads that decode upcoming eval images so the "
                 "GPU isn't starved by HDD/JPEG decode between inference "
                 "spikes. 0 = sequential read.")
-    keep_going = scfg.Value(True, isflag=True, help="continue past failed cells")
-    do_export = scfg.Value(True, isflag=True, help="run ONNX export per cell")
-    do_eval = scfg.Value(True, isflag=True, help="run kwcoco eval per cell")
-    do_bench = scfg.Value(True, isflag=True, help="run ONNX desktop bench per cell")
-    force_train = scfg.Value(False, isflag=True, help="re-run training even if best_*.pth exists")
-    force_export = scfg.Value(False, isflag=True, help="re-run export even if a plausible .onnx exists")
-    force_eval = scfg.Value(False, isflag=True, help="re-run eval even if detect_metrics.json exists")
-    force_bench = scfg.Value(False, isflag=True, help="re-run bench even if *.bench.json exists")
-    retry_failed = scfg.Value(
+    keep_going = kwconf.Value(True, isflag=True, help="continue past failed cells")
+    do_export = kwconf.Value(True, isflag=True, help="run ONNX export per cell")
+    do_eval = kwconf.Value(True, isflag=True, help="run kwcoco eval per cell")
+    do_bench = kwconf.Value(True, isflag=True, help="run ONNX desktop bench per cell")
+    force_train = kwconf.Value(False, isflag=True, help="re-run training even if best_*.pth exists")
+    force_export = kwconf.Value(False, isflag=True, help="re-run export even if a plausible .onnx exists")
+    force_eval = kwconf.Value(False, isflag=True, help="re-run eval even if detect_metrics.json exists")
+    force_bench = kwconf.Value(False, isflag=True, help="re-run bench even if *.bench.json exists")
+    retry_failed = kwconf.Value(
         None,
         help=(
             "prior sweep index.tsv; skip cells whose prior status is ok or "

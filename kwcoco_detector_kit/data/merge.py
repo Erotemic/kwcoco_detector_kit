@@ -20,21 +20,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import scriptconfig as scfg
+import kwconf
 
 
-class MergeConfig(scfg.DataConfig):
+class MergeConfig(kwconf.Config):
     """Merge a positive-tile kwcoco with a negative-tile kwcoco for one training round."""
 
-    pos_kwcoco = scfg.Value(None, help="kwcoco bundle of positive tiles (constant across rounds)", required=True)
-    neg_kwcoco = scfg.Value(
+    pos_kwcoco = kwconf.Value(None, help="kwcoco bundle of positive tiles (constant across rounds)", required=True)
+    neg_kwcoco = kwconf.Value(
         None,
         help="kwcoco of negatives — random subsample for round 0, hard negatives for round N>0",
         required=True,
     )
-    dst = scfg.Value(None, help="output kwcoco for this round's training", required=True)
+    dst = kwconf.Value(None, help="output kwcoco for this round's training", required=True)
 
-    category_names = scfg.Value(
+    category_names = kwconf.Value(
         "widget",
         help=(
             "comma-separated category names to copy from the positives "
@@ -42,12 +42,12 @@ class MergeConfig(scfg.DataConfig):
             "category_id 1, 2, ... — matches data.tile output."
         ),
     )
-    neg_over_pos = scfg.Value(
+    neg_over_pos = kwconf.Value(
         3.0,
         help="target ratio of negatives to positives in output. Capped by the actual neg pool. <=0 keeps ALL negatives.",
     )
-    seed = scfg.Value(0, help="RNG seed for negative subsampling")
-    round_index = scfg.Value(0, help="informational — which mining round this merge is for")
+    seed = kwconf.Value(0, help="RNG seed for negative subsampling")
+    round_index = kwconf.Value(0, help="informational — which mining round this merge is for")
 
     @classmethod
     def main(cls, argv=1, **kwargs):

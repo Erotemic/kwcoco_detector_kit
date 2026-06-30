@@ -33,27 +33,27 @@ import os
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-import scriptconfig as scfg
+import kwconf
 
 
-class MineConfig(scfg.DataConfig):
+class MineConfig(kwconf.Config):
     """Score every negative tile with a trained detector; emit a kwcoco of the hardest."""
 
-    neg_kwcoco = scfg.Value(None, help="input kwcoco of negative tiles", required=True)
-    workdir = scfg.Value(None, help="trainer workdir (contains the checkpoint + config)", required=True)
-    dst = scfg.Value(None, help="output kwcoco of hard negatives", required=True)
+    neg_kwcoco = kwconf.Value(None, help="input kwcoco of negative tiles", required=True)
+    workdir = kwconf.Value(None, help="trainer workdir (contains the checkpoint + config)", required=True)
+    dst = kwconf.Value(None, help="output kwcoco of hard negatives", required=True)
 
-    trainer = scfg.Value(
+    trainer = kwconf.Value(
         "mock_tiny",
         help='trainer plugin name; resolved via trainers._registry',
     )
-    score_thresh = scfg.Value(0.30, help='tile is "hard" iff max pred score >= this')
-    max_hard_per_round = scfg.Value(5000, help="cap total hard negatives; keep highest-scoring")
+    score_thresh = kwconf.Value(0.30, help='tile is "hard" iff max pred score >= this')
+    max_hard_per_round = kwconf.Value(5000, help="cap total hard negatives; keep highest-scoring")
     # Mining budget — how many negative tiles to actually SCORE this
     # round. Without this, a full sweep over a million-tile negative pool
     # on CPU can take 12+ hours per round and dominate the experiment
     # wall-clock. Default (0) means "score them all" (legacy behavior).
-    max_candidates = scfg.Value(
+    max_candidates = kwconf.Value(
         0,
         help=(
             "cap on the number of negative tiles to score this round. "
@@ -62,7 +62,7 @@ class MineConfig(scfg.DataConfig):
             "by ~30x with only modest hard-neg-recall loss."
         ),
     )
-    candidate_strategy = scfg.Value(
+    candidate_strategy = kwconf.Value(
         "stratified_by_image",
         choices=["first", "random", "stratified_by_image"],
         help=(
@@ -73,9 +73,9 @@ class MineConfig(scfg.DataConfig):
             "doesn't oversample one scene (recommended)."
         ),
     )
-    candidate_seed = scfg.Value(0, help="rng seed for random/stratified strategies")
-    device = scfg.Value("cpu", help="torch device (cpu / cuda:N)")
-    progress = scfg.Value(True, help="show ProgIter")
+    candidate_seed = kwconf.Value(0, help="rng seed for random/stratified strategies")
+    device = kwconf.Value("cpu", help="torch device (cpu / cuda:N)")
+    progress = kwconf.Value(True, help="show ProgIter")
 
     @classmethod
     def main(cls, argv=1, **kwargs):

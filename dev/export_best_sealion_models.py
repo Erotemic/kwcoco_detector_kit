@@ -46,27 +46,27 @@ import subprocess
 import sys
 from pathlib import Path
 
-import scriptconfig as scfg
+import kwconf
 
 KNOWN_SCHEMES = ["single_sealion", "pup_vs_nonpup", "lifestage_6cls", "full_8cls"]
 
 
-class ExportBestConfig(scfg.DataConfig):
-    kcd_root = scfg.Value(
+class ExportBestConfig(kwconf.Config):
+    kcd_root = kwconf.Value(
         "/data/users/jon.crall/kcd_sealion",
         help="training root containing runs/ (env KCD_TRAINING_ROOT overrides)",
     )
-    schemes_yaml = scfg.Value(
+    schemes_yaml = kwconf.Value(
         None,
         help="class_schemes.yaml; defaults to projects/viame_sealions_2026/docs/class_schemes.yaml",
     )
-    schemes = scfg.Value("all", help="comma-separated subset of schemes, or 'all'")
-    run = scfg.Value(False, isflag=True, help="actually export+package (default: dry-run plan only)")
-    force = scfg.Value(False, isflag=True, help="re-export even if .onnx already exists")
-    min_ap = scfg.Value(0.0, type=float, help="warn (and skip on --run) selections below this test_ap")
-    score_thresh = scfg.Value(0.30, type=float, help="score threshold written into the export")
-    opset = scfg.Value(18, type=int, help="ONNX opset")
-    archive = scfg.Value(False, isflag=True, help="emit a package .zip instead of a package/ directory")
+    schemes = kwconf.Value("all", help="comma-separated subset of schemes, or 'all'")
+    run = kwconf.Value(False, isflag=True, help="actually export+package (default: dry-run plan only)")
+    force = kwconf.Value(False, isflag=True, help="re-export even if .onnx already exists")
+    min_ap = kwconf.Value(0.0, parser=float, help="warn (and skip on --run) selections below this test_ap")
+    score_thresh = kwconf.Value(0.30, parser=float, help="score threshold written into the export")
+    opset = kwconf.Value(18, parser=int, help="ONNX opset")
+    archive = kwconf.Value(False, isflag=True, help="emit a package .zip instead of a package/ directory")
 
 
 def _kit_root() -> Path:

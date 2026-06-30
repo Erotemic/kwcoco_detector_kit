@@ -21,7 +21,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, Optional, Sequence
 
-import scriptconfig as scfg
+import kwconf
 import yaml
 
 
@@ -365,27 +365,27 @@ def materialize_workdir(package_root: Path, manifest: dict, out_dpath: Path) -> 
     return out_dpath
 
 
-class PackageBuildConfig(scfg.DataConfig):
+class PackageBuildConfig(kwconf.Config):
     """Build a model package from an existing training workdir."""
 
-    workdir = scfg.Value(None, required=True, help="trained candidate workdir")
-    out = scfg.Value(None, help="output package directory or archive; defaults under --out-root")
-    out_root = scfg.Value(None, help="root for automatic user/host-separated package paths")
-    trainer = scfg.Value(None, required=True, help="trainer name")
-    variant = scfg.Value(None, help="model variant")
-    category_names = scfg.Value(None, help="comma-separated category names in train order")
-    dataset_slug = scfg.Value(None, help="dataset identity")
-    experiment_slug = scfg.Value(None, help="experiment identity")
-    run_id = scfg.Value(None, help="run id")
-    train_kwcoco = scfg.Value(None)
-    vali_kwcoco = scfg.Value(None)
-    test_kwcoco = scfg.Value(None)
-    metrics = scfg.Value(None, help="optional detect_metrics.json")
-    allow_missing_weights = scfg.Value(False, isflag=True)
-    score_thresh = scfg.Value(0.30, type=float, help="default package inference score threshold")
-    nms_iou_thresh = scfg.Value(0.50, type=float, help="recorded NMS IoU threshold")
-    username = scfg.Value(None, help="provenance username; defaults to current user")
-    hostname = scfg.Value(None, help="provenance hostname; defaults to current host")
+    workdir = kwconf.Value(None, required=True, help="trained candidate workdir")
+    out = kwconf.Value(None, help="output package directory or archive; defaults under --out-root")
+    out_root = kwconf.Value(None, help="root for automatic user/host-separated package paths")
+    trainer = kwconf.Value(None, required=True, help="trainer name")
+    variant = kwconf.Value(None, help="model variant")
+    category_names = kwconf.Value(None, help="comma-separated category names in train order")
+    dataset_slug = kwconf.Value(None, help="dataset identity")
+    experiment_slug = kwconf.Value(None, help="experiment identity")
+    run_id = kwconf.Value(None, help="run id")
+    train_kwcoco = kwconf.Value(None)
+    vali_kwcoco = kwconf.Value(None)
+    test_kwcoco = kwconf.Value(None)
+    metrics = kwconf.Value(None, help="optional detect_metrics.json")
+    allow_missing_weights = kwconf.Value(False, isflag=True)
+    score_thresh = kwconf.Value(0.30, parser=float, help="default package inference score threshold")
+    nms_iou_thresh = kwconf.Value(0.50, parser=float, help="recorded NMS IoU threshold")
+    username = kwconf.Value(None, help="provenance username; defaults to current user")
+    hostname = kwconf.Value(None, help="provenance hostname; defaults to current host")
 
     @classmethod
     def main(cls, argv=1, **kwargs):

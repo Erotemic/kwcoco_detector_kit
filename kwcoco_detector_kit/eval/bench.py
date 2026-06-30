@@ -11,7 +11,7 @@ import json
 import time
 from pathlib import Path
 
-import scriptconfig as scfg
+import kwconf
 
 
 def run_onnx_bench(
@@ -76,13 +76,13 @@ def run_onnx_bench(
     return out_fpath
 
 
-class BenchConfig(scfg.DataConfig):
+class BenchConfig(kwconf.Config):
     """Benchmark the exported ONNX model's CPU inference latency."""
 
-    workdir = scfg.Value(None, position=1, required=True,
+    workdir = kwconf.Value(None, position=1, required=True,
                          help="trained workdir (must contain export/*.onnx)")
-    warmup = scfg.Value(3, help="number of warm-up runs before timing")
-    iters = scfg.Value(20, help="number of timed iterations")
+    warmup = kwconf.Value(3, help="number of warm-up runs before timing")
+    iters = kwconf.Value(20, help="number of timed iterations")
 
     @classmethod
     def main(cls, argv=1, **kwargs):

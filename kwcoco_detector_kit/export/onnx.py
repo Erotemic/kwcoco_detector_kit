@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence, Tuple
 
-import scriptconfig as scfg
+import kwconf
 
 from kwcoco_detector_kit.export.modelspec import write_modelspec
 
@@ -472,7 +472,7 @@ def _export_deimv2(
     return out_fpath
 
 
-class ExportOnnxConfig(scfg.DataConfig):
+class ExportOnnxConfig(kwconf.Config):
     """Export a trained checkpoint to ONNX.
 
     Reads variant and input size from the workdir's policy.json.
@@ -481,13 +481,13 @@ class ExportOnnxConfig(scfg.DataConfig):
     for older workdirs that lack it.
     """
 
-    workdir = scfg.Value(None, position=1, required=True,
+    workdir = kwconf.Value(None, position=1, required=True,
                          help="trained workdir (contains policy.json + checkpoint)")
-    category_names = scfg.Value(
+    category_names = kwconf.Value(
         None,
         help="comma-separated category names; defaults to policy.json when present",
     )
-    category_names_source = scfg.Value(
+    category_names_source = kwconf.Value(
         None,
         help=(
             "note recorded in the modelspec on where category_names came from "
@@ -495,16 +495,16 @@ class ExportOnnxConfig(scfg.DataConfig):
             "Defaults to 'cli' or 'policy.json' based on resolution."
         ),
     )
-    category_names_imputed = scfg.Value(
+    category_names_imputed = kwconf.Value(
         False, isflag=True,
         help=(
             "mark category_names as imputed (inferred from a secondary artifact, "
             "not a clean data-driven source) so downstream systems distrust them"
         ),
     )
-    force = scfg.Value(False, isflag=True, help="re-export even if .onnx already exists")
-    score_thresh = scfg.Value(0.30, help="score threshold written into the modelspec")
-    opset = scfg.Value(DEFAULT_OPSET, help="ONNX opset version")
+    force = kwconf.Value(False, isflag=True, help="re-export even if .onnx already exists")
+    score_thresh = kwconf.Value(0.30, help="score threshold written into the modelspec")
+    opset = kwconf.Value(DEFAULT_OPSET, help="ONNX opset version")
 
     @classmethod
     def main(cls, argv=1, **kwargs):

@@ -254,6 +254,43 @@ def _export_inproc(
     return out_fpath
 
 
+def _rewrite_deimv2_includes(cfg: Path, repo: Path, dest_dir: Path) -> Path:
+    """Repoint absolute ``.../tpl/DEIMv2/...`` paths in a generated config to the
+    live DEIMv2 checkout, making ONNX export host-portable.
+
+    The kit's ``generated_configs/train.yml`` records an absolute ``__include__``
+    of the DEIMv2 base config from wherever the kit lived at train time (usually
+    ``/opt/kwcoco_detector_kit`` inside the docker image). That path may not
+    exist on the export host. We rewrite the prefix before ``tpl/DEIMv2/`` to the
+    live ``repo`` (which IS ``<kit>/tpl/DEIMv2``) and leave every other path
+    (``/data`` outputs, ann_files) untouched. If nothing needs rewriting the
+    original ``cfg`` path is returned unchanged so containerized runs are a no-op.
+    """
+    import re
+    try:
+        text = cfg.read_text()
+    except OSError:
+        return cfg
+    # repo == <something>/tpl/DEIMv2 ; the live prefix is everything before it.
+    repo_s = str(repo)
+    marker = "tpl/DEIMv2"
+    if marker not in repo_s:
+        # Unconventional checkout (e.g. $KCD_DEIMV2_REPO_DPATH elsewhere); can't
+        # confidently rewrite, so leave the config as-is.
+        return cfg
+    live_prefix = repo_s[: repo_s.rindex(marker)]  # keeps trailing slash
+    # Match an absolute path up to and including `/tpl/DEIMv2/`, replace the
+    # prefix with the live one. Greedy `[^\s'\"]*` backtracks to the sole marker.
+    pattern = re.compile(r"/[^\s'\"]*/tpl/DEIMv2/")
+    fixed = pattern.sub(f"{live_prefix}{marker}/", text)
+    if fixed == text:
+        return cfg
+    out = dest_dir / "train.export.yml"
+    out.write_text(fixed)
+    print(f"  rewrote baked DEIMv2 include path -> {repo} (config: {out})")
+    return out
+
+
 def _export_deimv2(
     *,
     trainer,
@@ -299,6 +336,15 @@ def _export_deimv2(
 
     ckpt = trainer.find_checkpoint(workdir)
     cfg = workdir / "generated_configs" / "train.yml"
+
+    # The generated train.yml bakes an ABSOLUTE __include__ to the DEIMv2
+    # configs as they lived when the run was trained — typically
+    # `/opt/kwcoco_detector_kit/tpl/DEIMv2/configs/...` (the path inside the
+    # training docker image). On a host without that exact layout (e.g. the kit
+    # checked out under $HOME and no /opt symlink) DEIMv2's config loader raises
+    # FileNotFoundError. Rewrite any `.../tpl/DEIMv2/...` prefix to this live
+    # checkout so export is host-portable. See [[feedback_kwcoco_bakes_absolute_paths]].
+    cfg = _rewrite_deimv2_includes(cfg, repo, export_dpath)
 
     # Read policy early — needed for both the simplify decision and write_modelspec.
     policy = _read_policy(workdir)

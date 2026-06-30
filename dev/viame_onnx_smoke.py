@@ -76,6 +76,38 @@ def run_onnx_predictor(package: Path, image_np: np.ndarray) -> None:
         print("\n[labels.txt] NOT FOUND — re-export with current kit to generate it")
 
 
+def _import_plugin_class():
+    """Import KwcocoDetectorKitDetector from whichever location is available.
+
+    In a baked VIAME image the plugin lives under the ``viame`` package; with
+    the VIAME source mounted it is at ``<viame>/plugins/pytorch``. Try the
+    real installed locations first, then fall back to a mounted source tree.
+    """
+    candidates = [
+        "viame.arrows.pytorch.kwcoco_detector_kit_detector",
+        "viame.pytorch.kwcoco_detector_kit_detector",
+        "kwcoco_detector_kit_detector",
+    ]
+    import importlib
+    for modname in candidates:
+        try:
+            mod = importlib.import_module(modname)
+            return getattr(mod, "KwcocoDetectorKitDetector"), modname
+        except Exception:
+            continue
+    # Last resort: a mounted VIAME source tree (path only added if it exists).
+    for src in ("/host-viame/plugins/pytorch",
+                str(Path(__file__).parent.parent.parent / "VIAME" / "plugins" / "pytorch")):
+        if Path(src, "kwcoco_detector_kit_detector.py").is_file():
+            sys.path.insert(0, src)
+            try:
+                import kwcoco_detector_kit_detector as mod  # noqa
+                return mod.KwcocoDetectorKitDetector, src
+            except Exception:
+                continue
+    return None, None
+
+
 def run_viame_plugin(package: Path, image_np: np.ndarray) -> None:
     try:
         from kwiver.vital.algo import ImageObjectDetector  # noqa: F401
@@ -84,16 +116,33 @@ def run_viame_plugin(package: Path, image_np: np.ndarray) -> None:
         print("  (source a VIAME setup_paths.sh and rerun with --viame)")
         return
 
-    sys.path.insert(0, str(Path(__file__).parent.parent.parent / "VIAME" / "plugins" / "pytorch"))
+    # Authoritative check: the SAME path a running pipeline uses to discover
+    # python detectors (SPROKIT_PYTHON_MODULES -> load_python_modules). This is
+    # what actually matters; a bare module import is only a diagnostic.
+    print("\n[VIAME plugin] checking kwiver runtime registration ...")
     try:
-        from kwcoco_detector_kit_detector import KwcocoDetectorKitDetector
-    except ImportError as ex:
-        print(f"\n[VIAME plugin] cannot import kwcoco_detector_kit_detector: {ex}")
+        from kwiver.vital.modules.module_loader import load_python_modules
+        from kwiver.vital.algo import algorithm_factory
+        load_python_modules()
+        registered = algorithm_factory.has_algorithm_impl_name(
+            "image_object_detector", "kwcoco_detector_kit")
+        print(f"  registered via load_python_modules : {registered}")
+    except Exception as ex:
+        registered = None
+        print(f"  registration check unavailable ({type(ex).__name__}: {ex})")
+
+    # Live detect() smoke through the plugin class itself.
+    KwcocoDetectorKitDetector, src = _import_plugin_class()
+    if KwcocoDetectorKitDetector is None:
+        print("  [VIAME plugin] class not importable from any known location "
+              "(viame.* package or mounted /host-viame) — skipping detect() smoke")
+        if registered:
+            print("  (registration above is True, so the pipeline path is fine)")
         return
 
     from kwiver.vital.types import Image, ImageContainer
 
-    print(f"\n[VIAME plugin] loading KwcocoDetectorKitDetector from {package}")
+    print(f"  loaded KwcocoDetectorKitDetector from {src}")
     det = KwcocoDetectorKitDetector()
     det.set_configuration({"package": str(package), "device": "cpu", "score_thresh": "0.01"})
 

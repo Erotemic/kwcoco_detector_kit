@@ -73,21 +73,23 @@ case "$PY" in
 esac
 
 # --- install runtime deps (torch-free) ---------------------------------------
-# VIAME's python already ships kwimage / kwcoco / scriptconfig / kwutil AND a
-# working cv2 (its own from-source OpenCV). So we only really need onnxruntime
-# and the kit. We still name the kw* packages so a bare VIAME lacking them gets
-# them, but we must NOT install opencv-python*: a pip OpenCV collides with
-# VIAME's native cv2 (version-mismatched libs -> "cv2 gapi circular import"
-# crash) which breaks loading of the ENTIRE viame.pytorch plugin package.
+# CRITICAL: never touch opencv here. fletch builds VIAME's own python cv2 and
+# VIAME ships a fake opencv_python-4.9.0.80.dist-info so pip believes opencv is
+# already installed (see VIAME cmake/custom_install_fletch.cmake). Installing a
+# pip opencv-python* OVERWRITES fletch's cv2 wrapper with a version-mismatched
+# one -> `import cv2` crashes (gapi circular import / missing __version__),
+# which breaks loading of the ENTIRE viame.pytorch plugin package. And
+# `pip uninstall opencv*` is just as bad: it deletes files shared with fletch's
+# cv2. So we neither install nor uninstall opencv.
+#
+# VIAME's python already ships kwimage / kwcoco / scriptconfig / kwutil, so the
+# only things actually missing are onnxruntime and the kit itself. We name the
+# kw* packages so a bare VIAME without them still gets them; when already
+# present pip is a no-op and pulls no opencv.
 echo "[kcd-viame-setup] installing onnxruntime + kw* stack (no opencv) ..."
 "$PY" -m pip install --no-input \
     "$KCD_ORT_PACKAGE" \
     kwimage kwcoco kwutil scriptconfig
-
-# Belt-and-suspenders: remove any pip OpenCV that a previous run or a transitive
-# dep dragged in, so VIAME's native cv2 is the one that loads.
-echo "[kcd-viame-setup] removing any conflicting pip OpenCV (VIAME provides cv2) ..."
-"$PY" -m pip uninstall -y opencv-python opencv-python-headless 2>/dev/null || true
 
 # Install the kit WITHOUT deps so torch/torchvision (and opencv) are never pulled.
 echo "[kcd-viame-setup] installing kwcoco_detector_kit (--no-deps, editable) ..."

@@ -73,13 +73,23 @@ case "$PY" in
 esac
 
 # --- install runtime deps (torch-free) ---------------------------------------
-# kwimage / kwcoco / scriptconfig / kwutil pull their own (non-torch) trees.
-echo "[kcd-viame-setup] installing onnxruntime + kwimage/kwcoco stack ..."
+# VIAME's python already ships kwimage / kwcoco / scriptconfig / kwutil AND a
+# working cv2 (its own from-source OpenCV). So we only really need onnxruntime
+# and the kit. We still name the kw* packages so a bare VIAME lacking them gets
+# them, but we must NOT install opencv-python*: a pip OpenCV collides with
+# VIAME's native cv2 (version-mismatched libs -> "cv2 gapi circular import"
+# crash) which breaks loading of the ENTIRE viame.pytorch plugin package.
+echo "[kcd-viame-setup] installing onnxruntime + kw* stack (no opencv) ..."
 "$PY" -m pip install --no-input \
     "$KCD_ORT_PACKAGE" \
-    kwimage kwcoco kwutil scriptconfig opencv-python-headless
+    kwimage kwcoco kwutil scriptconfig
 
-# Install the kit WITHOUT deps so torch/torchvision are never pulled.
+# Belt-and-suspenders: remove any pip OpenCV that a previous run or a transitive
+# dep dragged in, so VIAME's native cv2 is the one that loads.
+echo "[kcd-viame-setup] removing any conflicting pip OpenCV (VIAME provides cv2) ..."
+"$PY" -m pip uninstall -y opencv-python opencv-python-headless 2>/dev/null || true
+
+# Install the kit WITHOUT deps so torch/torchvision (and opencv) are never pulled.
 echo "[kcd-viame-setup] installing kwcoco_detector_kit (--no-deps, editable) ..."
 "$PY" -m pip install --no-input --no-deps -e "$KCD_KIT_DIR"
 

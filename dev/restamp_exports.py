@@ -35,6 +35,7 @@ import importlib.util
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import kwconf
@@ -79,6 +80,29 @@ def _deterministic_provenance() -> dict:
     return out
 
 
+def _write_atomic(path: Path, data: str) -> None:
+    """Write via a temp file in the same dir + os.replace.
+
+    A plain ``open(path, 'w')`` needs write permission on the (possibly
+    root-owned, docker-written) file itself. os.replace only needs write
+    permission on the *directory*, which the user owns under their own
+    /data/users/<user> tree — so this overwrites root-owned files without sudo.
+    If the directory itself isn't writable, mkstemp raises and the caller
+    reports it.
+    """
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".restamp.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _apply_names(spec: dict, names: list, source: str, imputed: bool, prov: dict) -> None:
     """Mutate a loaded modelspec dict in place with correct names + provenance,
     preserving everything else (input/preprocess/postprocess/generated_at)."""
@@ -111,7 +135,7 @@ def main(argv=None) -> int:
     print(f"# kit_sha  : {prov.get('kit_sha', '?')}")
     print()
 
-    fixed = ok = unresolved = 0
+    fixed = ok = unresolved = denied = 0
     for workdir in sorted(runs_root.glob("*/runs/*")):
         if not workdir.is_dir():
             continue
@@ -143,24 +167,37 @@ def main(argv=None) -> int:
             rel = ms.relative_to(kcd_root)
             print(f"  FIX [{scheme}] {existing} -> {names}")
             print(f"        {rel}")
-            fixed += 1
             if config.dry_run:
+                fixed += 1
                 continue
-            _apply_names(spec, names, source, imputed, prov)
-            ms.write_text(json.dumps(spec, indent=2))
-            # labels.txt next to this modelspec (same stem as the sibling .onnx)
-            stem = ms.name[: -len(".modelspec.json")]
-            (ms.parent / f"{stem}.labels.txt").write_text("\n".join(names) + "\n")
-            # a package/labels.json alongside a package/exports modelspec
-            lj = ms.parent.parent / "labels.json"
-            if ms.parent.name == "exports" and lj.is_file():
-                lj.write_text(json.dumps({"labels": list(names)}, indent=2))
+            try:
+                _apply_names(spec, names, source, imputed, prov)
+                _write_atomic(ms, json.dumps(spec, indent=2))
+                # labels.txt next to this modelspec (same stem as the sibling .onnx)
+                stem = ms.name[: -len(".modelspec.json")]
+                _write_atomic(ms.parent / f"{stem}.labels.txt", "\n".join(names) + "\n")
+                # a package/labels.json alongside a package/exports modelspec
+                lj = ms.parent.parent / "labels.json"
+                if ms.parent.name == "exports" and lj.is_file():
+                    _write_atomic(lj, json.dumps({"labels": list(names)}, indent=2))
+                fixed += 1
+            except OSError as ex:
+                denied += 1
+                print(f"    !! could not write ({type(ex).__name__}: {ex}); skipped")
 
     print()
     verb = "would fix" if config.dry_run else "fixed"
-    print(f"# {verb}={fixed}  already-correct={ok}  unresolved={unresolved}")
+    tail = f"  denied={denied}" if denied else ""
+    print(f"# {verb}={fixed}  already-correct={ok}  unresolved={unresolved}{tail}")
     if config.dry_run and fixed:
         print("# re-run without --dry-run to apply.")
+    if denied:
+        print("# Some files could not be written -- their PARENT directory is not")
+        print("# writable by you (docker/slurm wrote it as root). Make the tree")
+        print("# writable, then re-run this script. e.g.:")
+        print("#   bash projects/viame_sealions_2026/scripts/fixup_perms.sh   # docker-as-root chmod")
+        print("#   # or, if you have sudo:  sudo chmod -R a+rwX \"$KCD_TRAINING_ROOT\"")
+        return 1
     return 0
 
 

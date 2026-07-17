@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Collect the best sea-lion detector per scheme into a single zip to hand to an
-external reviewer (e.g. Matt) for testing in VIAME.
+Collect the non-degenerate best sea-lion detector for each (category split ×
+tile size) into a single zip to hand to an external reviewer for VIAME testing.
 
 What it ships, per selected model:
   * the ONNX graph + its provenance-complete .modelspec.json + .labels.txt
@@ -15,7 +15,8 @@ ONNX inference) and skips any model whose modelspec still has placeholder
 ("widget") / missing category_names — those are undecodable and must be
 re-exported first with dev/export_best_sealion_models.py --run --force.
 
-Selection mirrors export_best_sealion_models.py: highest test_ap per scheme.
+Selection: the highest-test_ap candidate in each (scheme, tile-size) cell,
+skipping cells whose best is degenerate (near-zero AP).
 
 Usage
 -----
@@ -66,7 +67,11 @@ class BundleConfig(kwconf.Config):
         "~/code/VIAME",
         help="VIAME checkout to read the canonical .pipe template from (falls back to a builtin)",
     )
-    min_ap = kwconf.Value(0.0, parser=float, help="skip selections below this test_ap")
+    min_ap = kwconf.Value(0.02, parser=float,
+                          help="drop degenerate models: skip any (scheme,tile) whose best "
+                               "test_ap is below this (default 0.02 excludes ~0 AP failures)")
+    group_by = kwconf.Value("scheme,tile", help="'scheme,tile' = best model per category split "
+                                                "AND tile size (default); 'scheme' = best per split only")
     dry_run = kwconf.Value(False, isflag=True, help="print the plan; do not write the zip")
 
 
@@ -122,7 +127,7 @@ _RUN_HELPER = """\
 # Usage (from anywhere; paths resolve relative to this script):
 #   ./run_detector.sh <model_subdir> <image_list.txt> [output.csv] [device]
 # e.g.
-#   ./run_detector.sh pup_vs_nonpup my_images.txt dets.csv cuda
+#   ./run_detector.sh pup_vs_nonpup_1280px my_images.txt dets.csv cuda
 #
 # Requires a VIAME build with the kwcoco_detector_kit detector (branch
 # kwcoco-detector-kit-main) and `viame` on PATH (source setup_viame.sh).
@@ -176,60 +181,81 @@ def _collect(config: BundleConfig):
                  else [s.strip() for s in str(config.schemes).split(",") if s.strip()])
     rows_by_scheme, _ = _ebs._aggregate_manifests(runs_root)
 
+    from collections import defaultdict
+    by_tile = "tile" in str(config.group_by)
+
     selected, skipped = [], []
     for scheme in requested:
         rows = [r for r in rows_by_scheme.get(scheme, []) if r["test_ap"] is not None]
         if not rows:
             skipped.append((scheme, "no manifest rows with test_ap"))
             continue
-        best = max(rows, key=lambda r: r["test_ap"])
-        if best["test_ap"] < config.min_ap:
-            skipped.append((scheme, f"best test_ap {best['test_ap']:.4f} < min_ap {config.min_ap}"))
-            continue
-        workdir = best["workdir"]
-        export_dir = workdir / "export"
-        onnxes = sorted(export_dir.glob("*.onnx")) if export_dir.is_dir() else []
-        if not onnxes:
-            skipped.append((scheme, f"no exported .onnx under {export_dir} "
-                                    "(run export_best_sealion_models.py --run --force)"))
-            continue
-        onnx = onnxes[0]
-        modelspec = onnx.with_suffix(".modelspec.json")
-        if not modelspec.is_file():
-            skipped.append((scheme, f"missing modelspec {modelspec.name}"))
-            continue
-        names, spec = _modelspec_names(modelspec)
-        if not _is_shippable(names):
-            skipped.append((scheme, f"stale/placeholder category_names={names!r} "
-                                    "— re-export with --force before bundling"))
-            continue
-        _, src, imputed = _ebs._resolve_category_names(workdir, scheme, target_orders)
-        selected.append({
-            "scheme": scheme,
-            "candidate_id": best["candidate_id"],
-            "run": best["run"],
-            "test_ap": best["test_ap"],
-            "category_names": names,
-            "names_source": spec.get("meta", {}).get("category_names_source", src),
-            "imputed": bool(spec.get("meta", {}).get("has_imputed_metadata", imputed)),
-            "provenance": spec.get("provenance", {}),
-            "onnx": onnx,
-            "modelspec": modelspec,
-            "labels": onnx.with_suffix(".labels.txt"),
-            "bench": onnx.with_suffix(".bench.json"),
-            "package_yaml": workdir / "package" / "package.yaml",
-            "policy_json": workdir / "package" / "training_config" / "policy.json",
-        })
+        # Group into cells: one per (scheme, tile-size), or a single cell per
+        # scheme when group_by == 'scheme'.
+        cells = defaultdict(list)
+        for r in rows:
+            key = str(r.get("export_w") or "?") if by_tile else "*"
+            cells[key].append(r)
+
+        for tile, crows in sorted(cells.items()):
+            label = f"{scheme}@{tile}" if by_tile else scheme
+            best = max(crows, key=lambda r: r["test_ap"])
+            # "non-degenerate": a near-zero best AP means the whole cell failed.
+            if best["test_ap"] < config.min_ap:
+                skipped.append((label, f"best test_ap {best['test_ap']:.4f} < min_ap "
+                                       f"{config.min_ap} (degenerate)"))
+                continue
+            workdir = best["workdir"]
+            export_dir = workdir / "export"
+            onnxes = sorted(export_dir.glob("*.onnx")) if export_dir.is_dir() else []
+            if not onnxes:
+                skipped.append((label, f"no exported .onnx under {export_dir} "
+                                       "(run export_best_sealion_models.py --run --force)"))
+                continue
+            onnx = onnxes[0]
+            modelspec = onnx.with_suffix(".modelspec.json")
+            if not modelspec.is_file():
+                skipped.append((label, f"missing modelspec {modelspec.name}"))
+                continue
+            names, spec = _modelspec_names(modelspec)
+            if not _is_shippable(names):
+                skipped.append((label, f"stale/placeholder category_names={names!r} "
+                                       "— restamp/re-export before bundling"))
+                continue
+            _, src, imputed = _ebs._resolve_category_names(workdir, scheme, target_orders)
+            slug = f"{scheme}_{tile}px" if by_tile else scheme
+            selected.append({
+                "scheme": scheme,
+                "tile": tile if by_tile else None,
+                "slug": slug,
+                "candidate_id": best["candidate_id"],
+                "run": best["run"],
+                "variant": best.get("variant", ""),
+                "test_ap": best["test_ap"],
+                "category_names": names,
+                "names_source": spec.get("meta", {}).get("category_names_source", src),
+                "imputed": bool(spec.get("meta", {}).get("has_imputed_metadata", imputed)),
+                "provenance": spec.get("provenance", {}),
+                "onnx": onnx,
+                "modelspec": modelspec,
+                "labels": onnx.with_suffix(".labels.txt"),
+                "bench": onnx.with_suffix(".bench.json"),
+                "package_yaml": workdir / "package" / "package.yaml",
+                "policy_json": workdir / "package" / "training_config" / "policy.json",
+            })
     return selected, skipped
 
 
 def _model_md(m: dict) -> str:
     prov = m["provenance"]
-    return f"""# {m['scheme']} — {m['candidate_id']}
+    tile = f"{m['tile']}px" if m["tile"] else "n/a"
+    return f"""# {m['slug']} — {m['candidate_id']}
 
 | field | value |
 | ----- | ----- |
-| scheme | `{m['scheme']}` |
+| scheme (category split) | `{m['scheme']}` |
+| tile / eval size | `{tile}` |
+| backbone variant | `{m['variant']}` |
 | run | `{m['run']}` |
 | candidate | `{m['candidate_id']}` |
 | test_ap (class-agnostic, NFS-excluded) | **{m['test_ap']:.4f}** |
@@ -254,22 +280,24 @@ Caveats
 
 def _readme(selected: list[dict], skipped: list) -> str:
     rows = "\n".join(
-        f"| `{m['scheme']}` | {m['test_ap']:.4f} | `{m['category_names']}` | "
-        f"{'imputed' if m['imputed'] else 'clean'} | `{m['candidate_id']}` |"
-        for m in selected)
+        f"| `{m['slug']}` | `{m['scheme']}` | {m['tile'] or 'n/a'} | {m['variant']} | "
+        f"{m['test_ap']:.4f} | `{m['category_names']}` | "
+        f"{'imputed' if m['imputed'] else 'clean'} |"
+        for m in sorted(selected, key=lambda m: (m['scheme'], m['test_ap'])))
     skip_lines = "\n".join(f"* `{s}` — {why}" for s, why in skipped) or "* (none)"
     return f"""# Sea-lion detectors for review
 
-{len(selected)} ONNX detector(s) exported from `kwcoco_detector_kit`, one per
-classification scheme (highest test AP per scheme).
+{len(selected)} ONNX detector(s) exported from `kwcoco_detector_kit` — the
+non-degenerate best model for each **category split × tile size**. Higher tile
+size = larger backbone at higher resolution (better on small sea-lions, slower).
 
-| scheme | test_ap | category_names | labels | candidate |
-| ------ | ------- | -------------- | ------ | --------- |
+| model | scheme | tile | variant | test_ap | category_names | labels |
+| ----- | ------ | ---- | ------- | ------- | -------------- | ------ |
 {rows}
 
-Each `models/<scheme>/` contains a self-describing ONNX package
-(`.onnx` + `.modelspec.json` + `.labels.txt`), a `detector.pipe`, a `MODEL.md`
-with provenance, and a `provenance/` folder (package.yaml + policy.json).
+Each `models/<model>/` (e.g. `pup_vs_nonpup_1280px/`) contains a self-describing
+ONNX package (`.onnx` + `.modelspec.json` + `.labels.txt`), a `detector.pipe`, a
+`MODEL.md` with provenance, and a `provenance/` folder when available.
 
 ## Running in VIAME
 
@@ -278,12 +306,12 @@ These need a VIAME build that includes the `kwcoco_detector_kit` detector
 
 ```bash
 # from the extracted bundle root, after sourcing setup_viame.sh:
-./run_detector.sh <scheme> <image_list.txt> [output.csv] [cpu|cuda]
+./run_detector.sh <model> <image_list.txt> [output.csv] [cpu|cuda]
 # e.g.
-./run_detector.sh pup_vs_nonpup my_images.txt dets.csv cuda
+./run_detector.sh pup_vs_nonpup_1280px my_images.txt dets.csv cuda
 ```
 
-`run_detector.sh` fills the package path into `models/<scheme>/detector.pipe`
+`run_detector.sh` fills the package path into `models/<model>/detector.pipe`
 (the `[-PACKAGE-]` placeholder) and runs `viame`. Or wire `detector.pipe` into
 your own VIAME workflow and set `:package` to the model directory yourself.
 
@@ -299,7 +327,7 @@ your own VIAME workflow and set `:package` to the model directory yourself.
 * **AP is class-agnostic detection AP with NFS excluded** — the project's
   selection criterion; per-class AP is diagnostic only.
 
-## Skipped schemes
+## Skipped (scheme × tile) cells
 {skip_lines}
 """
 
@@ -308,14 +336,15 @@ def main(argv=None) -> int:
     config = BundleConfig.cli(argv=argv)
     selected, skipped = _collect(config)
 
-    print("# Bundle plan")
+    print("# Bundle plan (non-degenerate best per category split × tile size)")
     for m in selected:
         flag = "  [IMPUTED labels]" if m["imputed"] else ""
-        print(f"  + {m['scheme']:16s} ap={m['test_ap']:.4f}  {m['candidate_id']}{flag}")
+        tile = f"@{m['tile']}px" if m["tile"] else ""
+        print(f"  + {m['slug']:22s} ap={m['test_ap']:.4f}  {m['variant']}{tile}{flag}")
         print(f'      categories: {m["category_names"]}')
-        print(f"      onnx: {m['onnx']}  ({m['onnx'].stat().st_size // (1024*1024)} MB)")
+        print(f"      onnx: {m['onnx'].stat().st_size // (1024*1024)} MB")
     for s, why in skipped:
-        print(f"  - {s:16s} SKIP — {why}")
+        print(f"  - {s:22s} SKIP — {why}")
 
     if not selected:
         print("\nNo shippable models. Re-export with "
@@ -340,7 +369,7 @@ def main(argv=None) -> int:
     print(f"\nWriting {out} ...")
     with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
         for m in selected:
-            base = f"{stem}/models/{m['scheme']}"
+            base = f"{stem}/models/{m['slug']}"
             # ONNX is already near-incompressible float weights → store, don't deflate.
             zf.write(m["onnx"], f"{base}/{m['onnx'].name}", compress_type=zipfile.ZIP_STORED)
             zf.write(m["modelspec"], f"{base}/{m['modelspec'].name}")
@@ -356,13 +385,14 @@ def main(argv=None) -> int:
             zf.writestr(f"{base}/detector.pipe", pipe_template)
             zf.writestr(f"{base}/MODEL.md", _model_md(m))
             manifest["models"].append({
-                "scheme": m["scheme"], "candidate_id": m["candidate_id"],
+                "slug": m["slug"], "scheme": m["scheme"], "tile_size": m["tile"],
+                "variant": m["variant"], "candidate_id": m["candidate_id"],
                 "test_ap": m["test_ap"], "category_names": m["category_names"],
                 "category_names_source": m["names_source"], "imputed": m["imputed"],
-                "onnx": f"models/{m['scheme']}/{m['onnx'].name}",
+                "onnx": f"models/{m['slug']}/{m['onnx'].name}",
                 "provenance": m["provenance"],
             })
-            print(f"  + {m['scheme']}")
+            print(f"  + {m['slug']}")
         zf.writestr(f"{stem}/README.md", _readme(selected, skipped))
         zf.writestr(f"{stem}/manifest.json", json.dumps(manifest, indent=2))
         info = zipfile.ZipInfo(f"{stem}/run_detector.sh")

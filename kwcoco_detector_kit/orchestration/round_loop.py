@@ -21,25 +21,25 @@ import warnings
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-import scriptconfig as scfg
+import kwconf
 
 from kwcoco_detector_kit.trainers._registry import get_trainer
 
 
-class RoundLoopConfig(scfg.DataConfig):
+class RoundLoopConfig(kwconf.Config):
     """Run a round-based train -> mine -> train loop."""
 
-    pos_tiles_kwcoco = scfg.Value(None, required=True, help="positive-tile kwcoco bundle")
-    neg_tiles_kwcoco = scfg.Value(None, required=True, help="negative-tile kwcoco bundle")
-    vali_kwcoco = scfg.Value(None, required=True, help="validation kwcoco bundle")
-    test_kwcoco = scfg.Value(None, required=True, help="test kwcoco bundle")
-    kcd_root = scfg.Value(None, help="$KCD_ROOT — workspace for rounds/")
+    pos_tiles_kwcoco = kwconf.Value(None, required=True, help="positive-tile kwcoco bundle")
+    neg_tiles_kwcoco = kwconf.Value(None, required=True, help="negative-tile kwcoco bundle")
+    vali_kwcoco = kwconf.Value(None, required=True, help="validation kwcoco bundle")
+    test_kwcoco = kwconf.Value(None, required=True, help="test kwcoco bundle")
+    kcd_root = kwconf.Value(None, help="$KCD_ROOT — workspace for rounds/")
 
-    trainer = scfg.Value("mock_tiny")
-    variant = scfg.Value("mock_tiny")
-    input_hw = scfg.Value([256, 256])
-    train_policy = scfg.Value("fixed")
-    category_names = scfg.Value(
+    trainer = kwconf.Value("mock_tiny")
+    variant = kwconf.Value("mock_tiny")
+    input_hw = kwconf.Value([256, 256])
+    train_policy = kwconf.Value("fixed")
+    category_names = kwconf.Value(
         "widget",
         help=(
             "comma-separated category names to train on. Order determines "
@@ -48,26 +48,26 @@ class RoundLoopConfig(scfg.DataConfig):
         ),
     )
 
-    num_rounds = scfg.Value(3)
-    round0_neg_over_pos = scfg.Value(3.0)
-    mine_score_thresh = scfg.Value(0.30)
-    max_hard_per_round = scfg.Value(5000)
+    num_rounds = kwconf.Value(3)
+    round0_neg_over_pos = kwconf.Value(3.0)
+    mine_score_thresh = kwconf.Value(0.30)
+    max_hard_per_round = kwconf.Value(5000)
     # Mining budget passed to data.mine (see MineConfig for semantics).
     # 0 = score every negative tile (legacy behavior); ~30000-100000 is
     # the recommended range for million-tile pools.
-    mine_max_candidates = scfg.Value(0)
-    mine_candidate_strategy = scfg.Value("stratified_by_image")
-    mine_candidate_seed = scfg.Value(0)
+    mine_max_candidates = kwconf.Value(0)
+    mine_candidate_strategy = kwconf.Value("stratified_by_image")
+    mine_candidate_seed = kwconf.Value(0)
 
-    num_epochs = scfg.Value(2)
-    batch_size = scfg.Value(2)
-    val_batch_size = scfg.Value(2)
-    lr = scfg.Value(1e-2)
-    backbone_lr = scfg.Value(1e-2)
-    use_amp = scfg.Value(False)
-    scale_tier = scfg.Value("S")
-    num_gpus = scfg.Value(1)
-    init_checkpoint = scfg.Value(
+    num_epochs = kwconf.Value(2)
+    batch_size = kwconf.Value(2)
+    val_batch_size = kwconf.Value(2)
+    lr = kwconf.Value(1e-2)
+    backbone_lr = kwconf.Value(1e-2)
+    use_amp = kwconf.Value(False)
+    scale_tier = kwconf.Value("S")
+    num_gpus = kwconf.Value(1)
+    init_checkpoint = kwconf.Value(
         None,
         help=(
             "Optional path to a pretrained detector checkpoint (e.g. "

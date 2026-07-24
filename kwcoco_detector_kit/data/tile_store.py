@@ -309,7 +309,7 @@ class WebdatasetStore:
 
 
 # ---------------------------------------------------------------------------
-# Factory + scriptconfig CLI for `python -m kwcoco_detector_kit convert-store`
+# Factory + kwconf CLI for `python -m kwcoco_detector_kit convert-store`
 # ---------------------------------------------------------------------------
 
 
@@ -325,21 +325,21 @@ def open_store(fpath) -> TileStore:
     return KwcocoJpegStore(p)
 
 
-import scriptconfig as scfg
+import kwconf
 
 
-class ConvertStoreConfig(scfg.DataConfig):
+class ConvertStoreConfig(kwconf.Config):
     """Convert a kwcoco tile bundle to an alternative TileStore backend."""
 
-    src = scfg.Value(None, position=1, required=True,
+    src = kwconf.Value(None, position=1, required=True,
                      help="input kwcoco tile bundle (a .kwcoco.zip)")
-    dst = scfg.Value(None, position=2, required=True,
+    dst = kwconf.Value(None, position=2, required=True,
                      help="output directory (will hold shard-*.tar + _bundle_meta.json)")
-    backend = scfg.Value("webdataset", choices=["webdataset"],
+    backend = kwconf.Value("webdataset", choices=["webdataset"],
                         help="target backend")
-    maxcount = scfg.Value(1024, help="webdataset: max tiles per shard")
-    maxsize_mb = scfg.Value(256, help="webdataset: max shard size in MB")
-    jpeg_quality = scfg.Value(90)
+    maxcount = kwconf.Value(1024, help="webdataset: max tiles per shard")
+    maxsize_mb = kwconf.Value(256, help="webdataset: max shard size in MB")
+    jpeg_quality = kwconf.Value(90)
 
     @classmethod
     def main(cls, argv=1, **kwargs):

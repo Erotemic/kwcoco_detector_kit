@@ -94,28 +94,28 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import scriptconfig as scfg
+import kwconf
 import yaml
 
 
 SUPPORTED_SCHEMAS = {"recipe.v1"}
 
 
-class RecipeRunConfig(scfg.DataConfig):
+class RecipeRunConfig(kwconf.Config):
     """Run a recipe.yaml end-to-end (sweep + manifest)."""
 
-    recipe = scfg.Value(None, position=1, required=True,
+    recipe = kwconf.Value(None, position=1, required=True,
                         help="path to a recipe.v1 YAML file")
-    skip_checks = scfg.Value(False, isflag=True,
+    skip_checks = kwconf.Value(False, isflag=True,
                              help="skip the leading check-env --runtime probe")
-    dry_run = scfg.Value(False, isflag=True,
+    dry_run = kwconf.Value(False, isflag=True,
                          help="parse + validate the recipe, print the resolved "
                               "sweep + eligibility configs, but do not run")
-    force_train = scfg.Value(False, isflag=True,
+    force_train = kwconf.Value(False, isflag=True,
                              help="re-train cells even if best_stg2.pth exists")
-    force_export = scfg.Value(False, isflag=True)
-    force_eval = scfg.Value(False, isflag=True)
-    force_bench = scfg.Value(False, isflag=True)
+    force_export = kwconf.Value(False, isflag=True)
+    force_eval = kwconf.Value(False, isflag=True)
+    force_bench = kwconf.Value(False, isflag=True)
 
     @classmethod
     def main(cls, argv=1, **kwargs):

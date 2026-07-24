@@ -125,17 +125,17 @@ def export_to_labelme(
 # ---------------------------------------------------------------------------
 
 def _build_cli():
-    import scriptconfig as scfg
+    import kwconf
 
-    class LabelMeExportConfig(scfg.DataConfig):
+    class LabelMeExportConfig(kwconf.Config):
         """Export a kwcoco prediction dataset to LabelMe JSON sidecars."""
 
-        pred_kwcoco = scfg.Value(None, required=True, position=1,
+        pred_kwcoco = kwconf.Value(None, required=True, position=1,
                                  help="source prediction kwcoco dataset")
-        score_thresh = scfg.Value(0.0, type=float, help="minimum annotation score to export")
-        only_missing = scfg.Value(True, isflag=True,
+        score_thresh = kwconf.Value(0.0, parser=float, help="minimum annotation score to export")
+        only_missing = kwconf.Value(True, isflag=True,
                                   help="skip images that already have a sidecar")
-        copy_dst = scfg.Value(None, help="optional directory; source images copied here before export")
+        copy_dst = kwconf.Value(None, help="optional directory; source images copied here before export")
 
         @classmethod
         def main(cls, argv=1, **kwargs):

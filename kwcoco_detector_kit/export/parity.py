@@ -12,6 +12,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Tuple
 
+import kwconf
+
 
 def check_parity(
     *,
@@ -73,3 +75,60 @@ def check_parity(
         "rtol": rtol,
         "atol": atol,
     }
+
+
+class ParityConfig(kwconf.Config):
+    """Check torch ↔ ONNX output parity for a trained workdir."""
+
+    workdir = kwconf.Value(None, position=1, required=True,
+                         help="trained workdir (must contain export/*.onnx and checkpoint)")
+    rtol = kwconf.Value(1e-3, help="relative tolerance for allclose check")
+    atol = kwconf.Value(1e-3, help="absolute tolerance for allclose check")
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        import kwcoco_detector_kit.trainers  # noqa: F401 — register plugins
+        from kwcoco_detector_kit.trainers._registry import get_trainer
+        from kwcoco_detector_kit.export.onnx import _read_policy
+
+        config = cls.cli(argv=argv, data=kwargs, strict=True)
+        workdir = Path(str(config.workdir)).expanduser().resolve()
+        policy = _read_policy(workdir)
+
+        variant = policy.get("variant", "")
+        trainer_name = variant.split("_")[0] if variant else "deimv2"
+        trainer = get_trainer(trainer_name)
+
+        H = int(policy.get("export_input_h", 640))
+        W = int(policy.get("export_input_w", 640))
+
+        export_dpath = workdir / "export"
+        onnx_files = sorted(export_dpath.glob("*.onnx"))
+        if not onnx_files:
+            raise FileNotFoundError(f"no .onnx found in {export_dpath}")
+        onnx_fpath = onnx_files[0]
+
+        result = check_parity(
+            trainer=trainer,
+            workdir=workdir,
+            onnx_fpath=onnx_fpath,
+            input_hw=(H, W),
+            rtol=float(config.rtol),
+            atol=float(config.atol),
+        )
+        status = "PASS" if result["ok"] else "FAIL"
+        print(
+            f"[parity] {status}  "
+            f"scores Δ={result['max_abs_diff_scores']:.2e}  "
+            f"boxes Δ={result['max_abs_diff_boxes']:.2e}  "
+            f"labels Δ={result['max_abs_diff_labels']:.2e}"
+        )
+        if not result["ok"]:
+            raise SystemExit(1)
+
+
+def run(config):
+    ParityConfig.main(argv=False, **{k: v for k, v in config.items()})
+
+
+__cli__ = ParityConfig

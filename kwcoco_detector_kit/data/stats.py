@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import numpy as np
-import scriptconfig as scfg
+import kwconf
 
 
 def compute_per_channel_stats(store, *, sample_size: int = 256) -> Dict[str, object]:
@@ -76,14 +76,14 @@ def compute_per_channel_stats(store, *, sample_size: int = 256) -> Dict[str, obj
     }
 
 
-class StatsConfig(scfg.DataConfig):
+class StatsConfig(kwconf.Config):
     """Probe per-channel mean/std over a tile bundle. Writes a JSON sidecar."""
 
-    src = scfg.Value(None, position=1, required=True,
+    src = kwconf.Value(None, position=1, required=True,
                      help="kwcoco tile bundle OR a WebdatasetStore directory")
-    out = scfg.Value(None, position=2, required=True,
+    out = kwconf.Value(None, position=2, required=True,
                      help="output JSON path (e.g. <bundle>.stats.json)")
-    sample_size = scfg.Value(256, help="max tiles to sample; 0 = all")
+    sample_size = kwconf.Value(256, help="max tiles to sample; 0 = all")
 
     @classmethod
     def main(cls, argv=1, **kwargs):

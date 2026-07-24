@@ -27,7 +27,7 @@ def test_kwcoco_demo_end_to_end_smoke(synthetic_kwcoco_factory, tmp_path, monkey
         argv=False,
         data={
             "src": str(raw), "dst": str(tiles_fpath),
-            "mode": "multiscale", "category_name": "widget",
+            "mode": "multiscale", "category_names": "widget",
             "tile_size": 64, "source_scales": "1.0",
             "stride_frac": 0.5, "min_gt_area_frac": 0.001,
             "min_source_scale_long_side": 32,
@@ -55,7 +55,7 @@ def test_kwcoco_demo_end_to_end_smoke(synthetic_kwcoco_factory, tmp_path, monkey
             "trainer": "mock_tiny", "variant": "mock_tiny",
             "input_hw": [64, 64], "train_policy": "fixed",
             "num_epochs": 1, "batch_size": 2, "val_batch_size": 2,
-            "scale_tier": "S", "category_name": "widget",
+            "scale_tier": "S", "category_names": "widget",
             "lr": 1e-2, "backbone_lr": 1e-2, "use_amp": False,
         },
     )

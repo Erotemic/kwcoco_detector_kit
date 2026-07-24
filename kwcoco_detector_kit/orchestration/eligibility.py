@@ -38,7 +38,7 @@ from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import scriptconfig as scfg
+import kwconf
 
 
 # Public state names
@@ -126,37 +126,37 @@ class Row:
     reasons: list = field(default_factory=list)
 
 
-class EligibilityConfig(scfg.DataConfig):
+class EligibilityConfig(kwconf.Config):
     """Aggregate sweep outputs + run the eligibility state machine."""
 
-    sweep_index = scfg.Value(None, help="TSV index produced by pareto_sweep.py; takes precedence over --auto")
-    auto = scfg.Value(False, isflag=True, help="Discover candidates under $KCD_ROOT/runs/")
-    kcd_root = scfg.Value(
+    sweep_index = kwconf.Value(None, help="TSV index produced by pareto_sweep.py; takes precedence over --auto")
+    auto = kwconf.Value(False, isflag=True, help="Discover candidates under $KCD_ROOT/runs/")
+    kcd_root = kwconf.Value(
         None,
         help="root dir to scan in --auto mode (defaults to $KCD_ROOT)",
     )
-    out = scfg.Value(None, help="output TSV path")
-    out_json = scfg.Value(None, help="optional JSON output (richer)")
+    out = kwconf.Value(None, help="output TSV path")
+    out_json = kwconf.Value(None, help="optional JSON output (richer)")
 
-    max_desktop_ms = scfg.Value(80.0, help="desktop CPU mean ms gate (proxy for on-device latency)")
-    min_device_fps = scfg.Value(10.0, help="on-device FPS gate (only when --device_index supplied)")
-    device_index = scfg.Value(
+    max_desktop_ms = kwconf.Value(80.0, help="desktop CPU mean ms gate (proxy for on-device latency)")
+    min_device_fps = kwconf.Value(10.0, help="on-device FPS gate (only when --device_index supplied)")
+    device_index = kwconf.Value(
         None,
         help="optional TSV with columns candidate_id\\tlatency_ms\\tfps from a real-device benchmark",
     )
-    allow_missing_desktop_bench = scfg.Value(
+    allow_missing_desktop_bench = kwconf.Value(
         False, isflag=True,
         help="treat candidates with no desktop bench as HOST_PROMISING (default: NOT_READY)",
     )
-    include_smoke_models = scfg.Value(
+    include_smoke_models = kwconf.Value(
         False, isflag=True,
         help="include candidate_kind=smoke in the winner pool (default: real only)",
     )
-    smoke_only = scfg.Value(
+    smoke_only = kwconf.Value(
         False, isflag=True,
         help="restrict the winner pool to smoke candidates (CI usage)",
     )
-    print_winner = scfg.Value(True, isflag=True, help="print the eligible winner to stdout")
+    print_winner = kwconf.Value(True, isflag=True, help="print the eligible winner to stdout")
 
     @classmethod
     def main(cls, argv=1, **kwargs):

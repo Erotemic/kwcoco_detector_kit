@@ -1,5 +1,5 @@
 """
-Top-level scriptconfig CLI.
+Top-level kwconf CLI.
 
 Subcommands::
 
@@ -13,7 +13,6 @@ Subcommands::
   round-loop      Round-based hard-negative-mining loop.
   export-onnx     Export a trained checkpoint to ONNX.
   parity          Check torch <-> ONNX parity on the exported model.
-  eval            Run kwcoco eval against a trained checkpoint.
   bench           Run desktop ONNX bench.
   package-build   Build a portable package from a trained workdir.
   predict         Run packaged detector inference over kwcoco data.
@@ -32,7 +31,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import scriptconfig as scfg
+import kwconf
 
 # Force trainer-plugin import-side registration.
 import kwcoco_detector_kit.trainers  # noqa: F401
@@ -41,21 +40,21 @@ import kwcoco_detector_kit.trainers  # noqa: F401
 # Each subcommand wraps a module's __cli__ DataConfig + run().
 
 
-class ModalKit(scfg.ModalCLI):
+class ModalKit(kwconf.ModalCLI):
     """kwcoco-detector-kit — domain-agnostic detector training on kwcoco."""
 
 
 @ModalKit.register
-class DemoDataCLI(scfg.DataConfig):
+class DemoDataCLI(kwconf.Config):
     """Generate a synthetic kwcoco bundle for smoke tests."""
 
     __command__ = "demo-data"
 
-    dst = scfg.Value(None, position=1, required=True, help="output kwcoco path")
-    num_images = scfg.Value(16, help="number of images to synthesize")
-    image_size = scfg.Value([256, 256], help="image size [H, W]")
-    seed = scfg.Value(0)
-    category_names = scfg.Value(
+    dst = kwconf.Value(None, position=1, required=True, help="output kwcoco path")
+    num_images = kwconf.Value(16, help="number of images to synthesize")
+    image_size = kwconf.Value([256, 256], help="image size [H, W]")
+    seed = kwconf.Value(0)
+    category_names = kwconf.Value(
         "widget",
         help="comma-separated category names; boxes are round-robin assigned",
     )
@@ -137,7 +136,10 @@ def _register_subcommands():
     import kwcoco_detector_kit.orchestration.setup_audit as _audit
     import kwcoco_detector_kit.configs as _configs
     import kwcoco_detector_kit.export.package as _package
+    import kwcoco_detector_kit.export.onnx as _export_onnx
+    import kwcoco_detector_kit.export.parity as _parity
     import kwcoco_detector_kit.export.labelme as _labelme
+    import kwcoco_detector_kit.eval.bench as _bench
     import kwcoco_detector_kit.trainers.sam2 as _sam2
     import kwcoco_detector_kit.data.distill as _distill
     import kwcoco_detector_kit.predict as _predict
@@ -155,6 +157,9 @@ def _register_subcommands():
     _register_module("round-loop", _round)
     _register_module("manifest", _elig)
     _register_module("check-env", _audit)
+    _register_module("export-onnx", _export_onnx)
+    _register_module("parity", _parity)
+    _register_module("bench", _bench)
     _register_module("package-build", _package)
     _register_module("predict", _predict)
     _register_module("export-labelme", _labelme)
@@ -169,7 +174,7 @@ _register_subcommands()
 
 
 @ModalKit.register
-class RunAllCLI(scfg.DataConfig):
+class RunAllCLI(kwconf.Config):
     """End-to-end smoke driver — synth data, tile, train, export, eval, bench, manifest.
 
     Designed to run on a 1-CPU laptop in <90 s using ``trainer=mock_tiny``.
@@ -177,17 +182,17 @@ class RunAllCLI(scfg.DataConfig):
 
     __command__ = "run-all"
 
-    train_kwcoco = scfg.Value(None, required=True, help="training kwcoco")
-    vali_kwcoco = scfg.Value(None, help="validation kwcoco (defaults to train_kwcoco)")
-    test_kwcoco = scfg.Value(None, help="test kwcoco (defaults to train_kwcoco)")
-    workdir = scfg.Value(None, required=True, help="workspace root (sets KCD_ROOT)")
-    category_names = scfg.Value("widget", help="comma-separated category names")
-    trainer = scfg.Value("mock_tiny")
-    variant = scfg.Value("mock_tiny")
-    tier = scfg.Value("S")
-    input_hw = scfg.Value([256, 256])
-    num_epochs = scfg.Value(2)
-    batch_size = scfg.Value(2)
+    train_kwcoco = kwconf.Value(None, required=True, help="training kwcoco")
+    vali_kwcoco = kwconf.Value(None, help="validation kwcoco (defaults to train_kwcoco)")
+    test_kwcoco = kwconf.Value(None, help="test kwcoco (defaults to train_kwcoco)")
+    workdir = kwconf.Value(None, required=True, help="workspace root (sets KCD_ROOT)")
+    category_names = kwconf.Value("widget", help="comma-separated category names")
+    trainer = kwconf.Value("mock_tiny")
+    variant = kwconf.Value("mock_tiny")
+    tier = kwconf.Value("S")
+    input_hw = kwconf.Value([256, 256])
+    num_epochs = kwconf.Value(2)
+    batch_size = kwconf.Value(2)
 
     @classmethod
     def main(cls, argv=1, **kwargs):

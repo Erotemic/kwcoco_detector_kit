@@ -24,31 +24,31 @@ import platform
 import subprocess
 from pathlib import Path
 
-import scriptconfig as scfg
+import kwconf
 
 
-class SelectionWorkerConfig(scfg.DataConfig):
+class SelectionWorkerConfig(kwconf.Config):
     """Run the checkpoint-selection worker over a training run's journal."""
 
-    workdir = scfg.Value(None, required=True, help=(
+    workdir = kwconf.Value(None, required=True, help=(
         "the run dir: holds journal/, staging/, generated_configs/"))
-    vali_kwcoco = scfg.Value(None, required=True, help=(
+    vali_kwcoco = kwconf.Value(None, required=True, help=(
         "FULL validation kwcoco (selection never touches test)"))
-    category_names = scfg.Value(None, required=True, type=str, help=(
+    category_names = kwconf.Value(None, required=True, parser=str, help=(
         "ordered CSV == train-time class indices"))
-    distractor_classes = scfg.Value("", type=str, help=(
+    distractor_classes = kwconf.Value("", parser=str, help=(
         "CSV of distractor class names (the scheme-owned list half of the "
         "protocol's exclude_distractors rule)"))
-    trains_on_tiles = scfg.Value(True, isflag=True, help=(
+    trains_on_tiles = kwconf.Value(True, isflag=True, help=(
         "project-type default: tiled probe + whole lens (True) or whole "
         "lens only (False); ignored when --selection_config is given"))
-    selection_config = scfg.Value(None, help=(
+    selection_config = kwconf.Value(None, help=(
         "optional JSON/YAML SelectionConfig overriding the derived default"))
-    train_input_hw = scfg.Value("[640, 640]", help="train input (H, W)")
-    num_epochs = scfg.Value(None, required=True, type=int)
-    device = scfg.Value("cuda", help="scoring device")
-    poll_s = scfg.Value(30.0, type=float, help="journal poll interval")
-    timeout_s = scfg.Value(None, type=float, help="optional worker timeout")
+    train_input_hw = kwconf.Value("[640, 640]", help="train input (H, W)")
+    num_epochs = kwconf.Value(None, required=True, parser=int)
+    device = kwconf.Value("cuda", help="scoring device")
+    poll_s = kwconf.Value(30.0, parser=float, help="journal poll interval")
+    timeout_s = kwconf.Value(None, parser=float, help="optional worker timeout")
 
     @classmethod
     def main(cls, argv=1, **kwargs):

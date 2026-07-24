@@ -470,31 +470,31 @@ class SAM2Trainer:
 
 
 # ---------------------------------------------------------------------------
-# scriptconfig CLI
+# kwconf CLI
 # ---------------------------------------------------------------------------
 
 def _build_train_cli():
-    import scriptconfig as scfg
+    import kwconf
 
-    class SAM2TrainConfig(scfg.DataConfig):
+    class SAM2TrainConfig(kwconf.Config):
         """Fine-tune a SAM2 segmenter from kwcoco splits."""
 
-        train_kwcoco = scfg.Value(None, required=True, help="training kwcoco path")
-        vali_kwcoco = scfg.Value(None, required=True, help="validation kwcoco path")
-        workdir = scfg.Value(None, required=True, help="output directory for checkpoints and configs")
-        variant = scfg.Value("sam2.1_hiera_base_plus",
+        train_kwcoco = kwconf.Value(None, required=True, help="training kwcoco path")
+        vali_kwcoco = kwconf.Value(None, required=True, help="validation kwcoco path")
+        workdir = kwconf.Value(None, required=True, help="output directory for checkpoints and configs")
+        variant = kwconf.Value("sam2.1_hiera_base_plus",
                              help=f"SAM2 variant; one of {list(SAM2Trainer.VARIANTS)}")
-        init_checkpoint = scfg.Value(None, required=True,
+        init_checkpoint = kwconf.Value(None, required=True,
                                      help="initial SAM2 checkpoint (.pt) to fine-tune from")
-        category_names = scfg.Value(None, help="comma-separated category names to train on (default=all)")
-        resolution = scfg.Value(1024, type=int)
-        train_batch_size = scfg.Value(1, type=int)
-        num_epochs = scfg.Value(20, type=int)
-        base_lr = scfg.Value(5e-6, type=float)
-        vision_lr = scfg.Value(3e-6, type=float)
-        max_num_objects = scfg.Value(8, type=int)
-        num_gpus = scfg.Value(1, type=int)
-        num_train_workers = scfg.Value(4, type=int)
+        category_names = kwconf.Value(None, help="comma-separated category names to train on (default=all)")
+        resolution = kwconf.Value(1024, parser=int)
+        train_batch_size = kwconf.Value(1, parser=int)
+        num_epochs = kwconf.Value(20, parser=int)
+        base_lr = kwconf.Value(5e-6, parser=float)
+        vision_lr = kwconf.Value(3e-6, parser=float)
+        max_num_objects = kwconf.Value(8, parser=int)
+        num_gpus = kwconf.Value(1, parser=int)
+        num_train_workers = kwconf.Value(4, parser=int)
 
         @classmethod
         def main(cls, argv=1, **kwargs):

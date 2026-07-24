@@ -60,20 +60,20 @@ import math
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-import scriptconfig as scfg
+import kwconf
 import ubelt as ub
 
 
 DEFAULT_SOURCE_SCALES = "1.0,0.66,0.40,0.25"
 
 
-class TileConfig(scfg.DataConfig):
+class TileConfig(kwconf.Config):
     """Tile-augment a kwcoco bundle. Output is a new kwcoco bundle on disk."""
 
-    src = scfg.Value(None, position=1, help="input kwcoco path")
-    dst = scfg.Value(None, position=2, help="output kwcoco bundle path")
+    src = kwconf.Value(None, position=1, help="input kwcoco path")
+    dst = kwconf.Value(None, position=2, help="output kwcoco bundle path")
 
-    mode = scfg.Value(
+    mode = kwconf.Value(
         "multiscale",
         choices=["full_only", "quadrant", "multiscale"],
         help=(
@@ -83,7 +83,7 @@ class TileConfig(scfg.DataConfig):
         ),
     )
 
-    category_names = scfg.Value(
+    category_names = kwconf.Value(
         "widget",
         help=(
             "comma-separated category names to keep (others dropped). Order "
@@ -91,11 +91,11 @@ class TileConfig(scfg.DataConfig):
             "downstream MSCOCO export can map class indices consistently."
         ),
     )
-    output_ext = scfg.Value(".jpg", help="asset extension")
-    jpeg_quality = scfg.Value(90, help="JPEG quality if output_ext is .jpg")
-    progress = scfg.Value(True, help="show ubelt.ProgIter progress")
-    seed = scfg.Value(0, help="RNG seed (used by sampled modes)")
-    oversize_factor = scfg.Value(
+    output_ext = kwconf.Value(".jpg", help="asset extension")
+    jpeg_quality = kwconf.Value(90, help="JPEG quality if output_ext is .jpg")
+    progress = kwconf.Value(True, help="show ubelt.ProgIter progress")
+    seed = kwconf.Value(0, help="RNG seed (used by sampled modes)")
+    oversize_factor = kwconf.Value(
         1.0,
         help=(
             "emit tiles oversize_factor larger than the model input so a "
@@ -104,7 +104,7 @@ class TileConfig(scfg.DataConfig):
             "scale+position jitter."
         ),
     )
-    min_keep_fraction = scfg.Value(
+    min_keep_fraction = kwconf.Value(
         0.30,
         help=(
             "annotations whose visible fraction in a tile falls below this "
@@ -113,30 +113,30 @@ class TileConfig(scfg.DataConfig):
     )
 
     # ---- mode=full_only / quadrant ----
-    full_dim = scfg.Value(1280, help="long-side cap for the kept full-frame image")
-    keep_full = scfg.Value(True, help="quadrant mode: also emit the resized full image")
+    full_dim = kwconf.Value(1280, help="long-side cap for the kept full-frame image")
+    keep_full = kwconf.Value(True, help="quadrant mode: also emit the resized full image")
 
     # ---- mode=quadrant only ----
-    tile_grid = scfg.Value(2, help="NxN grid (quadrant mode)")
-    tile_overlap = scfg.Value(0.20, help="fractional overlap between adjacent tiles (quadrant mode)")
-    tile_output_dim = scfg.Value(640, help="long-side cap on each tile after resize (quadrant mode)")
+    tile_grid = kwconf.Value(2, help="NxN grid (quadrant mode)")
+    tile_overlap = kwconf.Value(0.20, help="fractional overlap between adjacent tiles (quadrant mode)")
+    tile_output_dim = kwconf.Value(640, help="long-side cap on each tile after resize (quadrant mode)")
 
     # ---- mode=multiscale only ----
-    tile_size = scfg.Value(320, help="fixed output tile size — the model's eventual input size (multiscale)")
-    source_scales = scfg.Value(DEFAULT_SOURCE_SCALES, help="comma-separated source-scale factors (multiscale)")
-    stride_frac = scfg.Value(0.5, help="sliding-window stride as a fraction of disk tile size (multiscale)")
-    min_gt_area_frac = scfg.Value(
+    tile_size = kwconf.Value(320, help="fixed output tile size — the model's eventual input size (multiscale)")
+    source_scales = kwconf.Value(DEFAULT_SOURCE_SCALES, help="comma-separated source-scale factors (multiscale)")
+    stride_frac = kwconf.Value(0.5, help="sliding-window stride as a fraction of disk tile size (multiscale)")
+    min_gt_area_frac = kwconf.Value(
         0.005,
         help="multiscale: tile is positive iff total surviving GT area / tile_area >= this",
     )
-    min_source_scale_long_side = scfg.Value(
+    min_source_scale_long_side = kwconf.Value(
         64,
         help=(
             "multiscale: skip a source scale whose downscaled long side is "
             "below this; protects against downscaling into uselessness."
         ),
     )
-    keep_negative = scfg.Value(True, help="multiscale: also emit negative tiles for hard-neg mining")
+    keep_negative = kwconf.Value(True, help="multiscale: also emit negative tiles for hard-neg mining")
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -244,8 +244,9 @@ def _clip_bbox_xywh(bbox, x0, y0, x1, y1, min_keep_fraction):
 def _parse_scales(scales) -> List[Tuple[str, float]]:
     """'1.0,0.66,0.4' OR [1.0, 0.66, 0.4] -> [('s10', 1.0), ('s07', 0.66), ('s04', 0.4)].
 
-    Tolerates the scriptconfig auto-comma-split (which can hand us a list
-    of strings instead of the literal comma-separated string we expected).
+    Accepts either form: kwconf hands us the literal comma-separated string
+    (which we split here), while a programmatic caller may pass a pre-split
+    list of strings.
     """
     if isinstance(scales, (list, tuple)):
         items = [str(s) for s in scales]

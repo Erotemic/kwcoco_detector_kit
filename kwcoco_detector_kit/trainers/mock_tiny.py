@@ -49,7 +49,7 @@ import subprocess
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-import scriptconfig as scfg
+import kwconf
 import yaml
 
 from kwcoco_detector_kit.trainers._registry import register_trainer

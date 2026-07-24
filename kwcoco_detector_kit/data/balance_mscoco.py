@@ -42,21 +42,21 @@ import json
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
-import scriptconfig as scfg
+import kwconf
 
 
 EMPTY_BUCKET = "<empty>"
 
 
-class BalanceMSCOCOConfig(scfg.DataConfig):
+class BalanceMSCOCOConfig(kwconf.Config):
     """Resample an MSCOCO json to hit a target class distribution."""
 
-    src = scfg.Value(None, position=1, help="input MSCOCO json")
-    dst = scfg.Value(None, position=2, help="output MSCOCO json")
+    src = kwconf.Value(None, position=1, help="input MSCOCO json")
+    dst = kwconf.Value(None, position=2, help="output MSCOCO json")
 
-    target_distribution = scfg.Value(
+    target_distribution = kwconf.Value(
         None,
-        type=str,
+        parser=str,
         help=(
             "JSON object mapping bucket name -> target fraction. Bucket "
             'names are category names from the input MSCOCO, plus the '
@@ -67,9 +67,9 @@ class BalanceMSCOCOConfig(scfg.DataConfig):
         ),
     )
 
-    target_size = scfg.Value(
+    target_size = kwconf.Value(
         None,
-        type=int,
+        parser=int,
         help=(
             "Total number of image entries in the output MSCOCO. "
             "When set explicitly, overrides max_oversample. Defaults: "
@@ -79,8 +79,8 @@ class BalanceMSCOCOConfig(scfg.DataConfig):
         ),
     )
 
-    max_oversample = scfg.Value(
-        None, type=int,
+    max_oversample = kwconf.Value(
+        None, parser=int,
         help=(
             "Cap on per-sample repetition for the rarest bucket. "
             "When set (and target_size is not), target_size becomes "
@@ -98,10 +98,10 @@ class BalanceMSCOCOConfig(scfg.DataConfig):
         ),
     )
 
-    seed = scfg.Value(0, type=int, help="RNG seed for sampling")
+    seed = kwconf.Value(0, parser=int, help="RNG seed for sampling")
 
-    min_balanced_size = scfg.Value(
-        2000, type=int,
+    min_balanced_size = kwconf.Value(
+        2000, parser=int,
         help=(
             "Safety floor: abort if the auto-computed balanced size falls "
             "below this. A data-starved bucket in target_distribution (e.g. "

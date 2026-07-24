@@ -30,7 +30,7 @@ dependencies = [
     "kwimage>=0.11",
     "kwutil>=0.3",
     "ubelt>=1.4",
-    "scriptconfig>=0.9",
+    "kwconf>=0.10.0",
     "numpy>=1.24",
     "pyyaml>=6.0",
     # torch is required by the trainer plugins and mock detector. Pin the
@@ -111,6 +111,8 @@ markers = [
     "requires_torch: tests that import torch",
     "requires_gpu: tests that require a CUDA-capable GPU",
     "requires_deimv2: tests that drive through the DEIMv2 submodule's engine.core.YAMLConfig",
+    "requires_onnx: tests that need onnxruntime and onnx installed",
+    "cuda: tests that require a CUDA-capable GPU and onnxruntime-gpu",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning:kwcoco.*",

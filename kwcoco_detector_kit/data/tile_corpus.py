@@ -38,23 +38,23 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import scriptconfig as scfg
+import kwconf
 
 
-class TileCorpusConfig(scfg.DataConfig):
+class TileCorpusConfig(kwconf.Config):
     """Compose several `tile` passes into one unioned training bundle."""
 
-    src = scfg.Value(None, position=1, required=True,
+    src = kwconf.Value(None, position=1, required=True,
                      help="source kwcoco (raw, full-resolution images)")
-    dst = scfg.Value(None, position=2, required=True,
+    dst = kwconf.Value(None, position=2, required=True,
                      help="output unioned tiled kwcoco bundle")
-    spec = scfg.Value(None, required=True,
+    spec = kwconf.Value(None, required=True,
                       help="YAML/JSON file with optional `shared:` dict and a "
                            "`passes:` list; each pass is a dict of TileConfig fields")
-    passes_dpath = scfg.Value(None,
+    passes_dpath = kwconf.Value(None,
                               help="where per-pass tiled bundles are written "
                                    "(default <dst-stem>_passes/ next to dst)")
-    force = scfg.Value(False, isflag=True,
+    force = kwconf.Value(False, isflag=True,
                        help="rebuild a pass even if its bundle already exists")
 
     @classmethod

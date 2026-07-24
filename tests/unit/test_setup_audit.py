@@ -14,7 +14,7 @@ def test_probes_cover_all_19_failure_modes_classes():
     expected_required_minimum = {
         "onnx", "onnxscript", "onnxsim", "onnxruntime",
         "faster_coco_eval", "transformers", "tensorboard", "scipy",
-        "torch", "kwcoco", "kwimage", "scriptconfig", "ubelt", "yaml",
+        "torch", "kwcoco", "kwimage", "kwconf", "ubelt", "yaml",
     }
     missing = expected_required_minimum - names
     assert not missing, f"setup_audit must probe: {missing}"
@@ -24,7 +24,7 @@ def test_core_group_lacks_no_critical_dep():
     """Probing 'core' should pass on the test env (where pyproject.toml's
     install_requires has been satisfied)."""
     missing = probe_env(groups=["core"])
-    # kwcoco / kwimage / scriptconfig / torch / cv2 / yaml all in install_requires.
+    # kwcoco / kwimage / kwconf / torch / cv2 / yaml all in install_requires.
     assert not missing, f"core probes failed: {[p.module for p in missing]}"
 
 
@@ -72,7 +72,8 @@ def test_version_spec_check_reports_impossible_constraint():
 
 
 # ---------------------------------------------------------------------------
-# _parse_groups — tolerates both string and list inputs (scriptconfig smartcast)
+# _parse_groups — tolerates both string and list inputs (defensive: kwconf
+# keeps the raw string, but pre-split/legacy list forms may still arrive)
 # ---------------------------------------------------------------------------
 
 
@@ -85,9 +86,9 @@ def test_parse_groups_from_list():
 
 
 def test_parse_groups_from_stringified_list():
-    """scriptconfig's smartcast can deliver str([list]) — `[\"'core'\", \"'onnx'\"]`."""
+    """A stringified list like "['core', 'onnx']" must still parse."""
     assert _parse_groups("['core', 'onnx']") == ["core", "onnx"]
-    # And the actual scriptconfig-mangled form: a list whose elements are
+    # And a list whose elements are
     # already quoted strings like "'core'".
     assert _parse_groups(["'core'", "'onnx'"]) == ["core", "onnx"]
 

@@ -1,0 +1,16 @@
+# Human-maintained registry of experiment definitions and outcomes.
+# Runtime provenance is also written automatically into each attempt directory.
+runs:
+  - id: fishtrack23_rfdetr_l_seg720_4gpu_viame0227_gen001
+    status: planned
+    purpose: >-
+      Retry the RF-DETR Large 720 segmentation training recipe with VIAME
+      v0.22.7 after the earlier v0.22.6 attempt hung.
+    entrypoint: scripts/run_fishtrack23_rfdetr_l_seg720_4gpu_viame0227_gen001.sh
+    data: FishTrack23-Latest/Train
+    binary: VIAME-v0.22.7-Linux-64Bit.tar.gz
+    config: configs/train_detector_rf_detr_l_720_90gb.conf
+    gpus: 4
+    notes:
+      - Keep the first v0.22.7 attempt isolated from any old deep_training or augmented_images cache.
+      - Record the stage and last log line if this attempt hangs.

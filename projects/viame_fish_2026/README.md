@@ -1,105 +1,101 @@
 # viame_fish_2026
 
-Systematic host-side runbook for the NOAA FishTrack23 VIAME detector training
-runs. Project source lives here; large data, VIAME binaries, generated chips,
-logs, checkpoints, and model packages live outside the git checkout.
+Systematic host-side runbook for NOAA FishTrack23 VIAME detector training.
+Project source lives here; large data, VIAME binaries, generated chips, logs,
+checkpoints, and model packages live outside the git checkout.
 
-## Layout
-
-```text
-projects/viame_fish_2026/
-├── configs/
-│   └── train_detector_rf_detr_l_720_90gb.conf
-├── docs/
-│   └── training_runs.yaml
-└── scripts/
-    ├── paths.sh
-    ├── setup_data.sh
-    ├── setup_binaries.sh
-    ├── setup_config.sh
-    ├── check_setup.sh
-    ├── _launch_viame_train.sh
-    ├── run_fishtrack23_rfdetr_l_seg720_4gpu_viame0227_gen001.sh
-    └── follow_run.sh
-```
-
-The default host layout is:
+## Host layout
 
 ```text
 $HOME/ssd-data/FishTrack23-Latest/       # local data mirror
 /data/users/$USER/fish/downloads/        # incoming VIAME archives
 /data/users/$USER/fish/software/         # immutable versioned installs
-/data/users/$USER/fish/viame-current      # symlink to active install
-/data/users/$USER/fish/runs/              # isolated run attempts
-/data/users/$USER/fish/logs/              # spare host logs
+/data/users/$USER/fish/viame-current     # symlink to active install
+/data/users/$USER/fish/selected_config.env # active config selection
+/data/users/$USER/fish/runs/             # isolated run attempts
 ```
 
-Override any location by exporting its `VF_*` variable before running a
-script. The defaults are centralized in `scripts/paths.sh`.
+Defaults are centralized in `scripts/paths.sh` and can be overridden with
+`VF_*` environment variables.
 
-## First-time setup on aiq-gpu
+## Setup on aiq-gpu
 
-From the `kwcoco_detector_kit` checkout:
+From the repository root:
 
 ```bash
 cd ~/code/kwcoco_detector_kit
 ```
 
-### 1. Finish the data mirror
-
-This is resumable and safe to run again:
+### 1. Mirror the data
 
 ```bash
 bash projects/viame_fish_2026/scripts/setup_data.sh
 ```
 
-The default source and destination are:
-
-```text
-numenor:/data/Public/NOAA/FishTrack23-Latest/
-$HOME/ssd-data/FishTrack23-Latest/
-```
-
-### 2. Copy the VIAME archive to aiq-gpu
-
-Run this on the machine that currently has the archive:
+### 2. Download VIAME v0.22.7-rc2
 
 ```bash
-scp VIAME-v0.22.7-Linux-64Bit.tar.gz \
-    aiq-gpu:/data/users/jon.crall/fish/downloads/
+mkdir -p /data/users/jon.crall/fish/downloads
+
+gdown \
+    10tJsWRUJn_FMPwWKkW9S6-H6fOF3DKyB \
+    -O /data/users/jon.crall/fish/downloads/VIAME-v0.22.7-rc2-Linux-64Bit.tar.gz
 ```
 
 ### 3. Install the binary
 
-Run this on `aiq-gpu`:
-
 ```bash
 bash projects/viame_fish_2026/scripts/setup_binaries.sh \
-    /data/users/jon.crall/fish/downloads/VIAME-v0.22.7-Linux-64Bit.tar.gz
+    /data/users/jon.crall/fish/downloads/VIAME-v0.22.7-rc2-Linux-64Bit.tar.gz \
+    0.22.7-rc2
 ```
 
-The script extracts into a versioned directory, records the archive SHA256,
-finds the real directory containing `setup_viame.sh`, and updates:
+The install is immutable and versioned. `viame-current` points to the active
+installation.
 
-```text
-/data/users/jon.crall/fish/viame-current
-```
-
-It refuses to overwrite an existing versioned install. That makes an upgrade
-an explicit new installation instead of an in-place mutation.
-
-### 4. Install the project config into VIAME
-
-The checked-in config is the reproducible source copy. VIAME needs a copy under
-its own `configs/pipelines` directory so its relative includes resolve:
+### 4. Select the bundled segmentation config
 
 ```bash
-bash projects/viame_fish_2026/scripts/setup_config.sh
+bash projects/viame_fish_2026/scripts/setup_config.sh \
+    train_detector_rf_detr_l_seg_720.conf
 ```
 
-When Matt supplies a newer config, first save it as a new checked-in filename,
-copy the current `run_*.sh` to the next generation, and point the new run script
-at the new config. Do not silently replace a config used by a completed run.
+This does not overwrite the bundled config. It records the selected basename in:
+
+```text
+/data/users/$USER/fish/selected_config.env
+```
+
+Because the selection stores a basename rather than an absolute installation
+path, it follows `viame-current` after an upgrade. The preflight will fail if the
+new installation does not contain that config.
+
+List available configs:
+
+```bash
+bash projects/viame_fish_2026/scripts/setup_config.sh --list
+```
+
+Show the current selection:
+
+```bash
+bash projects/viame_fish_2026/scripts/setup_config.sh --show
+```
+
+To use a local or project-owned override, pass its path. It will be copied into
+the active VIAME `configs/pipelines` directory and selected:
+
+```bash
+bash projects/viame_fish_2026/scripts/setup_config.sh \
+    /path/to/custom_training.conf
+```
+
+Or select a config from this project's `configs` directory explicitly:
+
+```bash
+bash projects/viame_fish_2026/scripts/setup_config.sh \
+    --project train_detector_rf_detr_l_720_90gb.conf
+```
 
 ### 5. Preflight
 
@@ -107,28 +103,25 @@ at the new config. Do not silently replace a config used by a completed run.
 bash projects/viame_fish_2026/scripts/check_setup.sh
 ```
 
-This verifies the data directory, active binary, installed config,
-`viame_train_detector`, visible GPUs, and free work-disk capacity.
-
 ## Launch generation 1
 
-Use tmux so the process survives an SSH disconnect:
-
 ```bash
-tmux new -s fish-v0227-gen001
+tmux new -s fish-v0227-rc2-gen001
 ```
 
 Inside tmux:
 
 ```bash
 cd ~/code/kwcoco_detector_kit
-bash projects/viame_fish_2026/scripts/run_fishtrack23_rfdetr_l_seg720_4gpu_viame0227_gen001.sh
+
+bash \
+    projects/viame_fish_2026/scripts/run_fishtrack23_rfdetr_l_seg720_4gpu_viame0227_gen001.sh
 ```
 
 Detach with `Ctrl-B`, then `D`. Reattach with:
 
 ```bash
-tmux attach -t fish-v0227-gen001
+tmux attach -t fish-v0227-rc2-gen001
 ```
 
 Follow the newest attempt from another shell:
@@ -138,60 +131,36 @@ cd ~/code/kwcoco_detector_kit
 bash projects/viame_fish_2026/scripts/follow_run.sh
 ```
 
-## Run-attempt organization
+## Run provenance
 
-Each execution creates a new directory such as:
+Each launch creates a new timestamped attempt. The attempt contains:
+
+- The exact selected config snapshot and SHA256.
+- The config-selection state.
+- The versioned run entry point.
+- The generated command.
+- VIAME archive/install metadata.
+- GPU inventory, log, exit code, caches, and model output.
+
+Training uses the config under the active VIAME installation so its relative
+`include` paths resolve correctly. The copied snapshot records exactly what was
+used.
+
+## Changing configs systematically
+
+`setup_config.sh` chooses the active config, but a versioned `run_*.sh` may also
+state an expected config. Generation 1 requires:
 
 ```text
-/data/users/jon.crall/fish/runs/
-└── fishtrack23_rfdetr_l_seg720_4gpu_viame0227_gen001/
-    ├── latest -> attempt_20260804_190000
-    └── attempt_20260804_190000/
-        ├── command.sh
-        ├── run_manifest.txt
-        ├── config.sha256
-        ├── viame_archive.sha256
-        ├── viame_install_info.txt
-        ├── nvidia_smi.txt
-        ├── train_detector_rf_detr_l_720_90gb.conf
-        ├── run_fishtrack23_..._gen001.sh
-        ├── train.log
-        ├── exit_code.txt
-        ├── augmented_images/
-        ├── deep_training/
-        └── fish_detector.zip
+train_detector_rf_detr_l_seg_720.conf
 ```
 
-The generated `command.sh` can reproduce the exact invocation for that attempt.
-The run directory also isolates `deep_training` and `augmented_images`, which is
-important for deciding whether v0.22.7 fixes the earlier hang rather than
-accidentally reusing stale state from v0.22.6.
-
-## Starting generation 2
-
-Never edit a historical entry point after using it for a meaningful run. Copy
-it and make the next change explicit:
-
-```bash
-cd ~/code/kwcoco_detector_kit
-cp \
-    projects/viame_fish_2026/scripts/run_fishtrack23_rfdetr_l_seg720_4gpu_viame0227_gen001.sh \
-    projects/viame_fish_2026/scripts/run_fishtrack23_rfdetr_l_seg720_4gpu_viame0227_gen002.sh
-```
-
-Then update all of the following in the new file:
-
-- Header comment explaining exactly what changed.
-- `VF_RUN_NAME`.
-- Config filename when the config changed.
-- Binary-version name when the active VIAME version changed.
-
-Add the planned run to `docs/training_runs.yaml`. After it finishes, record its
-status, important metrics, output path, and any failure or hang details there.
+If another config is the next experiment, copy the run entry point to `gen002`,
+change `VF_RUN_NAME` and `VF_EXPECTED_CONFIG_NAME`, and register the new run in
+`docs/training_runs.yaml`. This prevents a historical run name from silently
+changing meaning.
 
 ## Manual diagnosis when a run appears hung
-
-From another shell:
 
 ```bash
 nvidia-smi
@@ -200,7 +169,3 @@ du -sh /data/users/jon.crall/fish/runs/*/*/augmented_images 2>/dev/null
 du -sh /data/users/jon.crall/fish/runs/*/*/deep_training 2>/dev/null
 bash projects/viame_fish_2026/scripts/follow_run.sh
 ```
-
-Record whether it stopped during video extraction, chip generation, trainer
-startup, or an epoch. The last log line and growth of the two cache directories
-are more useful than simply recording that it "hung."

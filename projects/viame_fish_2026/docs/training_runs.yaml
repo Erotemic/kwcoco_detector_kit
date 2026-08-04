@@ -5,12 +5,14 @@ runs:
     status: planned
     purpose: >-
       Retry the RF-DETR Large 720 segmentation training recipe with VIAME
-      v0.22.7 after the earlier v0.22.6 attempt hung.
+      v0.22.7-rc2 after the earlier v0.22.6 attempt hung.
     entrypoint: scripts/run_fishtrack23_rfdetr_l_seg720_4gpu_viame0227_gen001.sh
     data: FishTrack23-Latest/Train
-    binary: VIAME-v0.22.7-Linux-64Bit.tar.gz
-    config: configs/train_detector_rf_detr_l_720_90gb.conf
+    binary: VIAME-v0.22.7-rc2-Linux-64Bit.tar.gz
+    config: installed:train_detector_rf_detr_l_seg_720.conf
     gpus: 4
     notes:
-      - Keep the first v0.22.7 attempt isolated from any old deep_training or augmented_images cache.
+      - Select the config with setup_config.sh before launching.
+      - The selected config and its SHA256 are snapshotted into every attempt.
+      - Keep the first v0.22.7-rc2 attempt isolated from old deep_training or augmented_images caches.
       - Record the stage and last log line if this attempt hangs.

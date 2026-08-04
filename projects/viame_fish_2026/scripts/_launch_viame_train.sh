@@ -19,8 +19,9 @@ if [ ! -f "$VF_CURRENT_VIAME_LINK/setup_viame.sh" ]; then
     exit 1
 fi
 
-if [ ! -f "$VF_PROJECT_CONFIG" ]; then
-    echo "ERROR: project config does not exist: $VF_PROJECT_CONFIG"
+if [ ! -f "$VF_CONFIG_FPATH" ]; then
+    echo "ERROR: selected VIAME config does not exist: $VF_CONFIG_FPATH"
+    echo "Select one with: bash $SCRIPT_DIR/setup_config.sh --list"
     exit 1
 fi
 
@@ -34,13 +35,16 @@ mkdir -p "$RUN_DPATH"
 rm -f "$RUN_GROUP_DPATH/latest"
 ln -s "$RUN_DPATH" "$RUN_GROUP_DPATH/latest"
 
-INSTALLED_CONFIG="$VF_CURRENT_VIAME_LINK/configs/pipelines/$VF_CONFIG_NAME"
-mkdir -p "$VF_CURRENT_VIAME_LINK/configs/pipelines"
-cp "$VF_PROJECT_CONFIG" "$INSTALLED_CONFIG"
-cp "$VF_PROJECT_CONFIG" "$RUN_DPATH/$VF_CONFIG_NAME"
+CONFIG_SOURCE_FPATH="$VF_CONFIG_FPATH"
+CONFIG_SNAPSHOT_FPATH="$RUN_DPATH/$VF_CONFIG_NAME"
+cp "$CONFIG_SOURCE_FPATH" "$CONFIG_SNAPSHOT_FPATH"
 
 if [ -n "$VF_ENTRYPOINT_FPATH" ] && [ -f "$VF_ENTRYPOINT_FPATH" ]; then
     cp "$VF_ENTRYPOINT_FPATH" "$RUN_DPATH/"
+fi
+
+if [ -f "$VF_CONFIG_SELECTION_FPATH" ]; then
+    cp "$VF_CONFIG_SELECTION_FPATH" "$RUN_DPATH/selected_config.env"
 fi
 
 source "$VF_CURRENT_VIAME_LINK/setup_viame.sh"
@@ -61,15 +65,18 @@ VIAME_EXE="$(command -v viame_train_detector)"
     echo "input_dpath=$VF_INPUT_DPATH"
     echo "viame_install=$VIAME_INSTALL_REAL"
     echo "viame_exe=$VIAME_EXE"
-    echo "project_config=$VF_PROJECT_CONFIG"
-    echo "installed_config=$INSTALLED_CONFIG"
+    echo "config_name=$VF_CONFIG_NAME"
+    echo "config_origin=${VF_CONFIG_ORIGIN:-unknown}"
+    echo "config_source=$CONFIG_SOURCE_FPATH"
+    echo "config_snapshot=$CONFIG_SNAPSHOT_FPATH"
+    echo "config_selection_state=$VF_CONFIG_SELECTION_FPATH"
     echo "cuda_visible_devices=$CUDA_VISIBLE_DEVICES"
     echo "kwiver_default_log_level=$KWIVER_DEFAULT_LOG_LEVEL"
     echo "pytorch_cuda_alloc_conf=$PYTORCH_CUDA_ALLOC_CONF"
     echo "project_git_commit=$(git -C "$VF_PROJECT_DPATH" rev-parse HEAD 2>/dev/null)"
 } > "$RUN_DPATH/run_manifest.txt"
 
-sha256sum "$VF_PROJECT_CONFIG" > "$RUN_DPATH/config.sha256"
+sha256sum "$CONFIG_SOURCE_FPATH" > "$RUN_DPATH/config.sha256"
 
 if [ -f "$VIAME_INSTALL_REAL/.viame_archive.sha256" ]; then
     cp "$VIAME_INSTALL_REAL/.viame_archive.sha256" "$RUN_DPATH/viame_archive.sha256"
@@ -89,7 +96,7 @@ export PYTORCH_CUDA_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
 cd "$RUN_DPATH"
 viame_train_detector \\
     -i "$VF_INPUT_DPATH" \\
-    -c "$INSTALLED_CONFIG" \\
+    -c "$CONFIG_SOURCE_FPATH" \\
     --threshold 0.0 \\
     --output-file "$RUN_DPATH/fish_detector.zip"
 COMMAND
@@ -99,12 +106,13 @@ cd "$RUN_DPATH"
 
 echo "Run directory: $RUN_DPATH"
 echo "Log: $RUN_DPATH/train.log"
+echo "Selected config: $CONFIG_SOURCE_FPATH"
 echo "Command snapshot: $RUN_DPATH/command.sh"
 echo "Starting at $(date)"
 
 viame_train_detector \
     -i "$VF_INPUT_DPATH" \
-    -c "$INSTALLED_CONFIG" \
+    -c "$CONFIG_SOURCE_FPATH" \
     --threshold 0.0 \
     --output-file "$RUN_DPATH/fish_detector.zip" \
     2>&1 | tee "$RUN_DPATH/train.log"

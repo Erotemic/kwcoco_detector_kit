@@ -28,7 +28,14 @@ from convert_viame_to_kwcoco import (
     parse_viame_csv,
     resolve_frame_paths,
 )
-from extract_frames import build_select_expr, compress_to_ranges, read_annotated_indices, read_fps
+import extract_frames
+from extract_frames import (
+    build_select_expr,
+    compress_to_ranges,
+    passthrough_flag,
+    read_annotated_indices,
+    read_fps,
+)
 
 # A video-style CSV: column 2 is a timestamp, and fps comes from the metadata
 # comment. Trailing (poly)/(kp) tokens are attributes, not class names.
@@ -319,6 +326,44 @@ def test_compress_to_ranges():
     assert compress_to_ranges([1, 2, 3, 7, 8, 20]) == [(1, 3), (7, 8), (20, 20)]
     assert compress_to_ranges([5]) == [(5, 5)]
     assert compress_to_ranges([]) == []
+
+
+class _FakeRun:
+    """Stand-in for subprocess.run returning a canned `ffmpeg -version`."""
+
+    def __init__(self, stdout):
+        self.stdout = stdout
+
+    def __call__(self, *args, **kwargs):
+        return self
+
+
+def test_passthrough_flag_uses_vsync_before_ffmpeg_5(monkeypatch):
+    """Ubuntu 22.04 ships 4.4.2, which fails hard on -fps_mode."""
+    banner = ('ffmpeg version 4.4.2-0ubuntu0.22.04.1 Copyright (c) 2000-2021 '
+              'the FFmpeg developers\nbuilt with gcc 11\n')
+    monkeypatch.setattr(extract_frames.subprocess, 'run', _FakeRun(banner))
+    assert passthrough_flag('ffmpeg') == ['-vsync', '0']
+
+
+def test_passthrough_flag_uses_fps_mode_from_ffmpeg_5(monkeypatch):
+    banner = 'ffmpeg version 7.0.2-static https://johnvansickle.com/ffmpeg/\n'
+    monkeypatch.setattr(extract_frames.subprocess, 'run', _FakeRun(banner))
+    assert passthrough_flag('ffmpeg') == ['-fps_mode', 'passthrough']
+
+
+def test_passthrough_flag_handles_the_n_prefixed_form(monkeypatch):
+    """Some distro builds report `ffmpeg version n6.0`."""
+    monkeypatch.setattr(extract_frames.subprocess, 'run',
+                        _FakeRun('ffmpeg version n6.0\n'))
+    assert passthrough_flag('ffmpeg') == ['-fps_mode', 'passthrough']
+
+
+def test_passthrough_flag_falls_back_when_version_is_unreadable(monkeypatch):
+    """Git-snapshot builds report a date, not a number. Prefer the wider option."""
+    monkeypatch.setattr(extract_frames.subprocess, 'run',
+                        _FakeRun('ffmpeg version 2023-05-01-git-abc123\n'))
+    assert passthrough_flag('ffmpeg') == ['-vsync', '0']
 
 
 def test_build_select_expr_uses_eq_for_singletons():

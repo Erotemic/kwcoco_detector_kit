@@ -119,6 +119,35 @@ def probe_fps(video_fpath, ffprobe='ffprobe'):
     return float(out)
 
 
+VERSION_RE = re.compile(r'ffmpeg version\s+n?(\d+)\.')
+
+
+def passthrough_flag(ffmpeg='ffmpeg'):
+    """The flag that makes ffmpeg emit exactly the frames the filter passed.
+
+    Semantics we need: no duplication, no dropping, one output frame per input
+    frame that survived `select`.
+
+    FFmpeg 5.0 replaced the global `-vsync` with the per-stream `-fps_mode`.
+    Ubuntu 22.04 ships 4.4.2, which does not know `-fps_mode` and fails the
+    whole invocation with "Unrecognized option". `-vsync 0` still works in 5.x
+    through 7.x but is deprecated and may eventually go, so pick by version
+    rather than committing to either.
+
+    An unparseable version falls back to `-vsync 0`, which is accepted by the
+    widest range of builds.
+    """
+    try:
+        out = subprocess.run([ffmpeg, '-version'], capture_output=True,
+                             text=True, check=True).stdout
+    except Exception:
+        return ['-vsync', '0']
+    match = VERSION_RE.search(out)
+    if match and int(match.group(1)) >= 5:
+        return ['-fps_mode', 'passthrough']
+    return ['-vsync', '0']
+
+
 def compress_to_ranges(indices):
     """[1,2,3,7,8] -> [(1,3),(7,8)]. Keeps the select expression compact."""
     ranges = []
@@ -144,7 +173,7 @@ def build_select_expr(ranges):
 
 
 def extract_video(video_fpath, csv_fpath, out_dpath, quality=2, force=False,
-                  ffmpeg='ffmpeg', ffprobe='ffprobe'):
+                  ffmpeg='ffmpeg', ffprobe='ffprobe', passthrough=('-vsync', '0')):
     """Extract one video's annotated frames. Returns a result dict."""
     video_fpath = pathlib.Path(video_fpath)
     out_dpath = pathlib.Path(out_dpath)
@@ -191,19 +220,25 @@ def extract_video(video_fpath, csv_fpath, out_dpath, quality=2, force=False,
 
     cmd = [
         ffmpeg, '-nostdin', '-y',
+        # -hide_banner keeps the build configuration out of stderr, which
+        # otherwise buries both the showinfo lines we parse and any real error.
+        '-hide_banner',
         '-loglevel', 'info',
         '-i', str(video_fpath),
         '-filter_script:v', str(filter_fpath),
-        # passthrough == the old `-vsync 0`: emit exactly the frames that
-        # survived the filter, with no duplication or dropping of its own.
-        '-fps_mode', 'passthrough',
+        # Emit exactly the frames that survived the filter, with no
+        # duplication or dropping. Spelled differently before/after ffmpeg 5.
+        *passthrough,
         '-q:v', str(quality),
         str(staging / '%08d.jpg'),
     ]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
-            result.update(status='error', error=proc.stderr[-2000:])
+            # The useful part of an ffmpeg failure is the LAST few lines.
+            # Keeping the head instead showed only the version banner.
+            tail = [line for line in proc.stderr.strip().splitlines() if line.strip()]
+            result.update(status='error', error='\n'.join(tail[-8:]), command=' '.join(cmd))
             return result
 
         # Emission order pairs 1:1 with the showinfo lines; the INDEX comes
@@ -325,8 +360,10 @@ def main(argv=None):
     print('videos:     {} (need frame extraction)'.format(len(videos)))
     print('imagedirs:  {} (already frames on disk)'.format(len(imagedirs)))
     print('jobs:       {}'.format(args.jobs))
+    passthrough = passthrough_flag(args.ffmpeg)
     print('ffmpeg:     {}'.format(args.ffmpeg))
     print('ffprobe:    {}'.format(args.ffprobe))
+    print('frame sync: {}'.format(' '.join(passthrough)))
     print()
 
     out_dpath.mkdir(parents=True, exist_ok=True)
@@ -337,7 +374,7 @@ def main(argv=None):
         futures = {
             pool.submit(extract_video, video, csv_fpath,
                         out_dpath / video.stem, args.quality, args.force,
-                        args.ffmpeg, args.ffprobe): video
+                        args.ffmpeg, args.ffprobe, passthrough): video
             for video, csv_fpath in videos
         }
         for done, future in enumerate(concurrent.futures.as_completed(futures), 1):
@@ -353,7 +390,8 @@ def main(argv=None):
             print('[{:>4}/{}] {:<10} {}{}'.format(
                 done, len(videos), result['status'], result['sequence'], flag), flush=True)
             if result['status'] == 'error':
-                print('           {}'.format(str(result.get('error'))[:400]), flush=True)
+                for line in str(result.get('error', '')).splitlines():
+                    print('           {}'.format(line), flush=True)
 
     for dpath, csv_fpath in imagedirs:
         n_images = sum(1 for p in dpath.iterdir()

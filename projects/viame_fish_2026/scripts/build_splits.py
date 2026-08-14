@@ -111,16 +111,18 @@ def assign_splits(video_stats, vali_fraction, seed):
         for deployment in order:
             names = deployments[deployment]
             weight = sum(video_stats[n] for n in names)
-            # Take the deployment if we are still short of target. The check is
-            # against the running total, so we stop at the first deployment that
-            # reaches it rather than overshooting by a whole large sequence.
-            if chosen < target:
-                for name in names:
-                    assignment[name] = 'vali'
+            # Take this deployment only if doing so lands CLOSER to the target
+            # than skipping it. Naively taking whenever `chosen < target`
+            # overshoots by a whole deployment, which on a coarse population is
+            # severe -- it put vali at 30.4% of a 12% target on an 89-sequence
+            # smoke run. Comparing both distances also means a deployment too
+            # large to fit is skipped while smaller ones are still considered,
+            # rather than ending the search.
+            take = abs((chosen + weight) - target) < abs(chosen - target)
+            for name in names:
+                assignment[name] = 'vali' if take else 'train'
+            if take:
                 chosen += weight
-            else:
-                for name in names:
-                    assignment[name] = 'train'
     return assignment
 
 

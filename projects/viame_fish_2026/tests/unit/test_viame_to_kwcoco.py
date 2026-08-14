@@ -504,6 +504,34 @@ def test_assign_splits_covers_every_collection():
     assert vali_collections == {'SEFSC-SeaMap', 'CDFW-LakeCam', 'PIFSC-MOUSS'}
 
 
+def test_assign_splits_does_not_overshoot_on_a_coarse_population():
+    """Few, large deployments must not blow past the target fraction.
+
+    Taking a deployment whenever `chosen < target` overshoots by a whole
+    deployment. On an 89-sequence smoke run that put vali at 30.4% of a 12%
+    target. Choosing whichever side lands closer keeps it near the mark even
+    when the population is lumpy.
+    """
+    # All one collection: names must share their first two hyphen tokens,
+    # or collection_key puts each in a collection of its own.
+    stats = {'SEFSC-SeaMap-Site{}'.format(i): weight
+             for i, weight in enumerate([5000, 4000, 3000, 900, 400, 200, 100])}
+    assignment = assign_splits(stats, vali_fraction=0.12, seed=0)
+    total = sum(stats.values())
+    vali = sum(stats[n] for n, s in assignment.items() if s == 'vali')
+    assert 0.04 < vali / total < 0.22, 'vali share {:.1%} is far off 12%'.format(
+        vali / total)
+
+
+def test_assign_splits_skips_a_too_large_deployment_and_keeps_looking():
+    """One huge deployment must not end the search for a usable smaller one."""
+    stats = {'SEFSC-SeaMap-Huge': 10000, 'SEFSC-SeaMap-Small1': 600,
+             'SEFSC-SeaMap-Small2': 500, 'SEFSC-SeaMap-Small3': 400}
+    assignment = assign_splits(stats, vali_fraction=0.10, seed=0)
+    assert assignment['SEFSC-SeaMap-Huge'] == 'train'
+    assert any(s == 'vali' for s in assignment.values())
+
+
 def test_assign_splits_is_deterministic_for_a_seed():
     stats = {'C-Site{}'.format(i): 10 for i in range(20)}
     assert (assign_splits(stats, 0.2, 7) == assign_splits(stats, 0.2, 7))

@@ -2,7 +2,7 @@
 # Runtime provenance is also written automatically into each attempt directory.
 runs:
   - id: fishtrack23_rfdetr_l_seg720_4gpu_viame0227_gen001
-    status: deferred
+    status: completed
     purpose: >-
       Retry the RF-DETR Large 720 segmentation training recipe with VIAME
       v0.22.7-rc2 after the earlier v0.22.6 attempt hung.
@@ -11,35 +11,98 @@ runs:
     binary: VIAME-v0.22.7-rc2-Linux-64Bit.tar.gz
     config: installed:train_detector_rf_detr_l_seg_720.conf
     gpus: 4
+    attempt: attempt_20260804_195055
+    started_at: 2026-08-04T19:50:55-04:00
+    finished_at: 2026-08-07T19:15:47-04:00
+    exit_code: 0
+    artifact: fish_detector.zip
+    classes: [fish]
+    results:
+      # Final epoch (20 of 20) on the trainer's OWN validation split.
+      # NOT a held-out score -- see caveats below.
+      box_mAP_50_95: 0.4429
+      box_mAP_50: 0.7166
+      box_mAP_75: 0.4552
+      mAR_500: 0.6587
+      f1: 0.6733
+      precision: 0.7441
+      recall: 0.6149
+      segm_mAP_50_95: 0.3852
+      best_ema_mAP: 0.4461   # epoch 15
     notes:
       - Select the config with setup_config.sh before launching.
       - The selected config and its SHA256 are snapshotted into every attempt.
       - Keep the first v0.22.7-rc2 attempt isolated from old deep_training or augmented_images caches.
-      - Record the stage and last log line if this attempt hangs.
       - >-
-        Deferred 2026-08-14. An RF-DETR fish model already exists from VIAME's
-        native tooling, so effort moved to a complementary DEIMv2 detector
-        (deim_gen001 below) rather than a retune of this recipe.
+        Status corrected 2026-08-14 from `deferred` to `completed`. This run DID
+        finish (exit 0, ~71 h, model zip produced); the registry was simply
+        never updated. See docs/journals/2026-08-14_aiq_baseline_audit_and_deim_prep.md.
+      - >-
+        SINGLE-CLASS. Train/labels.txt is one line folding all 321 species
+        aliases into `fish`, and rf_detr_mgpu_params.json records
+        class_names: ["fish"]. This model does no species discrimination.
+      - >-
+        The reported metrics are NOT held-out. rf_detr_dataset/valid/ and
+        rf_detr_dataset/test/ are byte-identical (md5 ab1b10d180f15df355587de574dda9ee),
+        so there is no test split at all; validation is 4,000 chips / 1,532
+        annotations carved frame-level from the same sequences as training.
+        Treat 0.4429 as a noisy selection score, not a generalization estimate.
+      - 78% of training chips (505,955 of 650,529) contain no annotation.
+      - >-
+        Effective global batch was 16 (batch_size=4, grad_accum=1, 4 devices).
+        The orientation journal's predicted batch/LR mismatch did not occur --
+        VIAME's adaptive mode sized the micro-batch onto the LR's target.
+      - >-
+        Trained on FishTrack23-Latest/Train only, so the corpus's own Test/
+        directory (72 sequences) is genuinely held out for this model.
 
-  - id: fishtrack23_deimv2_4gpu_aiq_gen001
-    status: planned
+  - id: fishtrack23_deimv2_dinov3_x_4gpu_aiq_gen001
+    status: ready
     purpose: >-
       Complementary box-only DEIMv2 detector for FishTrack23, trained through
       the kwcoco_detector_kit pipeline. Architecturally distinct from the
-      existing RF-DETR model, and aimed at the size/frequency regimes that
-      model was trained against (see the 2026-08-14 orientation journal).
-    entrypoint: TBD — follow the sea-lion submit_train_*_aiq_*.sh pattern
-    data: FishTrack23 converted to kwcoco, sequence-disjoint train/vali/test
+      existing RF-DETR model (DINOv3 backbone vs ViT; whole 1024px frames vs
+      720px chips), and the first fish model on this corpus to be scored
+      against genuinely held-out data.
+    entrypoint: scripts/submit_train_fishtrack23_deimv2_dinov3_x_4gpu_aiq_gen001.sh
+    prep: scripts/prep_all.sh
+    data: >-
+      FishTrack23-Latest/Train converted to kwcoco, sequence-disjoint
+      train/vali; the corpus's own Test/ (72 sequences) as held-out test.
     binary: kwcoco-detector-kit docker image (reproducibility unit)
     gpus: 4
-    blocked_on:
-      - Corpus inventory (scripts/collect_data_manifest.sh) — sets resolution,
-        tile size, and whether class balance machinery is needed.
-      - VIAME-CSV to kwcoco converter — does not exist in the kit yet.
-      - Frozen sequence-disjoint splits.
+    variant: deimv2_dinov3_x
+    classes: [fish]
+    hyperparameters:
+      input_hw: [1024, 1024]
+      per_gpu_batch: 6        # total 24
+      num_epochs: 20          # matches the RF-DETR baseline
+      lr: 1e-3
+      backbone_lr: 5e-5
+      tiled_eval: false
     notes:
       - Box-only. Segmentation is explicitly out of scope for this model.
-      - Selection criterion is class-agnostic detection AP on the held-out
-        test split; per-class AP is diagnostic only.
-      - Any head-to-head against RF-DETR is contaminated unless we find data
-        that model never saw. See the orientation journal.
+      - >-
+        Single-class, folded through the corpus's own Train/labels.txt -- the
+        same file the RF-DETR baseline used -- so the two models are
+        label-compatible by construction.
+      - >-
+        NO TILING. Box percentiles over all 665,228 boxes are p1 42x44,
+        p50 150x109 on 1920x1200 imagery, so a whole-frame resize to 1024
+        leaves the smallest boxes ~22 px wide. This also means RF-DETR's
+        small_box_area=75 (~8.7x8.7 px) deleted essentially nothing, contrary
+        to the orientation journal's assumption.
+      - >-
+        Contamination RESOLVED: the corpus ships its own Test/ directory, and
+        both RF-DETR runs trained with `-i .../Train` only, so that model
+        provably never saw it. It is honest held-out data for both.
+      - >-
+        All generated data (frames, bundles, run workspaces) lives on the NVMe
+        under $HOME/ssd-data/fish_kcd, not on /data (the md0 RAID array where
+        the RF-DETR run's 771 GB of PNG frames and chip cache sat).
+      - >-
+        Selection criterion is detection AP on the held-out test split.
+        Scoring is deferred until there are two deliverable models; a
+        head-to-head additionally needs a VIAME inference pass for
+        fish_detector.zip and a reader for its output CSV, neither of which
+        exists in the kit yet.

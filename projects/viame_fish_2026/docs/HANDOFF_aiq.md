@@ -74,36 +74,64 @@ this run — it stays as-is for reference and for retraining the RF-DETR side.
   Follow the sea-lion `submit_train_*_aiq_*.sh` scripts as the template.
 - The docker image is the reproducibility unit — prefer a rebuild over a dev
   mount for any non-trivial run.
-- No fish training run has completed under *this project's* runbook.
-  `docs/training_runs.yaml` lists the VIAME-native `gen001` as deferred; an
-  earlier v0.22.6 attempt hung and was abandoned.
-- Read the journal entry before doing anything: it reviews the RF-DETR config
-  against VIAME's `rf_detr_trainer.py` and turns it into a map of where that
-  model is likely weak (small objects, rare classes), which is what makes the
-  DEIM model complementary rather than redundant. It also documents a
-  contamination problem in any head-to-head comparison that needs deciding
-  before results are presented.
+- The VIAME-native `gen001` **completed** on 2026-08-07 (exit 0, ~71 h,
+  `fish_detector.zip`). It was mis-recorded as `deferred` until 2026-08-14.
+  Its val box mAP@50:95 is 0.4429 — but it is single-class, and its `valid/`
+  and `test/` annotation files are byte-identical, so that number is a
+  selection score on contaminated data, not a held-out result. An earlier
+  v0.22.6 attempt (July) reached mAP 0.0002 at epoch 0 and was abandoned.
+- **Storage matters here.** aiq-gpu's `/data` is the md0 RAID array; `/` (and
+  therefore `$HOME/ssd-data`) is NVMe with ~506 GB free. The RF-DETR run kept
+  771 GB of extracted PNG frames and its chip cache on `/data` and read them
+  randomly every epoch. Everything the new pipeline generates goes on the NVMe
+  under `$VF_KCD_ROOT` (`$HOME/ssd-data/fish_kcd`).
+- Read
+  [2026-08-14_aiq_baseline_audit_and_deim_prep.md](journals/2026-08-14_aiq_baseline_audit_and_deim_prep.md)
+  before doing anything. It supersedes parts of the earlier orientation
+  journal, which was written without access to the corpus or the run
+  artifacts — in particular the small-object and contamination arguments,
+  both of which changed once measured.
 
 ## Work queue for the aiq agent
 
-In order — each step is blocked on the one above it:
+**Steps 1–4 of the original queue are done** (2026-08-14). The inventory ran,
+the converter and split builder exist and are tested, and the tile-cache step
+turned out to be unnecessary. See
+[2026-08-14_aiq_baseline_audit_and_deim_prep.md](journals/2026-08-14_aiq_baseline_audit_and_deim_prep.md)
+for what changed and why.
 
-1. Run the inventory (below). Read `inventory.md`.
-2. Write the VIAME-CSV → kwcoco converter. There is **no** existing reader for
-   the VIAME alternating class/score format in the kit;
-   `projects/viame_sealions_2026/scripts/convert_sealions_csv_to_kwcoco.py`
-   handles a different, headered format and says so in its docstring. The
-   row-level logic in `scripts/inventory_data.py:parse_viame_csv` is tested and
-   is the right starting point.
-3. Freeze sequence-disjoint train/vali/test splits — whole sequences on one
-   side only, never a frame-level split, because adjacent frames of one track
-   are near-duplicates.
-4. Build the tile cache at the size the box-size percentiles imply.
-5. Submit via slurm. Register the run in `docs/training_runs.yaml` first.
+What remains, on the host:
 
-Also open, and worth resolving early because it affects how results can be
-reported: locate the existing RF-DETR run's artifacts and determine which
-sequences it trained on.
+1. **Run the prep.** Long job — use tmux, per project convention.
+
+   ```bash
+   tmux new -s fishprep
+   cd ~/code/kwcoco_detector_kit && git pull
+   bash projects/viame_fish_2026/scripts/prep_all.sh 2>&1 | tee ~/fish_prep.log
+   ```
+
+   Extracts ~250k annotated frames to JPEG on the NVMe (~75 GB), converts
+   `Train/` and `Test/` to kwcoco, and freezes sequence-disjoint train/vali.
+   Idempotent and resumable. Smoke-test first with `--limit 5`.
+
+2. **Submit training.**
+
+   ```bash
+   bash projects/viame_fish_2026/scripts/submit_train_fishtrack23_deimv2_dinov3_x_4gpu_aiq_gen001.sh
+   ```
+
+3. **Score** — deferred by decision until there are two deliverable models.
+
+### Things the queue no longer needs
+
+* **No tile cache.** Box percentiles are p1 42×44, p50 150×109 on 1920×1200
+  imagery. Whole frames resized to 1024 keep even the smallest boxes ~22 px
+  wide, so tiling would multiply prep and epoch cost to solve a problem this
+  corpus does not have.
+* **Contamination is resolved.** The corpus ships its own `Test/` (72
+  sequences) and both RF-DETR runs trained with `-i .../Train` only, so that
+  model provably never saw it. Honest held-out data for both models — no need
+  to hunt for a later delivery.
 
 ## Conventions this project inherits
 

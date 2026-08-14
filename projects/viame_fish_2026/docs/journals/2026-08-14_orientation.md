@@ -3,9 +3,16 @@
 ## Context
 
 Goal: use a weekend of wall-clock on aiq-gpu (4× RTX PRO 6000 Blackwell, 96 GB
-each) to train the best FishTrack23 detector we can. The prompt that started
-this was that the parameters VIAME used for the last fish model looked
-suboptimal.
+each) to train a FishTrack23 detector. The prompt that started this was that
+the parameters VIAME used for the last fish model looked suboptimal.
+
+**Scope settled during the session:** an RF-DETR model has already been trained
+through VIAME's native tooling. This run is *not* a retune of that — it is a
+**complementary DEIMv2 model**, box-only, trained through the kit pipeline.
+That changes how the config review below should be read: it is no longer a
+to-do list of things to fix in the VIAME config, it is a map of where the
+existing RF-DETR model is most likely to be weak, and therefore where the DEIM
+model has room to be genuinely complementary rather than redundant.
 
 Starting state of this project:
 
@@ -47,7 +54,7 @@ blocked on it and it costs nothing to run:
   aiq-gpu: which directories to bind-mount, and the rule that they must appear
   at *identical absolute paths* on both sides.
 
-## Reading the config: what actually looks wrong
+## Reading the RF-DETR config: where that model is likely weak
 
 Reviewed `configs/train_detector_rf_detr_l_720_90gb.conf` against VIAME's
 `plugins/pytorch/rf_detr_trainer.py` (fetched from VIAME main). Findings split
@@ -137,29 +144,70 @@ it, ≈ 7.35e-5) and `lr_vit_layer_decay = 0.8` down the ViT blocks, so the
 backbone does train slower than the head. Noting this so nobody else re-raises
 it.
 
+## What "complementary" implies for the DEIM run
+
+Reading the RF-DETR config as a weakness map, the DEIM model's opportunities
+are, in order of expected payoff:
+
+1. **Small objects.** RF-DETR trained at 720 px with `small_box_area = 75` /
+   `small_action = remove` — anything under ~8.7 × 8.7 px was deleted from its
+   training data and taught as background. If the inventory shows a
+   meaningful mass of boxes down there, that is a whole size regime the
+   existing model was trained *against*, and tiled DEIM training at higher
+   effective resolution addresses it directly. This is the strongest
+   complementarity argument and the sea-lion project already has the tooling
+   for it.
+2. **Rare classes.** RF-DETR set none of `val_subsample`,
+   `val_min_class_instances`, or `min_class_support`, so if the corpus is
+   long-tailed its checkpoint selection was driven by noisy tail AP. The kit's
+   balance machinery (`KCD_BALANCE_TARGET_JSON`, sampler mode) targets exactly
+   this.
+3. **Architectural diversity for ensembling.** DEIMv2 + DINOv3 is a different
+   backbone family and a different training recipe from RF-DETR's ViT. Two
+   models that fail on the same images are not worth ensembling; these
+   plausibly do not.
+
 ## Where the plan stands
 
-Sequenced so that nothing expensive happens before the cheap thing that informs
-it:
+Stack decision: **kwcoco_detector_kit DEIMv2, box-only.** Sequenced so nothing
+expensive happens before the cheap thing that informs it:
 
-1. Run the inventory on aiq-gpu. Everything below is conditioned on it.
-2. Define sequence-disjoint `train/ vali/ test/` splits and freeze them.
-3. Decide the stack (see the open question below) and fix the parameters the
-   inventory implicates.
-4. Launch, with a scoring protocol written *before* the run, not after.
+1. **Inventory the corpus on aiq-gpu.** Everything below is conditioned on it.
+   In particular the box-size percentiles decide the resolution/tiling design,
+   and the category histogram decides whether balance machinery is needed.
+2. **Write a VIAME-CSV → kwcoco converter.** The kit has no reader for the
+   VIAME alternating class/score format — `convert_sealions_csv_to_kwcoco.py`
+   handles a *different*, headered format and explicitly says so. The parser in
+   `scripts/inventory_data.py:parse_viame_csv` is a tested starting point for
+   the row-level logic. Cannot be written responsibly until the inventory shows
+   the actual directory layout (per-sequence CSVs? extracted frames? videos?).
+3. **Freeze sequence-disjoint `train/vali/test` splits.** Whole sequences on
+   one side only — frame-level splits leak across tracks on video data.
+4. **Build the tile cache** at the size the inventory implies.
+5. **Submit through slurm on aiq** with the kit docker image, following the
+   sea-lion `submit_train_*_aiq_*.sh` pattern (`KCD_NO_SLURM=0`,
+   `KCD_DOCKER_GPU_MODE=gpus`).
+6. **Score both models on the same protocol** — class-agnostic detection AP on
+   the held-out test split, per-class AP as diagnostic only.
 
-The stack decision is genuinely open and is the user's call:
+### Open problem: the comparison is contaminated
 
-- **VIAME-native RF-DETR** — deliverable drops straight into NOAA's VIAME
-  workflows, supports masks, but we tune only through the config surface and
-  have already seen this path hang once.
-- **kwcoco_detector_kit DEIMv2** — the pipeline we spent the year tuning
-  (tiling, balance, checkpoint selection, tiled eval) with a verified ONNX →
-  VIAME plugin deployment path, but it needs a FishTrack23 → kwcoco conversion
-  and is box-only.
-- **Both, scored on one protocol.** A weekend on 4 Blackwells is enough for
-  two runs, and running both is the only version of this that produces a
-  defensible answer about which stack is better for fish.
+The existing RF-DETR model chose its own validation split out of the full input
+directory, so it very likely saw **every sequence** in the corpus during
+training. Any test split we now construct is therefore held-out for DEIM but
+not for RF-DETR, and a head-to-head on it is biased toward RF-DETR by an
+unknown margin. Options, in order of preference:
+
+- Find data RF-DETR genuinely never saw (a sequence outside the directory it
+  was trained on, or a later delivery) and use that as the honest test set.
+- Recover which sequences RF-DETR trained on from its run artifacts and
+  restrict the test set to what it excluded — only possible if that run's
+  split was recorded.
+- Accept the bias and report it explicitly alongside every comparison number.
+
+**Not** resolvable by anything on the DEIM side, so it needs deciding before
+the comparison is presented, not after. *Open item: locate the RF-DETR run's
+artifacts and determine what it trained on.*
 
 ## Lessons
 

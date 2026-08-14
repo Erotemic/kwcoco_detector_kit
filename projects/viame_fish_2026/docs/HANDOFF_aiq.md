@@ -60,22 +60,50 @@ still composition).
 
 ## State of play as of this handoff
 
-- No fish training run has completed under this project's runbook.
-  `docs/training_runs.yaml` lists `gen001` as **planned**; an earlier
-  v0.22.6 attempt hung and was abandoned.
-- VIAME v0.22.7-rc2 is the intended binary. `viame-current` should point at it.
-- The bundled config under evaluation is
-  [configs/train_detector_rf_detr_l_720_90gb.conf](../configs/train_detector_rf_detr_l_720_90gb.conf).
-  The journal entry lists the specific parameters that look wrong and why —
-  **read it before launching anything**, because two of them (no held-out test
-  split, random frame-level validation split) change what the run is worth, not
-  just how fast it trains.
+**The objective is a complementary DEIMv2 model, box-only, trained through the
+kit pipeline.** An RF-DETR model has already been trained through VIAME's
+native tooling; this is a second, architecturally different detector, not a
+retune of that one. The VIAME-native runbook in `scripts/` (`run_*.sh`,
+`_launch_viame_train.sh`, `setup_config.sh`) is therefore **not** the path for
+this run — it stays as-is for reference and for retraining the RF-DETR side.
+
 - aiq-gpu is 4× RTX PRO 6000 Blackwell, 96 GB each.
-- Sea-lion runs on aiq always go through slurm
-  (`KCD_NO_SLURM=0`, `KCD_DOCKER_GPU_MODE=gpus`). The fish runbook currently
-  launches `viame_train_detector` directly in tmux instead, because it runs
-  from a native VIAME install rather than the kit's docker image. Confirm with
-  the user which is intended before changing it.
+- Kit runs on aiq **always go through slurm**: `KCD_NO_SLURM=0`,
+  `KCD_DOCKER_GPU_MODE=gpus` (aiq needs docker's `--gpus all` mode, not
+  arisia's `runtime`). `--gres`/`--partition` come from the user's shell rc.
+  Follow the sea-lion `submit_train_*_aiq_*.sh` scripts as the template.
+- The docker image is the reproducibility unit — prefer a rebuild over a dev
+  mount for any non-trivial run.
+- No fish training run has completed under *this project's* runbook.
+  `docs/training_runs.yaml` lists the VIAME-native `gen001` as deferred; an
+  earlier v0.22.6 attempt hung and was abandoned.
+- Read the journal entry before doing anything: it reviews the RF-DETR config
+  against VIAME's `rf_detr_trainer.py` and turns it into a map of where that
+  model is likely weak (small objects, rare classes), which is what makes the
+  DEIM model complementary rather than redundant. It also documents a
+  contamination problem in any head-to-head comparison that needs deciding
+  before results are presented.
+
+## Work queue for the aiq agent
+
+In order — each step is blocked on the one above it:
+
+1. Run the inventory (below). Read `inventory.md`.
+2. Write the VIAME-CSV → kwcoco converter. There is **no** existing reader for
+   the VIAME alternating class/score format in the kit;
+   `projects/viame_sealions_2026/scripts/convert_sealions_csv_to_kwcoco.py`
+   handles a different, headered format and says so in its docstring. The
+   row-level logic in `scripts/inventory_data.py:parse_viame_csv` is tested and
+   is the right starting point.
+3. Freeze sequence-disjoint train/vali/test splits — whole sequences on one
+   side only, never a frame-level split, because adjacent frames of one track
+   are near-duplicates.
+4. Build the tile cache at the size the box-size percentiles imply.
+5. Submit via slurm. Register the run in `docs/training_runs.yaml` first.
+
+Also open, and worth resolving early because it affects how results can be
+reported: locate the existing RF-DETR run's artifacts and determine which
+sequences it trained on.
 
 ## Conventions this project inherits
 

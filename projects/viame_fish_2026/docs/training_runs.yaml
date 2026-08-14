@@ -2,7 +2,7 @@
 # Runtime provenance is also written automatically into each attempt directory.
 runs:
   - id: fishtrack23_rfdetr_l_seg720_4gpu_viame0227_gen001
-    status: planned
+    status: deferred
     purpose: >-
       Retry the RF-DETR Large 720 segmentation training recipe with VIAME
       v0.22.7-rc2 after the earlier v0.22.6 attempt hung.
@@ -16,3 +16,30 @@ runs:
       - The selected config and its SHA256 are snapshotted into every attempt.
       - Keep the first v0.22.7-rc2 attempt isolated from old deep_training or augmented_images caches.
       - Record the stage and last log line if this attempt hangs.
+      - >-
+        Deferred 2026-08-14. An RF-DETR fish model already exists from VIAME's
+        native tooling, so effort moved to a complementary DEIMv2 detector
+        (deim_gen001 below) rather than a retune of this recipe.
+
+  - id: fishtrack23_deimv2_4gpu_aiq_gen001
+    status: planned
+    purpose: >-
+      Complementary box-only DEIMv2 detector for FishTrack23, trained through
+      the kwcoco_detector_kit pipeline. Architecturally distinct from the
+      existing RF-DETR model, and aimed at the size/frequency regimes that
+      model was trained against (see the 2026-08-14 orientation journal).
+    entrypoint: TBD — follow the sea-lion submit_train_*_aiq_*.sh pattern
+    data: FishTrack23 converted to kwcoco, sequence-disjoint train/vali/test
+    binary: kwcoco-detector-kit docker image (reproducibility unit)
+    gpus: 4
+    blocked_on:
+      - Corpus inventory (scripts/collect_data_manifest.sh) — sets resolution,
+        tile size, and whether class balance machinery is needed.
+      - VIAME-CSV to kwcoco converter — does not exist in the kit yet.
+      - Frozen sequence-disjoint splits.
+    notes:
+      - Box-only. Segmentation is explicitly out of scope for this model.
+      - Selection criterion is class-agnostic detection AP on the held-out
+        test split; per-class AP is diagnostic only.
+      - Any head-to-head against RF-DETR is contaminated unless we find data
+        that model never saw. See the orientation journal.

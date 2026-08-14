@@ -47,25 +47,17 @@ kcd_require_path "train corpus" "$VF_INPUT_DPATH"
 kcd_require_path "test corpus"  "$VF_TEST_INPUT_DPATH"
 kcd_require_path "labels.txt"   "$VF_LABELS_FPATH"
 
-# ffmpeg AND ffprobe. See the resolution order in paths.sh -- normally this
-# resolves to VIAME's bundled static builds and needs no install at all.
-for tool in ffmpeg ffprobe; do
-    var="VF_$(echo "$tool" | tr '[:lower:]' '[:upper:]')"
-    if [ -z "${!var:-}" ] || [ ! -x "${!var}" ]; then
+# Both are needed: ffprobe recovers the frame rate for the ~20 videos whose
+# CSV omits an fps comment. Checked together so a missing ffprobe surfaces now
+# rather than partway through extraction.
+for tool in "$VF_FFMPEG" "$VF_FFPROBE"; do
+    if ! command -v "$tool" >/dev/null 2>&1 && [ ! -x "$tool" ]; then
         echo "ERROR: $tool not found." >&2
-        echo "  Looked on PATH, then at" >&2
-        echo "    $VF_CURRENT_VIAME_LINK/dive/resources/ffmpeg-ffprobe-static/$tool" >&2
-        echo "  Fix by any one of:" >&2
-        echo "    - point VF_CURRENT_VIAME_LINK at a VIAME install (it ships both)" >&2
-        echo "    - sudo apt install ffmpeg" >&2
-        echo "    - export $var=/path/to/$tool" >&2
-        echo "  Note: pip install imageio-ffmpeg gives ffmpeg but NOT ffprobe," >&2
-        echo "  which is needed for the ~20 videos whose CSV omits an fps comment." >&2
+        echo "  sudo apt install ffmpeg    # provides both ffmpeg and ffprobe" >&2
+        echo "  or set VF_FFMPEG / VF_FFPROBE to specific binaries." >&2
         exit 1
     fi
 done
-echo "  ffmpeg:          $VF_FFMPEG"
-echo "  ffprobe:         $VF_FFPROBE"
 
 # The frames land on the NVMe, which is the smaller of the two filesystems.
 # Annotated-only extraction is ~75 GB at q95; refuse to start if that clearly

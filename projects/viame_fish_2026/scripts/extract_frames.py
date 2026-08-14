@@ -105,9 +105,7 @@ def read_annotated_indices(csv_fpath):
 def probe_fps(video_fpath, ffprobe='ffprobe'):
     """Fall back to the container's own frame rate when the CSV omits it.
 
-    Needed for the ~20 Train videos whose CSV carries no `fps:` comment. This
-    is why `pip install imageio-ffmpeg` is not a sufficient dependency: it
-    ships ffmpeg but no ffprobe.
+    Needed for the ~20 Train videos whose CSV carries no `fps:` comment.
     """
     cmd = [
         ffprobe, '-v', 'error', '-select_streams', 'v:0',
@@ -305,7 +303,7 @@ def main(argv=None):
                         help='where to write the JSON manifest '
                              '(default: <out-dir>/extraction_manifest.json)')
     parser.add_argument('--ffmpeg', default=os.environ.get('VF_FFMPEG') or 'ffmpeg',
-                        help='ffmpeg binary (VIAME ships a static one; see paths.sh)')
+                        help='ffmpeg binary')
     parser.add_argument('--ffprobe', default=os.environ.get('VF_FFPROBE') or 'ffprobe',
                         help='ffprobe binary, needed for videos whose CSV omits fps')
     args = parser.parse_args(argv)
@@ -313,10 +311,8 @@ def main(argv=None):
     for label, binary in (('ffmpeg', args.ffmpeg), ('ffprobe', args.ffprobe)):
         if shutil.which(binary) is None and not os.path.isfile(binary):
             parser.error(
-                '{} not found at {!r}. VIAME ships static builds of both at '
-                'dive/resources/ffmpeg-ffprobe-static/, so no install is normally '
-                'needed -- see projects/viame_fish_2026/scripts/paths.sh. This '
-                'script must run on the training host.'.format(label, binary))
+                '{} not found at {!r}. Install both with `apt install ffmpeg`. '
+                'This script must run on the training host.'.format(label, binary))
 
     input_dpath = pathlib.Path(args.input).resolve()
     out_dpath = pathlib.Path(args.out_dir).resolve()

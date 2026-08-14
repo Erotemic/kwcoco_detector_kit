@@ -83,37 +83,20 @@ export VF_SSD_ROOT="${VF_SSD_ROOT:-$HOME/ssd-data}"
 
 # -- ffmpeg / ffprobe ----------------------------------------------------
 #
-# Frame extraction needs both: ffmpeg to decode, and ffprobe to recover the
+# Frame extraction needs BOTH: ffmpeg to decode, and ffprobe to recover the
 # frame rate for the ~20 video CSVs that carry no `fps:` metadata comment.
+# `apt install ffmpeg` provides both.
 #
-# There is no need to install either. VIAME ships static builds of both at
-# dive/resources/ffmpeg-ffprobe-static/, and this project already depends on a
-# VIAME install. Resolution order:
+# Resolved from PATH. Deliberately NOT from a VIAME install, even though VIAME
+# bundles static builds of both: the DEIMv2 path is the non-VIAME stack, and
+# making it reach into a VIAME tree for a system tool would couple the two in
+# the wrong direction. Nothing in this pipeline should require VIAME unless it
+# is actually driving VIAME.
 #
-#   1. VF_FFMPEG / VF_FFPROBE, if the caller set them
-#   2. whatever is on PATH (a system ffmpeg, e.g. from apt)
-#   3. VIAME's bundled static binaries
-#
-# Note that `pip install imageio-ffmpeg` is NOT sufficient on its own -- it
-# provides ffmpeg but not ffprobe.
-vf_find_tool() {
-    local tool="$1"
-    local found
-    found="$(command -v "$tool" 2>/dev/null || true)"
-    if [ -n "$found" ]; then
-        printf '%s\n' "$found"
-        return 0
-    fi
-    local bundled="$VF_CURRENT_VIAME_LINK/dive/resources/ffmpeg-ffprobe-static/$tool"
-    if [ -x "$bundled" ]; then
-        printf '%s\n' "$bundled"
-        return 0
-    fi
-    return 1
-}
-
-export VF_FFMPEG="${VF_FFMPEG:-$(vf_find_tool ffmpeg || true)}"
-export VF_FFPROBE="${VF_FFPROBE:-$(vf_find_tool ffprobe || true)}"
+# Override either variable to point at a specific binary (a static build, a
+# non-standard prefix) without touching PATH.
+export VF_FFMPEG="${VF_FFMPEG:-ffmpeg}"
+export VF_FFPROBE="${VF_FFPROBE:-ffprobe}"
 
 # Root for everything the kit pipeline generates. On the NVMe by design.
 export VF_KCD_ROOT="${VF_KCD_ROOT:-$VF_SSD_ROOT/fish_kcd}"

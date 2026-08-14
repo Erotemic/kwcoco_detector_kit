@@ -257,6 +257,44 @@ Simulated split at `vali_fraction=0.12`, seed 0: train 575,800 boxes / vali
 89,428 boxes (13.4%), 83 vali sequences, every collection represented, zero
 deployment overlap. (575,800 + 89,428 = 665,228, matching the inventory.)
 
+## Extraction validated against the source video
+
+Frame-index alignment was wrong twice (native-vs-annotation frame numbering,
+then the annotation rate itself), and both times the code was self-consistent
+enough to look right. `scripts/check_alignment.py` closes that loop headlessly:
+it reaches each frame by a *different* ffmpeg path than extraction uses --
+`-ss` seek to `t = index / annotation_fps` instead of `fps=,select=` over the
+whole stream -- and scores agreement as mean absolute difference on a 64x64
+grayscale thumbnail, against controls at +/-2, 5, 10 frames.
+
+Result on the real corpus: **8/8 sequences aligned**, mean matched difference
+0.66 vs 1.14 for the nearest control, on a 0-255 scale. Absolute values that
+small mean our frames *are* the source frames.
+
+Two traps found while building it, both worth remembering:
+
+- **VIAME's `augmented_images` is not ground truth.** It looked like the ideal
+  oracle: the previous RF-DETR run had VIAME extract every video at the
+  annotation rate, an independent implementation of exactly the mapping we
+  needed. It agrees closely on some sequences (CDFW-LakeCam-April-Tules1: 0.76
+  matched vs 2.85 at +/-1, a decisive 4x margin) but on others matches nothing
+  at any offset -- SEFSC-SeaMap-762101021-Cam3 scans flat at 7.67-9.37 across
+  +/-60 frames, while a source seek on that same frame scores 0.25. The
+  directory name is literal: VIAME writes *augmented* pixels there. Using it as
+  an oracle produced a full sweep of false MISALIGNED verdicts.
+- **The two decode paths round differently at frame boundaries.** `-ss` seeking
+  lands on the frame with `pts >= t`; the `fps=` filter takes the nearest
+  preceding frame. They therefore disagree by up to one frame, which produced
+  more false alarms until the check started accepting a hit anywhere in +/-1
+  and moved its controls out to +/-2. This costs nothing against the failure
+  the check exists for: the real bug put frames ~3x deeper into the video.
+
+Lesson: a verification tool needs its discriminating power demonstrated before
+its verdicts are trusted. The first version reported 6/6 MISALIGNED with
+matched and control differing by under 1% -- a metric with no power, not a
+finding. Checking the margin, not just the sign, is what turned it into
+evidence.
+
 ## The planned run
 
 `fishtrack23_deimv2_dinov3_x_4gpu_aiq_gen001`

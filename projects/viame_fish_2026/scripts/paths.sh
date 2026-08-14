@@ -176,6 +176,17 @@ export KCD_SLURM_LOG_DPATH="${KCD_SLURM_LOG_DPATH:-$KCD_DATA_ROOT/slurm_logs}"
 # essentially nothing -- contrary to what the orientation journal assumed.)
 export KCD_USE_WEBDATASET="${KCD_USE_WEBDATASET:-0}"
 
+# This project has no "scheme". The sea-lion project uses schemes to collapse
+# its 9 source categories into per-run class sets (pup_vs_nonpup,
+# lifestage_6cls, ...); here the corpus's own labels.txt already folds every
+# species to `fish` during prep, so there is nothing left to select at launch.
+#
+# The value still has to exist: the shared _sbatch_train.sh runs under `set -u`
+# and echoes $KCD_SCHEME in its job banner, so leaving it unset aborts the job
+# before the container starts. Naming it after what the model actually predicts
+# keeps the banner and the slurm logs honest.
+export KCD_SCHEME="${KCD_SCHEME:-single_fish}"
+
 kcd_require_path() {
     local label="$1"
     local path="$2"
@@ -254,7 +265,16 @@ export KCD_VALI_KWCOCO="${KCD_VALI_KWCOCO:-$VF_BUNDLE_DPATH/vali.kwcoco.json}"
 export KCD_TEST_KWCOCO="${KCD_TEST_KWCOCO:-$VF_BUNDLE_DPATH/test.kwcoco.json}"
 
 # The corpus and everything generated from it live on the NVMe, which is
-# outside $KCD_DATA_ROOT, so the shared _sbatch_train.sh would not mount
-# it. One bind mount at an identical path covers frames, bundle and run
-# workspaces.
-export KCD_EXTRA_MOUNTS="${KCD_EXTRA_MOUNTS:-$VF_SSD_ROOT}"
+# outside $KCD_DATA_ROOT, so it has to be bind-mounted into the container
+# explicitly. The shared _sbatch_train.sh already mounts $KCD_DATA_DPATH at an
+# identical path, so pointing that at the NVMe root covers the corpus, the
+# extracted frames, the kwcoco bundles and the run workspaces in one mount.
+#
+# For the sea-lion project this variable means "the shared read-only data
+# store" (/data/Public/VIAME/viame_sealions_2026). This project has no such
+# store, so it takes the role of "where this project's data lives".
+#
+# Do NOT also list it in KCD_EXTRA_MOUNTS: that would pass the same
+# source:target pair to `docker run -v` twice, which fails with a duplicate
+# mount point error.
+export KCD_DATA_DPATH="${KCD_DATA_DPATH:-$VF_SSD_ROOT}"

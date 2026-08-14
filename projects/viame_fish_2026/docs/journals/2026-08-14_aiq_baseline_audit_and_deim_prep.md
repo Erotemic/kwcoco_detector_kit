@@ -136,6 +136,39 @@ The budget only works because we extract **annotated frames only**: 250,753 of
 ~4.4M video frames (~6%). At JPEG q95 that is ~75 GB against 506 GB free.
 Extracting everything as PNG, as VIAME did, would not fit at all.
 
+### The source corpus stays on the NVMe, whole
+
+Considered and rejected: moving `FishTrack23-Latest` to `/data` on the theory
+that it is read once during extraction. Half of it is not. The corpus splits
+into two access patterns:
+
+| | size | read pattern |
+|---|---|---|
+| 420 videos (`.mp4`) | 10 GB | decoded **once**, during extraction |
+| 102 image dirs (36,281 PNGs) | 38 GB | read **every epoch**, during training |
+
+Image directories are already frames on disk, so nothing extracts them — the
+kwcoco bundles point `file_name` straight at the original PNGs. They are 12%
+of the training images and they are hot. Moving the corpus wholesale would put
+them back on exactly the slow path this layout exists to avoid.
+
+Splitting it (videos to `/data`, image dirs on the NVMe) reclaims only 10 GB
+and fragments the corpus across two filesystems, which also breaks the VIAME
+runbook's single `-i` input directory. Against the actual budget that trade is
+not close:
+
+```
+need:  ~75 GB extracted frames + ~5 GB run workspace   = ~80 GB
+have:  506 GB free                                     = 6x headroom
+```
+
+(Run-workspace size measured from the sea-lion `dinov3_x` runs: 3.0–4.8 GB.)
+
+Decision: **leave the corpus whole, on the NVMe.** If SSD space ever does get
+tight, handle it some other way rather than by fragmenting the corpus. The
+reasoning is recorded in `paths.sh` next to the layout it justifies, so the
+"obvious optimization" is not re-attempted later.
+
 ## Corpus shape (measured)
 
 From `collect_data_manifest.sh` output at `/data/users/jon.crall/fish/inventory/`:

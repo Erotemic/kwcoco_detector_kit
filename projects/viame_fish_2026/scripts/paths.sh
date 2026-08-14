@@ -57,6 +57,28 @@ export VF_CONFIG_FPATH="${VF_CONFIG_FPATH:-$VF_CONFIG_DPATH/$VF_CONFIG_NAME}"
 # ~4.4M frames in the 420 videos, 250,753 carry annotations (~6%). As
 # JPEG q95 that is roughly 75 GB, which fits the 506 GB free with room
 # to spare -- where extracting every frame as PNG would not fit at all.
+#
+# ## Do NOT move the source corpus to /data
+#
+# It looks like cold data that is read once during extraction. Half of it
+# is not. FishTrack23 splits into two kinds of sequence with very
+# different access patterns (measured 2026-08-14):
+#
+#   420 videos (.mp4)          10 GB   decoded ONCE during extraction
+#   102 image dirs (36k PNGs)  38 GB   read EVERY EPOCH during training
+#
+# The image directories are already frames on disk, so nothing extracts
+# them -- the kwcoco bundles point `file_name` straight at the original
+# PNGs. They are 12% of the training images and they are hot. Moving the
+# corpus to the md0 RAID array would put them back on the exact slow
+# path this layout exists to avoid.
+#
+# Splitting the corpus (videos to /data, image dirs on the NVMe) would
+# reclaim only 10 GB, against 506 GB free and a ~80 GB total need
+# (~75 GB of extracted frames + ~5 GB of run workspace, the latter
+# measured from the sea-lion dinov3_x runs). Not worth fragmenting the
+# corpus across two filesystems and breaking the VIAME runbook's single
+# `-i` input directory. Leave it whole, on the NVMe.
 export VF_SSD_ROOT="${VF_SSD_ROOT:-$HOME/ssd-data}"
 
 # Root for everything the kit pipeline generates. On the NVMe by design.

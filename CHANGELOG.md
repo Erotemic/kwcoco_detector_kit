@@ -46,6 +46,23 @@ All notable changes to `kwcoco-detector-kit` are recorded here. Format follows [
 - `examples/kwcoco_demo/` — always-runnable smoke example.
 - `dev/` — engineering memory (seeded from prior project; new entries land above the `Seed #19` divider).
 
+### Changed
+- **scriptconfig -> kwconf.** `kwcoco_detector_kit/data/manifest.py` was the last
+  first-party user of `scriptconfig`; `DataManifestConfig` now subclasses
+  `kwconf.Config` with `kwconf.Value`. Drop-in: `position=`, `required=`, `help=`
+  and `.cli(argv=, data=, strict=)` all behave identically.
+- The `pyproject.toml` pin moves to `kwconf>=0.11.0`, and the Dockerfile's
+  hand-maintained dependency list now installs `kwconf` instead of
+  `scriptconfig`. That list had **drifted** from `pyproject.toml`: it installed
+  `scriptconfig` (never declared as a dependency) and omitted `kwconf` (declared
+  since the pin was added), so any first-party `import kwconf` would have failed
+  inside the image.
+- `scriptconfig` is still installed in the image, but only as a transitive
+  dependency of the vendored `tpl/kwcoco_dataloader` submodule, whose `setup.py`
+  builds `install_requires` from its own `requirements/runtime.txt`. No
+  first-party code imports it any more. **Requires a docker image rebuild** to
+  take effect in containers.
+
 ### Notes
 - Phase 1 test bar: structural YAML invariants via `yaml.safe_load` + dict-shape assertions. The DEIMv2 `engine.core.YAMLConfig` drive-through is gated behind `pytest -m requires_deimv2`.
 - Storage format for intermediate training data is intentionally JPEG-on-disk + kwcoco manifest in Phase 1. Webdataset is deferred to Phase 3 and treated as one possible backend behind a `TileStore` interface (user's design constraint: oversized tiles for crop-aug, streamable from spinning disk / slow network).

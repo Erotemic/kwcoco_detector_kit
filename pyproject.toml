@@ -30,7 +30,7 @@ dependencies = [
     "kwimage>=0.11",
     "kwutil>=0.3",
     "ubelt>=1.4",
-    "kwconf>=0.10.0",
+    "kwconf>=0.11.0",
     "numpy>=1.24",
     "pyyaml>=6.0",
     # torch is required by the trainer plugins and mock detector. Pin the

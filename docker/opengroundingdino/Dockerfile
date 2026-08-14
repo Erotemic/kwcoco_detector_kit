@@ -104,7 +104,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         "kwimage>=0.11" \
         "kwutil>=0.3" \
         "ubelt>=1.4" \
-        "scriptconfig>=0.9" \
+        "kwconf>=0.11.0" \
         "numpy>=1.24" \
         "pyyaml>=6.0" \
         "onnx>=1.16" \

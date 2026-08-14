@@ -28,7 +28,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
-import scriptconfig as scfg
+import kwconf
 
 
 def compute_manifest(kwcoco_path) -> Dict[str, Any]:
@@ -103,12 +103,12 @@ def assert_expected(manifest: Mapping[str, Any], expect: Mapping[str, Any],
     return mismatches
 
 
-class DataManifestConfig(scfg.DataConfig):
+class DataManifestConfig(kwconf.Config):
     """Record true image/annotation/category counts + a content hash for a kwcoco bundle."""
 
-    src = scfg.Value(None, position=1, required=True,
-                     help="kwcoco bundle to inspect")
-    out = scfg.Value(None, help="optional path to write the manifest JSON")
+    src = kwconf.Value(None, position=1, required=True,
+                       help="kwcoco bundle to inspect")
+    out = kwconf.Value(None, help="optional path to write the manifest JSON")
 
     @classmethod
     def main(cls, argv=1, **kwargs):

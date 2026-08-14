@@ -32,6 +32,8 @@ import extract_frames
 from extract_frames import (
     build_select_expr,
     compress_to_ranges,
+    derive_annotation_fps,
+    parse_timestamp,
     passthrough_flag,
     read_annotated_indices,
     read_fps,
@@ -314,6 +316,89 @@ def test_read_fps_absent_returns_none(tmp_path):
     fpath = tmp_path / 'seq.csv'
     fpath.write_text(IMAGEDIR_CSV)
     assert read_fps(fpath) is None
+
+
+def test_parse_timestamp():
+    assert parse_timestamp('00:00:00.100000') == pytest.approx(0.1)
+    assert parse_timestamp('00:17:37.900000') == pytest.approx(1057.9)
+    # Image-directory CSVs leave column 2 empty.
+    assert parse_timestamp('') is None
+    assert parse_timestamp('frame_0001.png') is None
+
+
+def test_derive_annotation_fps_recovers_the_rate_from_timestamps(tmp_path):
+    """The annotation rate must come from the CSV, not the container.
+
+    The CDFW videos are 29.97 fps native but annotated at 10 Hz. Trusting the
+    container's rate resamples wrong and attaches every box to the wrong frame.
+    """
+    rows = ['0,00:00:{:09.6f},{},10,20,60,80,1.0,-1,fish,1.0'.format(i / 10.0, i)
+            for i in range(12)]
+    fpath = tmp_path / 'seq.csv'
+    fpath.write_text('\n'.join(rows) + '\n')
+    assert derive_annotation_fps(fpath) == 10.0
+
+
+def test_derive_annotation_fps_needs_enough_evidence(tmp_path):
+    """Too few timestamped rows to distinguish a clock from coincidence."""
+    fpath = tmp_path / 'seq.csv'
+    fpath.write_text(VIDEO_CSV)  # 4 annotation rows
+    assert derive_annotation_fps(fpath) is None
+
+
+def test_derive_annotation_fps_handles_five_hertz(tmp_path):
+    """349 of the 401 annotated Train videos are 5 Hz."""
+    rows = ['0,00:00:{:09.6f},{},10,20,60,80,1.0,-1,fish,1.0'.format(i / 5.0, i)
+            for i in range(1, 12)]
+    fpath = tmp_path / 'seq.csv'
+    fpath.write_text('\n'.join(rows) + '\n')
+    assert derive_annotation_fps(fpath) == 5.0
+
+
+def test_derive_annotation_fps_none_without_timestamps(tmp_path):
+    """Image-directory CSVs have no timestamp column to derive from."""
+    fpath = tmp_path / 'seq.csv'
+    fpath.write_text(IMAGEDIR_CSV)
+    assert derive_annotation_fps(fpath) is None
+
+
+def test_derive_annotation_fps_rejects_a_near_constant_column(tmp_path):
+    """SEFSC-SeaMap column 2 parses as a time but is not a clock.
+
+    Rows look like `0:1:0.000`, `0:1:0.001`, `0:1:0.045` while the frame index
+    runs into the thousands. Fitting a rate to that yielded anything from 0.2
+    to 107 Hz across the corpus, and resampling at such a rate would attach
+    every box to the wrong frame. It must be rejected, not fitted.
+    """
+    rows = ['4,0:1:0.{:03d},{},90,817,159,1006,1.0,-1,seriola_zonata,1.0'.format(
+        i // 20, i + 3) for i in range(40)]
+    fpath = tmp_path / 'seq.csv'
+    fpath.write_text('\n'.join(rows) + '\n')
+    assert derive_annotation_fps(fpath) is None
+
+
+def test_derive_annotation_fps_rejects_implausible_rates(tmp_path):
+    """A tiny time span over a huge index span implies an absurd rate."""
+    rows = ['0,00:00:00.{:03d},{},10,20,60,80,1.0,-1,fish,1.0'.format(i, i * 100)
+            for i in range(10)]
+    fpath = tmp_path / 'seq.csv'
+    fpath.write_text('\n'.join(rows) + '\n')
+    assert derive_annotation_fps(fpath) is None
+
+
+def test_read_fps_accepts_both_header_syntaxes(tmp_path):
+    """`fps: 10` and `fps=5` both occur, and both are authoritative.
+
+    Matching only the colon form dropped 19 videos (11% of annotated frames)
+    into a native-rate guess.
+    """
+    colon = tmp_path / 'a.csv'
+    colon.write_text('# metadata,fps: 10,"exported_by: ""dive:python"""\n')
+    assert read_fps(colon) == 10.0
+
+    equals = tmp_path / 'b.csv'
+    equals.write_text('# 1: Detection or Track-id,2: Video\n#meta fps=5\n')
+    assert read_fps(equals) == 5.0
 
 
 def test_read_annotated_indices(tmp_path):

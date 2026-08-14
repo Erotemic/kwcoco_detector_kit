@@ -20,19 +20,33 @@ Frame-index alignment is the whole ballgame
 A VIAME CSV addresses frames by integer index. If our extracted filenames are
 off by even one relative to that index, every box in the run is attached to the
 wrong image and training silently produces garbage -- there is no error, just a
-bad model. So this script does not *assume* an alignment, it *recovers* one:
+bad model.
 
-  * The `select` filter picks the annotated frames out of the stream.
-  * `showinfo`, placed after `select`, reports the ORIGINAL presentation
-    timestamp of each frame that survived.
-  * Each emitted file is then named from its own `pts_time`, not from its
-    position in the output sequence.
+**The index counts ANNOTATION frames, not native video frames.** The CDFW
+videos are 29.97 fps in the container but were annotated at 10 Hz, so index
+314 is 10.477 s in, not 314/29.97. This is what the dataset readme means by
+"Video can be extracted to images using the frame rate at the top of each CSV
+file ... as each video was annotated at either 5hz or 10hz". Selecting on
+native frame numbers pulls a frame roughly 3x too deep into the video.
 
-That last point is what makes a mid-stream decoder hiccup harmless: a dropped
-frame shortens the output, but every remaining file still carries its true
-index, rather than shifting all its successors by one. The mapping is verified
-against the CSV's own timestamp column, which we confirmed satisfies
-`timestamp == index / fps` exactly across the corpus.
+So the filtergraph resamples before it selects:
+
+    fps=<annotation_fps>, select='<annotated frames>', showinfo
+
+With `fps=` in front, the filter variable `n` counts annotation frames, which
+is exactly what the CSV index means.
+
+Two independent checks guard the result, because one of them alone would not:
+
+  * The annotation rate is recovered from the CSV's own TIMESTAMP column
+    (`timestamp == index / annotation_fps` holds exactly across this corpus),
+    and cross-checked against the metadata comment. Disagreement is fatal
+    rather than resolved by preference. This is the check that matters: it is
+    independent of both the comment and the container.
+  * `showinfo` after `select` reports each surviving frame's presentation
+    time, and every output file is named from its own timestamp rather than
+    its position in the output sequence -- so a mid-stream decoder hiccup
+    shortens the output instead of shifting all its successors by one.
 
 Frames are written as `frame%06d.jpg` with a 1-BASED counter, matching VIAME's
 extract_frames convention (CSV index 0 -> frame000001.jpg), so an index means
@@ -71,7 +85,13 @@ VIAME_MIN_COLUMNS = 9
 # is the frame's position in the ORIGINAL stream even though showinfo sits
 # downstream of select.
 SHOWINFO_RE = re.compile(r'pts_time:\s*([0-9]+\.?[0-9]*)')
-FPS_RE = re.compile(r'fps:\s*([0-9]+\.?[0-9]*)')
+
+# Two header syntaxes coexist in this corpus and both are authoritative:
+#     # metadata,fps: 10,"exported_by: ""dive:python"""
+#     #meta fps=5
+# Matching only the colon form silently drops the second, which covers 19
+# videos (11% of annotated frames) and sends them to a native-rate guess.
+FPS_RE = re.compile(r'fps[:=]\s*([0-9]+\.?[0-9]*)')
 
 
 def read_fps(csv_fpath):
@@ -84,6 +104,96 @@ def read_fps(csv_fpath):
             if match:
                 return float(match.group(1))
     return None
+
+
+def parse_timestamp(text):
+    """`HH:MM:SS.ffffff` -> seconds, or None if it is not a timestamp.
+
+    Video CSVs put a timestamp in column 2; image-directory CSVs leave it
+    empty. Being able to tell them apart matters because the timestamp is our
+    only annotation-rate evidence that is independent of the metadata comment.
+    """
+    parts = text.strip().split(':')
+    if len(parts) != 3:
+        return None
+    try:
+        hours, minutes, seconds = parts
+        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    except ValueError:
+        return None
+
+
+def read_timestamp_pairs(csv_fpath):
+    """(frame_index, seconds) for rows that carry a real timestamp."""
+    pairs = []
+    with open(csv_fpath, 'r', errors='replace') as file:
+        for row in csv.reader(file):
+            if not row or row[0].lstrip().startswith('#'):
+                continue
+            if len(row) < VIAME_MIN_COLUMNS:
+                continue
+            seconds = parse_timestamp(row[1])
+            if seconds is None:
+                continue
+            try:
+                pairs.append((int(row[2]), seconds))
+            except ValueError:
+                continue
+    return pairs
+
+
+# Plausible annotation rates. The corpus documents 5 and 10 Hz; the window is
+# wider to allow for deliveries we have not seen, but narrow enough to reject
+# a rate fitted to noise.
+MIN_PLAUSIBLE_FPS = 0.5
+MAX_PLAUSIBLE_FPS = 120.0
+
+
+def derive_annotation_fps(csv_fpath):
+    """Recover the annotation frame rate from the CSV's timestamp column.
+
+    Returns None whenever the column is not a usable time base -- which is the
+    common case in this corpus, so the caller must have a fallback.
+
+    Only some CSVs carry a real timestamp. The CDFW videos do, and there
+    `timestamp == index / annotation_fps` holds exactly. The SEFSC-SeaMap
+    files instead carry values like `0:1:0.000` that *parse* as a timestamp
+    (60 s) but barely move while the frame index runs into the thousands. A
+    naive index/seconds ratio over those yields anything from 0.2 to 107, and
+    resampling at such a rate would attach every box to the wrong frame.
+
+    So the column is only trusted when it behaves like a clock: monotone,
+    spanning real time, linear against the frame index, and implying a
+    plausible rate. Anything else is rejected rather than fitted.
+    """
+    pairs = read_timestamp_pairs(csv_fpath)
+    if len(pairs) < 5:
+        return None
+
+    indices = [index for index, _ in pairs]
+    seconds = [second for _, second in pairs]
+    index_span = max(indices) - min(indices)
+    second_span = max(seconds) - min(seconds)
+    if index_span < 2 or second_span <= 0:
+        return None
+
+    fps = index_span / second_span
+    if not (MIN_PLAUSIBLE_FPS <= fps <= MAX_PLAUSIBLE_FPS):
+        return None
+
+    # Linearity: every row must sit within a frame period of the fitted clock.
+    # A near-constant column fails this immediately once the index moves.
+    base_index, base_second = min(indices), min(seconds)
+    tolerance = 0.75 / fps
+    for index, second in pairs:
+        predicted = base_second + (index - base_index) / fps
+        if abs(second - predicted) > tolerance:
+            return None
+
+    nearest = round(fps)
+    if nearest > 0 and abs(fps - nearest) < 0.01 * nearest:
+        return float(nearest)
+    return fps
 
 
 def read_annotated_indices(csv_fpath):
@@ -190,16 +300,45 @@ def extract_video(video_fpath, csv_fpath, out_dpath, quality=2, force=False,
         result.update(status='empty', n_written=0, missing=[])
         return result
 
-    fps = read_fps(csv_fpath)
-    if fps is None:
+    # ANNOTATION frame rate -- NOT the container's native rate. The CSV's frame
+    # index counts frames after the video is resampled to this rate, which is
+    # what the dataset readme means by "extracted using the frame rate at the
+    # top of each CSV file". The CDFW videos are 29.97 fps native and annotated
+    # at 10 Hz, so the two numbers differ by 3x.
+    # The `fps:` metadata comment is the documented source of truth -- the
+    # dataset readme says to extract "using the frame rate at the top of each
+    # CSV file". The timestamp column is a cross-check where it is a real
+    # clock, which is only true for some sequences (see derive_annotation_fps).
+    declared = read_fps(csv_fpath)
+    derived = derive_annotation_fps(csv_fpath)
+
+    if declared is not None:
+        fps = declared
+        result['fps_source'] = 'csv_comment'
+        if derived is not None:
+            result['fps_from_timestamps'] = derived
+            if abs(declared - derived) > 0.01 * declared:
+                # A trustworthy clock contradicting the comment means we do not
+                # know the rate. Refuse: resampling wrong silently attaches
+                # every box to the wrong frame.
+                result.update(
+                    status='error',
+                    error='annotation fps ambiguous: metadata comment says {} but the '
+                          'timestamp column implies {:.4f}'.format(declared, derived))
+                return result
+            result['fps_source'] = 'csv_comment+timestamps'
+    elif derived is not None:
+        fps = derived
+        result['fps_source'] = 'timestamps'
+    else:
+        # Neither. The container's native rate is NOT the annotation rate
+        # (29.97 vs 10 for CDFW), so this is a guess -- record it as one.
         try:
             fps = probe_fps(video_fpath, ffprobe)
-            result['fps_source'] = 'ffprobe'
+            result['fps_source'] = 'ffprobe_native_GUESS'
         except Exception as ex:
             result.update(status='error', error='fps unavailable: {}'.format(ex))
             return result
-    else:
-        result['fps_source'] = 'csv'
     result['fps'] = fps
 
     out_dpath.mkdir(parents=True, exist_ok=True)
@@ -216,7 +355,12 @@ def extract_video(video_fpath, csv_fpath, out_dpath, quality=2, force=False,
     # to tens of kilobytes, past what is comfortable on a command line.
     staging = pathlib.Path(tempfile.mkdtemp(prefix='kcdfish_', dir=str(out_dpath.parent)))
     filter_fpath = staging / 'filter.txt'
-    filter_fpath.write_text("select='{}',showinfo".format(select_expr))
+    # `fps=` FIRST. It resamples the stream to the annotation rate so that the
+    # filter variable `n` counts annotation frames -- which is what a VIAME CSV
+    # index actually refers to. Selecting on native frame numbers instead pulls
+    # a frame from ~3x deeper into a 29.97 fps video.
+    filter_fpath.write_text(
+        "fps={:.10g},select='{}',showinfo".format(fps, select_expr))
 
     cmd = [
         ffmpeg, '-nostdin', '-y',

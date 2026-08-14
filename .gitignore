@@ -99,3 +99,11 @@ shards/
 # Local benchmark artifacts (large; not part of the repo)
 /tmp/
 untracked
+
+# Stray shell redirect at the repo root (`... > out`). Harmless in itself, but
+# an untracked file makes `git status --porcelain` non-empty, and
+# docker/opengroundingdino/_build_provenance.sh keys the image's kit_sha label
+# off exactly that -- so it silently stamps every build "<sha>-dirty" and the
+# image stops being reproducible from git. Root-anchored so a legitimate `out/`
+# directory deeper in the tree is unaffected.
+/out

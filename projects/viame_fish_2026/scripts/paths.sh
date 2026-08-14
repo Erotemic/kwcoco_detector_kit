@@ -4,7 +4,22 @@
 
 export VF_PROJECT_DPATH="${VF_PROJECT_DPATH:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
-export VF_WORK_DPATH="${VF_WORK_DPATH:-/data/users/${USER}/fish}"
+# Account name used to build the default work paths.
+#
+# `$USER` is NOT set inside the training container -- docker does not inherit
+# it -- and paths.sh is sourced there by _launch_train.sh under `set -u`, so a
+# bare ${USER} aborts the job after the container has already started (job 292).
+# The sea-lion project sidesteps this by hardcoding the name; resolve it
+# instead, falling back through LOGNAME and `id -un` before that hardcoded
+# last resort.
+#
+# In-container this value is mostly moot: _submit_train.sh forwards every KCD_*
+# variable from the host, so the paths that actually matter arrive already
+# resolved and the ${VAR:-default} branches below are never evaluated. It only
+# has to not explode.
+export VF_USER="${VF_USER:-${USER:-${LOGNAME:-$(id -un 2>/dev/null || echo jon.crall)}}}"
+
+export VF_WORK_DPATH="${VF_WORK_DPATH:-/data/users/${VF_USER}/fish}"
 export VF_DOWNLOAD_DPATH="${VF_DOWNLOAD_DPATH:-$VF_WORK_DPATH/downloads}"
 export VF_SOFTWARE_DPATH="${VF_SOFTWARE_DPATH:-$VF_WORK_DPATH/software}"
 export VF_RUNS_DPATH="${VF_RUNS_DPATH:-$VF_WORK_DPATH/runs}"
@@ -149,7 +164,7 @@ export VF_FRAME_STRIDE="${VF_FRAME_STRIDE:-1}"
 # The kit's own KCD_* namespace. _submit_train.sh snapshots every KCD_*
 # variable into the job env, so anything the container needs must be
 # named KCD_*, not VF_*.
-export KCD_DATA_ROOT="${KCD_DATA_ROOT:-/data/users/${USER}}"
+export KCD_DATA_ROOT="${KCD_DATA_ROOT:-/data/users/${VF_USER}}"
 export KCD_KIT_DPATH="${KCD_KIT_DPATH:-$HOME/code/kwcoco_detector_kit}"
 export KCD_REPO_ROOT="${KCD_REPO_ROOT:-$VF_PROJECT_DPATH}"
 

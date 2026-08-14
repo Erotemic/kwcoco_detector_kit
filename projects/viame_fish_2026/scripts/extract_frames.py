@@ -102,10 +102,15 @@ def read_annotated_indices(csv_fpath):
     return indices
 
 
-def probe_fps(video_fpath):
-    """Fall back to the container's own frame rate when the CSV omits it."""
+def probe_fps(video_fpath, ffprobe='ffprobe'):
+    """Fall back to the container's own frame rate when the CSV omits it.
+
+    Needed for the ~20 Train videos whose CSV carries no `fps:` comment. This
+    is why `pip install imageio-ffmpeg` is not a sufficient dependency: it
+    ships ffmpeg but no ffprobe.
+    """
     cmd = [
-        'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+        ffprobe, '-v', 'error', '-select_streams', 'v:0',
         '-show_entries', 'stream=r_frame_rate', '-of', 'csv=p=0',
         str(video_fpath),
     ]
@@ -140,7 +145,8 @@ def build_select_expr(ranges):
     return '+'.join(terms)
 
 
-def extract_video(video_fpath, csv_fpath, out_dpath, quality=2, force=False):
+def extract_video(video_fpath, csv_fpath, out_dpath, quality=2, force=False,
+                  ffmpeg='ffmpeg', ffprobe='ffprobe'):
     """Extract one video's annotated frames. Returns a result dict."""
     video_fpath = pathlib.Path(video_fpath)
     out_dpath = pathlib.Path(out_dpath)
@@ -160,7 +166,7 @@ def extract_video(video_fpath, csv_fpath, out_dpath, quality=2, force=False):
     fps = read_fps(csv_fpath)
     if fps is None:
         try:
-            fps = probe_fps(video_fpath)
+            fps = probe_fps(video_fpath, ffprobe)
             result['fps_source'] = 'ffprobe'
         except Exception as ex:
             result.update(status='error', error='fps unavailable: {}'.format(ex))
@@ -186,7 +192,7 @@ def extract_video(video_fpath, csv_fpath, out_dpath, quality=2, force=False):
     filter_fpath.write_text("select='{}',showinfo".format(select_expr))
 
     cmd = [
-        'ffmpeg', '-nostdin', '-y',
+        ffmpeg, '-nostdin', '-y',
         '-loglevel', 'info',
         '-i', str(video_fpath),
         '-filter_script:v', str(filter_fpath),
@@ -298,11 +304,19 @@ def main(argv=None):
     parser.add_argument('--manifest', default=None,
                         help='where to write the JSON manifest '
                              '(default: <out-dir>/extraction_manifest.json)')
+    parser.add_argument('--ffmpeg', default=os.environ.get('VF_FFMPEG') or 'ffmpeg',
+                        help='ffmpeg binary (VIAME ships a static one; see paths.sh)')
+    parser.add_argument('--ffprobe', default=os.environ.get('VF_FFPROBE') or 'ffprobe',
+                        help='ffprobe binary, needed for videos whose CSV omits fps')
     args = parser.parse_args(argv)
 
-    if shutil.which('ffmpeg') is None:
-        parser.error('ffmpeg not found on PATH. This script must run on the '
-                     'training host, not on a VM without the media stack.')
+    for label, binary in (('ffmpeg', args.ffmpeg), ('ffprobe', args.ffprobe)):
+        if shutil.which(binary) is None and not os.path.isfile(binary):
+            parser.error(
+                '{} not found at {!r}. VIAME ships static builds of both at '
+                'dive/resources/ffmpeg-ffprobe-static/, so no install is normally '
+                'needed -- see projects/viame_fish_2026/scripts/paths.sh. This '
+                'script must run on the training host.'.format(label, binary))
 
     input_dpath = pathlib.Path(args.input).resolve()
     out_dpath = pathlib.Path(args.out_dir).resolve()
@@ -315,6 +329,8 @@ def main(argv=None):
     print('videos:     {} (need frame extraction)'.format(len(videos)))
     print('imagedirs:  {} (already frames on disk)'.format(len(imagedirs)))
     print('jobs:       {}'.format(args.jobs))
+    print('ffmpeg:     {}'.format(args.ffmpeg))
+    print('ffprobe:    {}'.format(args.ffprobe))
     print()
 
     out_dpath.mkdir(parents=True, exist_ok=True)
@@ -324,7 +340,8 @@ def main(argv=None):
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.jobs) as pool:
         futures = {
             pool.submit(extract_video, video, csv_fpath,
-                        out_dpath / video.stem, args.quality, args.force): video
+                        out_dpath / video.stem, args.quality, args.force,
+                        args.ffmpeg, args.ffprobe): video
             for video, csv_fpath in videos
         }
         for done, future in enumerate(concurrent.futures.as_completed(futures), 1):

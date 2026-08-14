@@ -81,6 +81,40 @@ export VF_CONFIG_FPATH="${VF_CONFIG_FPATH:-$VF_CONFIG_DPATH/$VF_CONFIG_NAME}"
 # `-i` input directory. Leave it whole, on the NVMe.
 export VF_SSD_ROOT="${VF_SSD_ROOT:-$HOME/ssd-data}"
 
+# -- ffmpeg / ffprobe ----------------------------------------------------
+#
+# Frame extraction needs both: ffmpeg to decode, and ffprobe to recover the
+# frame rate for the ~20 video CSVs that carry no `fps:` metadata comment.
+#
+# There is no need to install either. VIAME ships static builds of both at
+# dive/resources/ffmpeg-ffprobe-static/, and this project already depends on a
+# VIAME install. Resolution order:
+#
+#   1. VF_FFMPEG / VF_FFPROBE, if the caller set them
+#   2. whatever is on PATH (a system ffmpeg, e.g. from apt)
+#   3. VIAME's bundled static binaries
+#
+# Note that `pip install imageio-ffmpeg` is NOT sufficient on its own -- it
+# provides ffmpeg but not ffprobe.
+vf_find_tool() {
+    local tool="$1"
+    local found
+    found="$(command -v "$tool" 2>/dev/null || true)"
+    if [ -n "$found" ]; then
+        printf '%s\n' "$found"
+        return 0
+    fi
+    local bundled="$VF_CURRENT_VIAME_LINK/dive/resources/ffmpeg-ffprobe-static/$tool"
+    if [ -x "$bundled" ]; then
+        printf '%s\n' "$bundled"
+        return 0
+    fi
+    return 1
+}
+
+export VF_FFMPEG="${VF_FFMPEG:-$(vf_find_tool ffmpeg || true)}"
+export VF_FFPROBE="${VF_FFPROBE:-$(vf_find_tool ffprobe || true)}"
+
 # Root for everything the kit pipeline generates. On the NVMe by design.
 export VF_KCD_ROOT="${VF_KCD_ROOT:-$VF_SSD_ROOT/fish_kcd}"
 

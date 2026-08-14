@@ -5,6 +5,33 @@ All notable changes to `kwcoco-detector-kit` are recorded here. Format follows [
 ## [Unreleased]
 
 ### Added
+- **KCD-EVAL-01 — first-class tiled eval recipe mode.** `recipe.v1` now supports an
+  `eval:` block (`mode: whole_image | tiled | auto`, default `auto`) plus `data.tiled`.
+  `auto` resolves to tiled when training is tiled (a `data.tiled` flag or a `multiscale*`
+  matrix `train_policy`), and the resolution is logged loudly. Fixes the silent bug where
+  `sweep.tiled_eval` was dropped by `recipe._build_sweep_data` passthrough (the cause of
+  shitspotter v13's deferred verdict — it set `tiled_eval: true` but eval ran whole-image).
+  The legacy `sweep.tiled_eval*` keys are now also passed through for back-compat.
+  `orchestration/recipe.py`.
+- **KCD-EVAL-02 — eval is self-describing.** `detect_metrics.json` `eval_inputs` now stamps
+  `eval_mode` (`tiled`/`whole_image`), `eval_device`, and the tile params, so a tiled AP can
+  never be compared to a whole-image AP by accident. `eval/kwcoco_eval.py`.
+- **KCD-CFG-01 — `${VAR}` / `${VAR:-default}` interpolation** in recipes, tile-corpus specs,
+  and matrix files. New `configs.expand_env_vars()` (fails loudly on an undefined `${VAR}`
+  without a default); applied in `recipe._load_recipe`, `tile_corpus._load_spec`,
+  `pareto_sweep._load_matrix`. Lets recipes be host-portable and retires per-project render
+  shims.
+- **KCD-DATA-01 — `data-manifest` op + `data.expect` guard.** New `data/manifest.py`
+  (`compute_manifest`/`assert_expected`) + `data-manifest` CLI records true
+  image/annotation/category counts + a content hash. `recipe-run` asserts a recipe's optional
+  `data.expect:` block before any GPU time (`expect_mode: fail|warn`). Structural antidote to
+  the "filenames lie" class of bug (2564-vs-7350 images).
+- **KCD-DOC-01 / KCD-DOC-02** — banners disambiguating superseded `examples/{sealion_aerial,
+  viame_sealions_2026}` from the live `projects/viame_sealions_2026/`; an "examples vs
+  projects" section in the README; and `docs/phase3_status.md` (shipped-vs-deferred Phase-3
+  surface + cross-repo `KCD-*` status).
+- Tests: `tests/unit/test_recipe_eval_and_manifest.py` (env interpolation, eval-mode
+  resolution incl. auto, manifest counts + expectation guard).
 - Phase 1 scaffold: `pyproject.toml`, package layout, tests/, examples/, docs/.
 - `data/tile.py` — unified tile extractor with three modes (`full_only`, `quadrant`, `multiscale`). Lifted from prior project's v4 `tile_kwcoco.py` + v5 `v5_tile.py`. Adds `oversize_factor` knob (defaults to 1.0; raise to ~1.4 for load-time crop-augmentation friendly tiles).
 - `data/merge.py` — positive + negative tile merger for round-based training.

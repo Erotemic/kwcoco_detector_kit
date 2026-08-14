@@ -51,6 +51,61 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+# ``${VAR}`` or ``${VAR:-default}`` (brace form only — we never touch a bare
+# ``$VAR`` so YAML/regex/shell-ish content is left alone).
+_ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+
+def expand_env_vars(text: str, *, environ: Optional[Mapping[str, str]] = None,
+                    source: str = "<string>") -> str:
+    """Expand ``${VAR}`` / ``${VAR:-default}`` against the environment.
+
+    The portable-path primitive for recipes and specs (kit action item
+    ``KCD-CFG-01``): a recipe/spec can reference ``${KCD_TRAINING_ROOT}`` instead
+    of a hardcoded host path, so the same file runs on any host that exports the
+    contract. This retires per-project render shims (e.g. shitspotter's
+    ``render_recipe.py``).
+
+    FAILS LOUDLY on a ``${VAR}`` with no default that is unset in the
+    environment — a missing path var must stop the run before GPU time, not
+    silently produce a broken config (the structural antidote to the "filenames
+    lie" class of bug).
+
+    Args:
+        text: raw file contents.
+        environ: mapping to resolve against (defaults to ``os.environ``).
+        source: label used in the error message (e.g. the file path).
+
+    Returns:
+        the text with every ``${...}`` reference substituted.
+
+    Raises:
+        KeyError: if a ``${VAR}`` (without ``:-default``) is undefined.
+    """
+    env = os.environ if environ is None else environ
+    missing: List[str] = []
+
+    def _sub(match: "re.Match") -> str:
+        name = match.group(1)
+        default = match.group(2)
+        if name in env:
+            return env[name]
+        if default is not None:
+            return default
+        missing.append(name)
+        return match.group(0)
+
+    out = _ENV_VAR_RE.sub(_sub, text)
+    if missing:
+        uniq = ", ".join(sorted(set(missing)))
+        raise KeyError(
+            f"{source}: undefined environment variable(s) in ${{...}} "
+            f"reference: {uniq}. Set them (e.g. source the project's paths.sh) "
+            f"or give a default with ${{VAR:-default}}."
+        )
+    return out
+
+
 def _as_path_text(value: Optional[str]) -> Optional[str]:
     if value in {None, ""}:
         return None

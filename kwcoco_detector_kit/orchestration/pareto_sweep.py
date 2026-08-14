@@ -304,7 +304,13 @@ def _load_matrix(config) -> List[dict]:
     """Returns a list of cell dicts: {variant, input_hw, train_policy}."""
     if config.matrix:
         import yaml
-        text = Path(str(config.matrix)).read_text() if Path(str(config.matrix)).exists() else str(config.matrix)
+        if Path(str(config.matrix)).exists():
+            # Expand ${VAR}/${VAR:-default} for host-portable matrix files (KCD-CFG-01).
+            from kwcoco_detector_kit.configs import expand_env_vars
+            text = expand_env_vars(
+                Path(str(config.matrix)).read_text(), source=str(config.matrix))
+        else:
+            text = str(config.matrix)
         parsed = yaml.safe_load(text)
         if not isinstance(parsed, list):
             raise ValueError("matrix must be a list of cell dicts")

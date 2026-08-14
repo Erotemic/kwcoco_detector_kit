@@ -1,0 +1,5 @@
+# Project source is versioned here. Large data, binaries, caches, and run
+# outputs live under /data/users/$USER/fish and $HOME/ssd-data.
+local/
+*.tar
+*.tar.gz

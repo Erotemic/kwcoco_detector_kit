@@ -1,3 +1,7 @@
+<!-- 2026-06-13: SUPERSEDED. This is the previous-generation OpenGroundingDINO
+reference. The active sea-lion project (scripts, schemes, run registry) lives at
+projects/viame_sealions_2026/. Kept here as a historical example only. -->
+
 # VIAME Sea Lions 2021-2024
 
 This example starts from the converted VIAME kwcoco bundle:

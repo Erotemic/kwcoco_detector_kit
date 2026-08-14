@@ -128,6 +128,7 @@ def _register_subcommands():
     import kwcoco_detector_kit.data.mine as _mine
     import kwcoco_detector_kit.data.tile_store as _tile_store
     import kwcoco_detector_kit.data.stats as _stats
+    import kwcoco_detector_kit.data.manifest as _manifest
     import kwcoco_detector_kit.orchestration.pareto_sweep as _sweep
     import kwcoco_detector_kit.orchestration.recipe as _recipe
     import kwcoco_detector_kit.orchestration.round_loop as _round
@@ -150,6 +151,7 @@ def _register_subcommands():
     _register_module("mine", _mine)
     _register_module("convert-store", _tile_store)   # Phase 3
     _register_module("stats", _stats)                # Phase 3
+    _register_module("data-manifest", _manifest)     # KCD-DATA-01
     _register_module("sweep", _sweep)
     _register_module("recipe-run", _recipe)
     _register_module("round-loop", _round)

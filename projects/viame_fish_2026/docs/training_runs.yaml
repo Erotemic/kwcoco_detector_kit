@@ -179,4 +179,34 @@ runs:
         Eval emits exactly 300 predictions/image (score_thresh=0.001 filling a
         300 cap); median score 0.0107, only 0.5% above 0.05. Correct for
         faithful AP, but it is why the prediction artifact is 223 MB.
+      - >-
+        HEAD-TO-HEAD SETUP: RF-DETR's VIAME plugin applies its own score
+        threshold, defaulting to 0.5 (viame/pytorch/rf_detr_detector.py:39),
+        before anything reaches its output CSV -- the pipeline's visible
+        class_probablity_filter of 0.0 gives no hint of it. Its first test run
+        therefore emitted 67,377 detections (2.0/img, min score exactly 0.5000)
+        against DEIMv2's 10,030,200 (300/img down to 0.0039). Comparing those
+        directly would have favoured DEIMv2 on an artifact, since AP integrates
+        over a recall curve the other model was not allowed to reach. Resolved
+        by truncating DEIMv2 to the same 0.5 floor (56,231 preds, 1.7/img).
+        Numbers from that comparison are AP AT A 0.5 SCORE FLOOR and are not
+        comparable to the 0.7272 full-curve figure.
+      - >-
+        RF-DETR inference cost 0.515 s/img vs DEIMv2's 0.056 s/img on the same
+        33,434 images (~9x). Not like-for-like -- RF-DETR chips each frame into
+        overlapping 720px windows and computes masks -- but relevant for any
+        video-rate deployment.
+      - >-
+        UNDER-TRAINED IN A SPECIFIC WAY, not simply too few epochs. The config
+        resolved to epoches=20, flat_epoch=10, no_aug_epoch=2, so LR was still
+        flat until epoch 10 and the cosine tail had barely started when the run
+        died at 13. Separately, the augmentation policy is hardcoded to
+        upstream's ~150-epoch defaults (epoch [4, 78, 148] in
+        kwcoco_detector_kit/trainers/deimv2.py:379), so at 20 epochs only
+        Mosaic ever stops and RandomPhotometricDistort / RandomZoomOut /
+        RandomIoUCrop never turn off. The clean final phase the recipe is built
+        around cannot happen at this schedule length. This is a kit-level bug
+        affecting every short-schedule run, sea lions included -- and a
+        near-miss, since deimv2.py:525-534 scales flat_epoch/no_aug_epoch for
+        exactly this reason without applying it to the policy above.
 

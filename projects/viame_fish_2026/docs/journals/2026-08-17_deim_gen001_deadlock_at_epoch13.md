@@ -266,12 +266,91 @@ artifact is 223 MB and this write path is fragile at all.
    ONNX. A rebuild also picks up the kwconf fix and a clean, non-`-dirty` SHA.
 4. **Package and hand off** (see below). Weights + metrics package first; add
    the ONNX after the rebuild.
-5. **Resume epochs 13-19** via `submit_resume_*.sh` — optional, since the curve
-   was flat from epoch 7.
+5. **Resume epochs 13-19** via `submit_resume_*.sh`. Upgraded from "optional"
+   to "worth it": the run died with the cosine decay barely started, and that
+   tail is where the recipe expects its last gains. ~10 h.
 6. Score RF-DETR on the same `Test/` bundle to make the comparison real. Needs
    a VIAME inference pass and a reader for its alternating class/score output.
 7. Capture `py-spy dump` if the deadlock recurs — the one thing we still cannot
    explain is why the all-reduce stalled.
+
+## Setting up the head-to-head: the score floor nearly invalidated it
+
+Ran the trained `fish_detector.zip` over the same `Test/` bundle via VIAME's
+`detector_project_folder.pipe`, driven from an image list generated *from*
+`test.kwcoco.json` so both models see byte-identical inputs. 33,434 images at
+0.515 s/img = 4.8 h (vs DEIMv2's 56 ms/img — RF-DETR chips each frame into
+overlapping 720px windows and computes masks, so this is not a like-for-like
+throughput number, but the ~9x gap is real and matters for video-rate work).
+
+Then the output looked wrong in a specific way:
+
+| | DEIMv2 | RF-DETR |
+|---|---|---|
+| predictions | 10,030,200 | 67,377 |
+| per image | 300.0 | 2.0 |
+| min score | 0.0039 | **0.5000** |
+
+A minimum of *exactly* 0.5 is not a property of the data. The rf_detr VIAME
+plugin applies its own threshold before anything reaches the CSV —
+`viame/pytorch/rf_detr_detector.py:39` defaults it to 0.5 — and the pipeline's
+visible `class_probablity_filter: 0.0` gives no hint of it.
+
+**Scored as-is this would have been wrong in DEIMv2's favour.** AP integrates
+precision over the recall curve, so a model truncated at 0.5 cannot reach the
+recall of one kept to 0.001, and loses AP for a reason unrelated to its
+quality. Two fixes: re-run RF-DETR at a low threshold (rigorous, 4.8 h of GPU),
+or truncate DEIMv2 to the same floor (minutes, equally honest — both curves cut
+in the same place). Took the second:
+
+    DEIMv2 @ >=0.5:  10,030,200 -> 56,231 preds, 1.7/img, 28,027/33,434 images
+    RF-DETR @ >=0.5:              67,377 preds, 2.0/img, 14,835/33,434 images
+
+Note the coverage gap before any scoring: at the same floor DEIMv2 fires on
+83.8% of test images and RF-DETR on 44.4%, against a ground truth averaging 2.5
+boxes/image. Both under-detect at 0.5; RF-DETR far more.
+
+Numbers from this comparison must be quoted as **AP at a 0.5 score floor**,
+never as bare AP — both are lower than either model's full-curve value, and
+neither is comparable to the 0.7272 above.
+
+`VF_RFDETR_THRESHOLD` now defaults to 0.001 so a future run produces a full
+curve instead of repeating this.
+
+## Was 20 epochs enough? The augmentation schedule says no
+
+The obvious read of the curve is that it converged: flat from epoch 7 (0.5422)
+to 12 (0.5440). That read is incomplete, and the config explains why.
+
+DEIMv2's recipe is a *flat-then-cosine* LR with a clean final phase. Our
+resolved config:
+
+    epoches: 20, flat_epoch: 10, no_aug_epoch: 2
+
+so LR was flat through epoch 10 and had only begun decaying when the run died
+at 13. **The cosine tail — usually where a DETR recipe picks up its last
+points — never ran.**
+
+Worse, the augmentation policy was never adapted to the epoch count:
+
+    policy: {name: stop_epoch, epoch: [4, 78, 148],
+             ops: [Mosaic, RandomPhotometricDistort, RandomZoomOut, RandomIoUCrop]}
+
+Those are upstream's defaults for a ~150-epoch schedule, hardcoded in
+`kwcoco_detector_kit/trainers/deimv2.py:379`. At 20 epochs only Mosaic ever
+stops (epoch 4); the other three run to the very end and **never turn off**. So
+the model never gets the clean fine-tuning phase the recipe is built around.
+
+This is a kit-level bug, and a near-miss of one the kit already knows about:
+`deimv2.py:525-534` scales `flat_epoch` and `no_aug_epoch` from `num_epochs`
+precisely because "the upstream defaults assume ~150-500 epoch schedules" and
+otherwise "the schedule never triggers". The same reasoning was not applied to
+the augmentation policy sitting 150 lines above it. It affects every short-
+schedule run in this kit, sea lions included.
+
+So the honest answer to "were we training long enough" is: the epoch count was
+plausible, but the run never reached the part of the schedule that matters, and
+one phase of it would not have happened at 20 epochs regardless.
 
 ## Handoff package
 

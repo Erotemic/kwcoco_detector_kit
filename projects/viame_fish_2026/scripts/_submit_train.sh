@@ -39,7 +39,9 @@ kcd_require_path "shared _sbatch_train.sh" "$KCD_SHARED_SBATCH" || exit 1
 
 # Make the shared sbatch script load THIS project's paths.sh and launcher.
 export KCD_REPO_ROOT="$VF_PROJECT_DPATH"
-export KCD_LAUNCH_SCRIPT="_launch_train.sh"
+# Respect a wrapper's choice of launcher so the same submit/sbatch/docker
+# machinery can drive a non-training job (e.g. _launch_export_score.sh).
+export KCD_LAUNCH_SCRIPT="${KCD_LAUNCH_SCRIPT:-_launch_train.sh}"
 
 # Fail on the host, before paying for a job start or a container start.
 kcd_require_init_checkpoint "$KCD_VARIANT" || exit 1

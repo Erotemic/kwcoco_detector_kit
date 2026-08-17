@@ -105,6 +105,54 @@ echo
 # RF-DETR baseline has seen. Uses the sweep's own eval entry point so the
 # protocol is identical to what a completed run would have produced.
 echo "=== [1/3] eval on the held-out test split ==="
+
+# Salvage path: reuse predictions from a previous attempt.
+#
+# run_kwcoco_eval does inference, dumps predictions, filters both sides to
+# bbox-only, then shells out to `kwcoco eval`. The first attempt on 2026-08-17
+# completed 31 minutes of inference and dumped a valid 223 MB
+# pred_boxes.kwcoco.zip, then died inside the PRED bbox-filter when the `safer`
+# atomic-write helper called shutil.copymode on a temp file that was no longer
+# there. Losing half an hour of GPU time to a post-processing bug in the last
+# 5% of the job is not acceptable twice.
+#
+# So: if a complete predictions file is already on disk and the metrics are
+# not, skip straight to scoring. The pred-side bbox filter is safe to bypass
+# because it only drops annotations without a length-4 bbox, and every
+# detection this model emits has one (verified: 0 of 200,000 sampled).
+EVAL_ROOT="$KCD_ROOT/eval/$CANDIDATE_ID"
+PRED_ZIP="$EVAL_ROOT/pred_boxes.kwcoco.zip"
+TRUE_ZIP="$EVAL_ROOT/true_bbox_only.kwcoco.zip"
+METRICS="$EVAL_ROOT/eval/detect_metrics.json"
+
+if [ "${KCD_FORCE_EVAL:-0}" != "1" ] && [ -s "$PRED_ZIP" ] && [ ! -s "$METRICS" ]; then
+    echo "  found existing predictions; skipping inference and scoring directly"
+    echo "    preds: $PRED_ZIP"
+    if [ ! -s "$TRUE_ZIP" ]; then
+        echo "  building $TRUE_ZIP ..."
+        "$PYTHON_BIN" - <<PYEOF
+from pathlib import Path
+from kwcoco_detector_kit.eval.kwcoco_eval import filter_bbox_only_kwcoco
+out, kept, dropped = filter_bbox_only_kwcoco("$KCD_TEST_KWCOCO", Path("$TRUE_ZIP"))
+print(f"  true bbox-only: kept={kept} dropped={dropped}")
+PYEOF
+    fi
+    mkdir -p "$EVAL_ROOT/eval"
+    "$PYTHON_BIN" -m kwcoco eval \
+        --true_dataset "$TRUE_ZIP" \
+        --pred_dataset "$PRED_ZIP" \
+        --out_dpath "$EVAL_ROOT/eval" \
+        --out_fpath "$METRICS" \
+        --draw False \
+        --iou_thresh 0.5 \
+        || echo "  kwcoco eval exited non-zero; checking for metrics anyway" >&2
+    if [ ! -s "$METRICS" ]; then
+        echo "ERROR: scoring from saved predictions produced no metrics." >&2
+        exit 1
+    fi
+    echo "  wrote $METRICS"
+else
+
 "$PYTHON_BIN" - <<PYEOF
 import json, pathlib
 # Importing the package registers the trainer plugins (deimv2 among them);
@@ -133,6 +181,7 @@ out = run_kwcoco_eval(
 )
 print("  wrote", out)
 PYEOF
+fi
 echo
 
 # ---------------------------------------------------------------- 2. export

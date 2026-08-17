@@ -57,7 +57,7 @@ runs:
         directory (72 sequences) is genuinely held out for this model.
 
   - id: fishtrack23_deimv2_dinov3_x_4gpu_aiq_gen001
-    status: ready
+    status: partial
     purpose: >-
       Complementary box-only DEIMv2 detector for FishTrack23, trained through
       the kwcoco_detector_kit pipeline. Architecturally distinct from the
@@ -80,6 +80,29 @@ runs:
       lr: 1e-3
       backbone_lr: 5e-5
       tiled_eval: false
+    splits:
+      train: {sequences: 439, images: 251143, annotations: 561572}
+      vali:  {sequences: 46,  images: 35111,  annotations: 77230}
+      test:  {sequences: 69,  images: 33434,  annotations: 84694}
+    slurm_job: 293
+    started_at: 2026-08-14T17:31:00-04:00
+    stalled_at: 2026-08-15T12:43:00-04:00
+    epochs_completed: 13   # of 20
+    artifact: >-
+      runs/deimv2_dinov3_x_1024x1024_fixed/best_stg2.pth  (epoch 12, 819 MB)
+    image_kit_sha: e48ca1dab2a4-dirty   # STALE: 2026-06-21, 44 commits behind
+    results:
+      # Held-out sequence-disjoint VALI split (46 sequences, 35,111 images).
+      # NOT comparable to the RF-DETR baseline's 0.4429 -- see notes.
+      best_epoch: 12
+      box_mAP_50_95: 0.5440
+      box_mAP_50: 0.8060
+      box_mAP_75: 0.5877
+      AP_small: 0.184
+      AP_medium: 0.252
+      AP_large: 0.657
+      AR_100: 0.631
+      AR_50: 0.900
     notes:
       - Box-only. Segmentation is explicitly out of scope for this model.
       - >-
@@ -87,22 +110,39 @@ runs:
         same file the RF-DETR baseline used -- so the two models are
         label-compatible by construction.
       - >-
-        NO TILING. Box percentiles over all 665,228 boxes are p1 42x44,
-        p50 150x109 on 1920x1200 imagery, so a whole-frame resize to 1024
-        leaves the smallest boxes ~22 px wide. This also means RF-DETR's
-        small_box_area=75 (~8.7x8.7 px) deleted essentially nothing, contrary
-        to the orientation journal's assumption.
+        NO TILING, and none is needed: box percentiles over all 665,228 boxes
+        are p1 42x44, p50 150x109 on 1920x1200 imagery, so a whole-frame resize
+        to 1024 leaves the smallest boxes ~22 px wide.
       - >-
-        Contamination RESOLVED: the corpus ships its own Test/ directory, and
-        both RF-DETR runs trained with `-i .../Train` only, so that model
-        provably never saw it. It is honest held-out data for both.
+        DEADLOCKED at epoch 13 step 1500/10464 on 2026-08-15. Process stayed
+        alive with all 4 GPUs at 100% utilization but only 78-81W of 300W --
+        the signature of a spinning NCCL collective, not computation. No
+        traceback, no OOM, no watchdog abort. Root cause not yet established;
+        catch the next one live with `py-spy dump` before killing it.
       - >-
-        All generated data (frames, bundles, run workspaces) lives on the NVMe
-        under $HOME/ssd-data/fish_kcd, not on /data (the md0 RAID array where
-        the RF-DETR run's 771 GB of PNG frames and chip cache sat).
+        The NCCL watchdog could not fire: _sbatch_train.sh sets both
+        TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=600 and TORCH_NCCL_BLOCKING_WAIT=1,
+        and a blocking wait is exactly what the async watchdog cannot preempt.
+        A 10-minute failure became a 2-day one. Affects every project using
+        this launcher.
       - >-
-        Selection criterion is detection AP on the held-out test split.
-        Scoring is deferred until there are two deliverable models; a
-        head-to-head additionally needs a VIAME inference pass for
-        fish_detector.zip and a reader for its output CSV, neither of which
-        exists in the kit yet.
+        Epoch 4 diverged to NaN (AP exactly 0.0000, all-NaN tensor dumps
+        03:35-05:47 UTC) and recovered by epoch 5. LR=1e-3 is at the edge of
+        stable here -- the same value made sea-lion gen006 X@640 diverge
+        without recovering. Do not raise it when increasing batch size.
+      - >-
+        Memory was over-provisioned 3x: ~16.5 GB of 96 GB per GPU actual, vs
+        the ~49 GB predicted by area-scaling the sea-lion 1280px measurements.
+        Room for batch 16-24/GPU, subject to the LR caution above.
+      - >-
+        Ran on the STALE image (kit e48ca1dab2a4-dirty, 2026-06-21) because it
+        launched 13 minutes after the previous attempt failed -- no time to
+        rebuild. Reproducible only against that image, and the -dirty tag means
+        not reproducible from git. Rebuild before gen002; 6e81493 and 21b897f
+        make a clean SHA possible.
+      - >-
+        The 0.5440 is a VALI number on held-out sequences. RF-DETR's 0.4429 was
+        measured on 4,000 chips carved frame-level from its own training
+        sequences. Different denominators; the honest comparison is both models
+        on the corpus's Test/ split, still to do.
+

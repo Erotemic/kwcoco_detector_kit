@@ -117,8 +117,17 @@ runs:
         DEADLOCKED at epoch 13 step 1500/10464 on 2026-08-15. Process stayed
         alive with all 4 GPUs at 100% utilization but only 78-81W of 300W --
         the signature of a spinning NCCL collective, not computation. No
-        traceback, no OOM, no watchdog abort. Root cause not yet established;
-        catch the next one live with `py-spy dump` before killing it.
+        traceback, no OOM, no watchdog abort.
+      - >-
+        DIAGNOSED with py-spy against all four ranks' host PIDs while the job
+        was still hung: every rank stopped in the identical frame,
+        _engine_run_backward -> backward -> train_one_epoch
+        (det_engine.py:68). That rules out a rank divergence (same call site),
+        a dataloader deadlock (all past loading, feeder threads idle), and a
+        dead rank (all four alive). It is a genuine NCCL all-reduce stall,
+        plausibly transport- or driver-level on a very new stack: Blackwell
+        RTX PRO 6000, driver 610.43.02, CUDA UMD 13.3, torch nightly cu132.
+        py-spy --native could not unwind torch's binaries (UNW_EBADREG).
       - >-
         The NCCL watchdog could not fire: _sbatch_train.sh sets both
         TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=600 and TORCH_NCCL_BLOCKING_WAIT=1,

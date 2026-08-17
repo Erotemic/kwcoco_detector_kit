@@ -96,12 +96,58 @@ aborted the job after ten minutes never got the chance, and a ten-minute
 failure became a two-day one. Worth revisiting for every project using this
 launcher, not just fish.
 
-Root cause of the deadlock itself is not yet established. It is not
-reproducible from the logs alone; the next occurrence should be caught live
-with `py-spy dump` on the container's rank-0 PID before anything is killed.
-Candidates, in rough order of suspicion: a dataloader worker death under
-`num_workers=8` + `persistent_workers` + `prefetch_factor=4`; a rank divergence
-in batch count; or an NCCL transport stall.
+### py-spy: all four ranks stopped in the same frame
+
+Caught live before the job was touched. `py-spy dump` against each rank's host
+PID (visible from `nvidia-smi`; the container's PID 1 is host PID 4077820):
+
+```
+Thread 210 (active): "MainThread"
+    _engine_run_backward (torch/autograd/graph.py:913)
+    backward (torch/autograd/__init__.py:395)
+    backward (torch/_tensor.py:633)
+    train_one_epoch (engine/solver/det_engine.py:68)
+    fit (engine/solver/det_solver.py:88)
+```
+
+**Identical on all four ranks.** Rank 0 additionally shows four unnamed
+`(active)` native threads — the spinning NCCL/CUDA threads that produce the
+100%-utilization-at-low-power reading — and eight idle `QueueFeederThread`s,
+one per dataloader worker.
+
+That is conclusive, and it eliminates the candidates worth eliminating:
+
+- **Not a rank divergence.** All four are in the same collective, at the same
+  call site. A divergence would show ranks in different frames.
+- **Not a dataloader deadlock.** Every rank is past data loading and inside
+  backward; the feeder threads are idle because there is nothing to feed a
+  process that never asks for the next batch.
+- **Not a dead rank.** All four processes are alive and spinning.
+
+What remains is a genuine NCCL collective stall: every rank entered the same
+gradient all-reduce during backward and it never returned. Given the stack —
+Blackwell RTX PRO 6000, driver 610.43.02, CUDA UMD 13.3, torch nightly cu132 —
+a transport- or driver-level hang is the most plausible explanation, and not a
+surprising one on hardware and drivers this new.
+
+`py-spy dump --native`, which would have named the exact NCCL call, fails with
+`UNW_EBADREG: bad register number` — it cannot unwind torch's optimized
+binaries. Not worth chasing.
+
+### The fix bounds the damage, it does not prevent the stall
+
+We cannot fix an NCCL/driver hang from here. We can stop it costing two days.
+
+`_sbatch_train.sh` already sets `TORCH_NCCL_ASYNC_ERROR_HANDLING=1` and
+`TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=600`, which exist to abort precisely this
+failure. They were defeated by its `TORCH_NCCL_BLOCKING_WAIT=1` default.
+The knob is parameterized, so the fish submit script now sets
+`KCD_NCCL_BLOCKING_WAIT=0`; a future stall should abort after ten minutes,
+leaving a resumable per-epoch checkpoint instead of a dead weekend.
+
+Scoped to this project on purpose. The same default sits in the shared
+launcher and the sea-lion runs carry the same exposure, but changing shared
+infrastructure should be a deliberate act, not a side effect of this run.
 
 ## Two configuration findings for the next run
 

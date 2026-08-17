@@ -99,6 +99,28 @@ export KCD_EVAL_DEVICE="${KCD_EVAL_DEVICE:-cuda}"
 # ============================================================
 export KCD_NO_SLURM="${KCD_NO_SLURM:-0}"
 export KCD_DOCKER_GPU_MODE="${KCD_DOCKER_GPU_MODE:-gpus}"
+
+# Let the NCCL watchdog actually kill a stalled collective.
+#
+# Job 293 deadlocked at epoch 13 and sat there for two days: all four ranks
+# stopped in the same frame (`_engine_run_backward`, det_engine.py:68), every
+# GPU pegged at 100% utilization but drawing 78-81W of 300W -- an all-reduce
+# spinning forever, confirmed by py-spy on all four ranks.
+#
+# It should have died in ten minutes. The shared launcher sets
+# TORCH_NCCL_ASYNC_ERROR_HANDLING=1 and TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=600,
+# which together are supposed to abort exactly this -- but it also defaults
+# TORCH_NCCL_BLOCKING_WAIT=1, and a blocking wait runs in the main thread where
+# the async watchdog cannot preempt it. The two settings cancel out.
+#
+# Turning the blocking wait off restores the watchdog, so a stall becomes a
+# 10-minute failure with a resumable checkpoint instead of a lost weekend. It
+# does not prevent the stall; it bounds the damage.
+#
+# Scoped to this project deliberately: the same default is in the sea-lion
+# launcher and deserves the same treatment, but changing shared infrastructure
+# is not a side effect this run should have.
+export KCD_NCCL_BLOCKING_WAIT="${KCD_NCCL_BLOCKING_WAIT:-0}"
 export KCD_IMAGE="${KCD_IMAGE:-kwcoco-detector-kit:ogdino-cu132-aiq}"
 export KCD_TRAIN_NUM_WORKERS="${KCD_TRAIN_NUM_WORKERS:-8}"
 export KCD_VAL_NUM_WORKERS="${KCD_VAL_NUM_WORKERS:-4}"

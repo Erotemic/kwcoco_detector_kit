@@ -92,8 +92,15 @@ runs:
       runs/deimv2_dinov3_x_1024x1024_fixed/best_stg2.pth  (epoch 12, 819 MB)
     image_kit_sha: e48ca1dab2a4-dirty   # STALE: 2026-06-21, 44 commits behind
     results:
-      # Held-out sequence-disjoint VALI split (46 sequences, 35,111 images).
-      # NOT comparable to the RF-DETR baseline's 0.4429 -- see notes.
+      # HELD-OUT TEST split: the corpus's own Test/ directory, 69 sequences /
+      # 33,434 images / 84,694 annotations that NEITHER model has seen. This is
+      # the headline number and the only honest generalization measure any fish
+      # detector on this corpus has had. Note iou_thresh=0.5, so it is an AP50.
+      test_AP50: 0.7272
+      test_AUC: 0.8504
+      test_split: {sequences: 69, images: 33434, annotations: 84694}
+      # Held-out sequence-disjoint VALI split (46 sequences, 35,111 images),
+      # used for checkpoint selection during training.
       best_epoch: 12
       box_mAP_50_95: 0.5440
       box_mAP_50: 0.8060
@@ -150,8 +157,26 @@ runs:
         not reproducible from git. Rebuild before gen002; 6e81493 and 21b897f
         make a clean SHA possible.
       - >-
-        The 0.5440 is a VALI number on held-out sequences. RF-DETR's 0.4429 was
-        measured on 4,000 chips carved frame-level from its own training
-        sequences. Different denominators; the honest comparison is both models
-        on the corpus's Test/ split, still to do.
+        Comparing like with like at AP50: DEIMv2 scores 0.7272 on the held-out
+        Test/ split (never seen), 0.8060 on vali; RF-DETR reports 0.7166 on
+        4,000 chips carved frame-level from its OWN training sequences. DEIMv2
+        is ahead while being measured on strictly harder data, which is
+        suggestive but not yet a head-to-head -- that needs RF-DETR run over
+        the same Test/ bundle, which requires a VIAME inference pass and a
+        reader for its alternating class/score CSV output.
+      - >-
+        The vali->test drop (0.8060 -> 0.7272 AP50) is the real generalization
+        gap, and is exactly what the sequence-disjoint, deployment-grouped
+        split exists to expose. A frame-level split would have concealed it.
+      - >-
+        Eval nearly cost 31 minutes twice: the first attempt finished inference
+        over all 33,434 images and dumped a valid 223 MB pred_boxes.kwcoco.zip,
+        then died in the pred-side bbox filter when `safer` called
+        shutil.copymode on an already-removed temp file. Recovered by scoring
+        from the saved predictions. _launch_export_score.sh now detects a
+        complete predictions file and skips inference.
+      - >-
+        Eval emits exactly 300 predictions/image (score_thresh=0.001 filling a
+        300 cap); median score 0.0107, only 0.5% above 0.05. Correct for
+        faithful AP, but it is why the prediction artifact is 223 MB.
 

@@ -27,9 +27,11 @@
 #
 # ## What it does
 #
-#   1. eval  -- the model against the HELD-OUT test bundle
-#   2. export -- ONNX + modelspec from the same checkpoint
-#   3. bench  -- latency of the exported graph (best effort)
+#   1. eval    -- the model against the HELD-OUT test bundle
+#   2. export  -- ONNX + modelspec from the same checkpoint
+#   3. bench   -- latency of the exported graph (best effort)
+#   4. package -- a self-describing handoff directory (weights + metrics +
+#                 labels + provenance; ONNX when one exists)
 #
 # Eval runs FIRST on purpose, mirroring the sweep's own ordering: eval loads the
 # .pth directly, while ONNX export can fail on deploy-only bugs. The science
@@ -104,7 +106,7 @@ echo
 # Scores the HELD-OUT test bundle -- sequences neither this model nor the
 # RF-DETR baseline has seen. Uses the sweep's own eval entry point so the
 # protocol is identical to what a completed run would have produced.
-echo "=== [1/3] eval on the held-out test split ==="
+echo "=== [1/4] eval on the held-out test split ==="
 
 # Salvage path: reuse predictions from a previous attempt.
 #
@@ -187,7 +189,7 @@ echo
 # ---------------------------------------------------------------- 2. export
 # Reads variant, input size and category_names from policy.json, and resolves
 # the checkpoint via the trainer -- no completion state consulted.
-echo "=== [2/3] ONNX export ==="
+echo "=== [2/4] ONNX export ==="
 if [ "$HAVE_EXPORT_CLI" = "0" ]; then
     echo "  SKIPPED: this image has no export-onnx subcommand (see above)." >&2
 else
@@ -199,12 +201,35 @@ fi
 echo
 
 # ----------------------------------------------------------------- 3. bench
-echo "=== [3/3] bench (best effort; needs the .onnx) ==="
+echo "=== [3/4] bench (best effort; needs the .onnx) ==="
 "$PYTHON_BIN" - <<PYEOF || echo "  WARNING: bench skipped/failed (non-fatal)." >&2
 import pathlib
 from kwcoco_detector_kit.eval.bench import run_onnx_bench
 print("  wrote", run_onnx_bench(workdir=pathlib.Path("$WORKDIR")))
 PYEOF
+
+# --------------------------------------------------------------- 4. package
+# Assembles the handoff artifact. The ONNX is OPTIONAL here -- package-build
+# copies it only when present -- so this still produces something deliverable
+# on an image too old to export, just weights-plus-metrics rather than a
+# deploy graph. Passing --metrics makes the package self-describing: whoever
+# receives it can read what it scored without being told.
+echo "=== [4/4] package ==="
+"$PYTHON_BIN" -m kwcoco_detector_kit package-build \
+    --workdir "$WORKDIR" \
+    --trainer deimv2 \
+    --variant "${KCD_VARIANT:-deimv2_dinov3_x}" \
+    --category_names "${KCD_CATEGORY_NAMES:-fish}" \
+    --dataset_slug "${KCD_DATASET_SLUG:-fishtrack23}" \
+    --experiment_slug "${KCD_RUN_NAME}" \
+    --run_id "${KCD_RUN_NAME}" \
+    --train_kwcoco "$KCD_TRAIN_KWCOCO" \
+    --vali_kwcoco "$KCD_VALI_KWCOCO" \
+    --test_kwcoco "$KCD_TEST_KWCOCO" \
+    ${KCD_PACKAGE_OUT:+--out "$KCD_PACKAGE_OUT"} \
+    ${KCD_PACKAGE_OUT_ROOT:+--out_root "$KCD_PACKAGE_OUT_ROOT"} \
+    --metrics "$METRICS" \
+    || echo "  WARNING: package-build failed; metrics and checkpoint are still on disk." >&2
 
 echo
 echo "=============================================================="

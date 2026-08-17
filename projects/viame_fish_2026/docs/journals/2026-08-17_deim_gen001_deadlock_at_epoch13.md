@@ -186,6 +186,65 @@ not the baked commit. The Dockerfile bakes `kcd.kit_sha` as a label, so the
 launcher could echo `docker inspect` output and make every run log
 self-describing. Cheap, and it would have removed all doubt here.
 
+## The held-out number
+
+Scored the epoch-12 checkpoint against the corpus's own `Test/` split — 69
+sequences, 33,434 images, 84,694 annotations that **neither** this model nor the
+RF-DETR baseline has ever seen. This is the first honest generalization measure
+any fish detector on this corpus has had.
+
+| metric | value |
+|---|---|
+| **AP @ IoU=0.5 (`fish`)** | **0.7272** |
+| AUC | 0.8504 |
+| true positives | 84,694 |
+| predictions scored | 10,041,803 |
+
+Note the threshold: the kit's eval runs `--iou_thresh 0.5`, so this is an
+**AP50**, not COCO's AP@50:95. Compare like with like:
+
+| model | split | AP50 | what the split is |
+|---|---|---|---|
+| DEIMv2 e12 | vali | 0.8060 | held-out sequences, deployment-grouped |
+| **DEIMv2 e12** | **test** | **0.7272** | held-out sequences, never seen by either model |
+| RF-DETR | its own "val" | 0.7166 | 4,000 chips carved frame-level from its own training sequences |
+
+Two things worth reading carefully here.
+
+**The vali -> test drop (0.806 -> 0.727) is the honest generalization gap** and
+is exactly what a sequence-disjoint protocol is supposed to expose. A
+frame-level split would have hidden it.
+
+**DEIMv2 is ahead of RF-DETR's number while being measured on strictly harder
+data**, which is suggestive but still not a clean head-to-head: 0.7166 was
+computed on near-duplicates of that model's own training frames. The comparison
+only becomes real when RF-DETR is run over the same `Test/` bundle, which needs
+a VIAME inference pass and a reader for its output CSV. Until then, report the
+DEIMv2 figure on its own terms and cite RF-DETR's with its caveat attached.
+
+### The eval nearly cost another 31 minutes
+
+The first scoring attempt ran inference over all 33,434 images in 31 minutes
+(22.7 Hz, 56 ms/img), dumped a valid 223 MB `pred_boxes.kwcoco.zip`, and then
+died in the last 5% — inside the *pred-side* bbox filter, where the `safer`
+atomic-write helper called `shutil.copymode` on a temp file that no longer
+existed. Not disk space (469 GB free), not the model: a post-processing bug.
+
+The GPU work was recoverable because the predictions file was already complete
+and intact (verified: 33,434 images, 10,030,200 annotations, zip not corrupt).
+Scoring finished from it directly, skipping the failing filter — safe because
+that filter only drops annotations lacking a length-4 bbox and every detection
+this model emits has one (0 of 200,000 sampled without).
+
+`_launch_export_score.sh` now checks for a complete predictions file before
+doing anything expensive and scores directly when one exists, so the same bug
+cannot cost the time twice.
+
+Also measured in passing: **exactly 300 predictions per image**, median score
+0.0107, only 0.5% above 0.05. That is `run_kwcoco_eval`'s `score_thresh=0.001`
+default filling a 300/image cap — correct for faithful AP, and the reason the
+artifact is 223 MB and this write path is fragile at all.
+
 ## Where things stand
 
 - `best_stg2.pth` (epoch 12, AP 0.5440) is safe on the NVMe.
@@ -197,9 +256,43 @@ self-describing. Cheap, and it would have removed all doubt here.
 
 ## Next
 
-1. **Score epoch 12 on the held-out `Test/` split** (69 sequences, 33,434
-   images, 84,694 annotations). That is the number that means something, and it
-   is the same protocol RF-DETR can be scored under.
-2. Capture `py-spy dump` if the deadlock recurs.
-3. Reconcile `TORCH_NCCL_BLOCKING_WAIT` against the heartbeat timeout.
-4. Rebuild the image; consider larger batch given the 6x memory headroom.
+1. ~~Score epoch 12 on the held-out `Test/` split.~~ **Done: AP50 0.7272.**
+2. ~~Reconcile `TORCH_NCCL_BLOCKING_WAIT` against the heartbeat timeout.~~
+   **Done:** `KCD_NCCL_BLOCKING_WAIT=0` in the gen001 submit script.
+3. **Rebuild the image before exporting.** The baked kit (`e48ca1dab2a4`,
+   2026-06-21) has no `export-onnx`, `bench` or `parity` subcommands
+   registered — they appear in its `--help` text but were never wired up. So
+   the current image can score and package a checkpoint, but cannot produce an
+   ONNX. A rebuild also picks up the kwconf fix and a clean, non-`-dirty` SHA.
+4. **Package and hand off** (see below). Weights + metrics package first; add
+   the ONNX after the rebuild.
+5. **Resume epochs 13-19** via `submit_resume_*.sh` — optional, since the curve
+   was flat from epoch 7.
+6. Score RF-DETR on the same `Test/` bundle to make the comparison real. Needs
+   a VIAME inference pass and a reader for its alternating class/score output.
+7. Capture `py-spy dump` if the deadlock recurs — the one thing we still cannot
+   explain is why the all-reduce stalled.
+
+## Handoff package
+
+`_launch_export_score.sh` gained a fourth stage that calls the kit's
+`package-build`, producing a self-describing directory: the checkpoint under
+`weights/`, `labels.json`, the provenance block, and — via `--metrics` — the
+`detect_metrics.json` above, so a recipient can read what it scored without
+being told separately. The ONNX is copied in only when one exists, which is
+what makes this useful on an image that cannot export: the package is
+weights-plus-evidence today and gains a deploy graph after the rebuild.
+
+What to state when handing it over, because none of it is visible from the
+files alone:
+
+- Single class `fish`, box-only, folded through the corpus's own
+  `Train/labels.txt` — the same file the RF-DETR model used, so the two are
+  label-compatible by construction.
+- Input 1024x1024, whole frames, no tiling.
+- **Trained 13 of 20 planned epochs**, stopped by an infrastructure deadlock,
+  not by convergence or divergence. Flat from epoch 7 (0.5422) to 12 (0.5440),
+  so close to converged but not the full recipe.
+- **AP50 0.7272 on 69 sequences it has never seen.** Cite the split, not just
+  the number.
+- Built from a stale image; reproducible against that image, not from git.

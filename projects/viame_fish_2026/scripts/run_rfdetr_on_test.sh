@@ -83,8 +83,30 @@ echo
 # 3. Run the pipeline.
 echo "=== running VIAME pipeline over $N_INPUT images ==="
 export VIAME_PROJECT_DIR="$PROJECT_DIR"
+
+# VIAME's setup script is not written for `set -u`. It does:
+#     export KWIVER_PLUGIN_PATH=$this_dir/...:$KWIVER_PLUGIN_PATH
+# i.e. appends to a dozen PATH-like variables assuming unset reads as empty,
+# which aborts immediately under `set -u`:
+#     setup_viame.sh: line 11: KWIVER_PLUGIN_PATH: unbound variable
+#
+# This project's older VIAME runbook (_launch_viame_train.sh) never hit it
+# because that script does not enable the strict flags at all. Relaxing them
+# just around the source is better than dropping them for the whole script:
+# everything else here -- the coverage verification especially -- wants them.
+set +u
+set +e
 # shellcheck disable=SC1091
 source "$VF_CURRENT_VIAME_LINK/setup_viame.sh"
+set -e
+set -u
+
+command -v kwiver >/dev/null || {
+    echo "ERROR: 'kwiver' not on PATH after sourcing setup_viame.sh." >&2
+    echo "  VIAME_INSTALL=${VIAME_INSTALL:-<unset>}" >&2
+    exit 1
+}
+echo "  kwiver: $(command -v kwiver)"
 cd "$OUT_DPATH"
 
 set -x

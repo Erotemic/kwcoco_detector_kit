@@ -19,10 +19,21 @@
 #     so it should pass everything through -- but "should" is not good enough
 #     when a silent drop would mean the two models scored different image sets.
 #     The rate is overridden AND the output coverage is verified afterwards.
-#   * Score truncation. The pipeline's class_probablity_filter threshold is
-#     0.0 with keep_all_classes true, which is what AP needs. Do not raise it
-#     here: a threshold applied before scoring truncates the ranking and
-#     lowers AP for reasons that have nothing to do with the model.
+#   * Score truncation -- and this one bit us. The pipeline's
+#     class_probablity_filter is 0.0 with keep_all_classes true, which looks
+#     safe, but the rf_detr DETECTOR applies its own threshold first:
+#     viame/pytorch/rf_detr_detector.py:39 defaults it to 0.5. The first run
+#     therefore emitted nothing below 0.5 (67,377 detections, 2.0 per image,
+#     min score exactly 0.5000) while DEIMv2 was scored with 300 per image down
+#     to 0.001.
+#
+#     That is not a small difference in bookkeeping. AP integrates precision
+#     over the whole recall curve, so a score floor caps achievable recall and
+#     depresses AP for reasons unrelated to the model's quality. Comparing the
+#     two as-is would have flattered DEIMv2 on an artifact.
+#
+#     VF_RFDETR_THRESHOLD now defaults to 0.001 to match the eval protocol.
+#     Raise it only for a deliberate operating-point study, never for AP.
 #
 # Usage:
 #   bash projects/viame_fish_2026/scripts/run_rfdetr_on_test.sh
@@ -45,11 +56,18 @@ PROJECT_DIR="$OUT_DPATH/project"
 LIST_FPATH="$OUT_DPATH/input_list.txt"
 CSV_FPATH="$OUT_DPATH/computed_detections.csv"
 
+# Detection score floor. 0.001 matches what run_kwcoco_eval used for DEIMv2, so
+# both models produce a comparable ranking. The rf_detr detector's own default
+# is 0.5 (viame/pytorch/rf_detr_detector.py:39), which truncates the recall
+# curve and is NOT a valid setting for measuring AP.
+RFDETR_THRESHOLD="${VF_RFDETR_THRESHOLD:-0.001}"
+
 echo "=============================================================="
 echo " RF-DETR inference over the held-out test split"
 echo "=============================================================="
 echo "  detector: $DETECTOR_ZIP"
 echo "  test set: $TEST_KWCOCO"
+echo "  score thr:$RFDETR_THRESHOLD  (detector default is 0.5 -- too high for AP)"
 echo "  output:   $OUT_DPATH"
 echo
 
@@ -113,6 +131,7 @@ set -x
 kwiver runner "$VF_CURRENT_VIAME_LINK/configs/pipelines/detector_project_folder.pipe" \
     -s input:video_filename="$LIST_FPATH" \
     -s downsampler:target_frame_rate=1000 \
+    -s detector1:detector:ocv_windowed:detector:rf_detr:threshold="$RFDETR_THRESHOLD" \
     -s detector_writer:file_name="$CSV_FPATH"
 set +x
 echo

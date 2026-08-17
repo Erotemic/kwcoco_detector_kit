@@ -102,10 +102,18 @@ def parse_row_category(row):
 
     VIAME writes the pairs in descending confidence, so the first non-attribute
     token is the assigned class.
+
+    Scans ONE token at a time, not in pairs. The pairs are not at a fixed
+    parity -- attribute tokens are interleaved, and an odd number of them
+    before the first species shifts everything after, so a paired scan lands on
+    a confidence and returns it as a class name. Every row in this corpus
+    happens to put the species first, so the paired version produced correct
+    output here, but the failure is silent when it does occur: a category named
+    "1.0" is not obviously wrong to anything downstream.
     """
     tail = row[VIAME_MIN_COLUMNS:]
-    for index in range(0, len(tail), 2):
-        name = tail[index].strip()
+    for token in tail:
+        name = token.strip()
         if not name or name.startswith(ATTRIBUTE_PREFIXES):
             continue
         return name

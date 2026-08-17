@@ -562,3 +562,77 @@ def test_subset_drops_annotations_of_excluded_videos():
     assert [im['id'] for im in result['images']] == [1]
     assert [a['id'] for a in result['annotations']] == [1]
     assert [v['name'] for v in result['videos']] == ['A']
+
+
+# ------------------------------------------- VIAME detections -> predictions
+
+from convert_viame_dets_to_kwcoco import build_image_index, parse_detection_row  # noqa: E402
+
+
+def test_parse_detection_row_keeps_the_class_score():
+    """Score is the whole point: AP ranks detections by it.
+
+    Dropping it would silently produce a much worse AP with no error raised.
+    """
+    row = ['0', 'frames/SEQ/frame000001.jpg', '0', '10', '20', '110', '90',
+           '0.9', '-1', 'fish', '0.87']
+    key, bbox, category, score = parse_detection_row(row)
+    assert key == 'frames/SEQ/frame000001.jpg'
+    assert bbox == [10.0, 20.0, 100.0, 70.0]   # TL/BR corners -> x,y,w,h
+    assert category == 'fish'
+    assert score == 0.87
+
+
+def test_parse_detection_row_falls_back_to_detection_confidence():
+    """Some VIAME writers emit no (species, conf) pair; column 8 still scores."""
+    row = ['0', 'a.jpg', '0', '1', '2', '11', '12', '0.42', '-1']
+    assert parse_detection_row(row)[3] == 0.42
+
+
+def test_parse_detection_row_skips_attribute_tokens():
+    row = ['0', 'a.jpg', '0', '1', '2', '11', '12', '0.9', '-1',
+           '(poly) 1 2 3 4', 'fish', '0.77']
+    _, _, category, score = parse_detection_row(row)
+    assert (category, score) == ('fish', 0.77)
+
+
+def test_parse_detection_row_rejects_degenerate_and_short_rows():
+    assert parse_detection_row(['0', 'a.jpg', '0', '1', '2', '1', '12', '0.9', '-1']) is None
+    assert parse_detection_row(['0', 'a.jpg', '0']) is None
+
+
+def test_build_image_index_accepts_the_forms_viame_echoes_back():
+    """VIAME returns whatever path it was handed: absolute, relative or base."""
+    like = {'images': [{'id': 7, 'file_name': '/data/frames/SEQ/frame000001.jpg'}]}
+    index = build_image_index(like)
+    for key in ('/data/frames/SEQ/frame000001.jpg',
+                'frame000001.jpg',
+                'SEQ/frame000001.jpg'):
+        assert index[key] == 7
+
+
+def test_build_image_index_disambiguates_same_basename_across_sequences():
+    """Frame numbering restarts per sequence, so basenames collide by design."""
+    like = {'images': [
+        {'id': 1, 'file_name': '/d/A/frame000001.jpg'},
+        {'id': 2, 'file_name': '/d/B/frame000001.jpg'},
+    ]}
+    index = build_image_index(like)
+    assert index['A/frame000001.jpg'] == 1
+    assert index['B/frame000001.jpg'] == 2
+    # The bare basename is ambiguous; first-wins is documented by setdefault.
+    assert index['frame000001.jpg'] == 1
+
+
+def test_parse_row_category_survives_an_odd_number_of_leading_attributes():
+    """Regression: a paired scan lands on the confidence and returns '1.0'.
+
+    The (species, confidence) pairs are not at a fixed parity, so stepping by
+    two breaks whenever an ODD number of attribute tokens precedes the species.
+    Every row in this corpus puts the species first, which is why the paired
+    version produced correct output -- but the failure is silent, since a
+    category literally named "1.0" looks like data to everything downstream.
+    """
+    row = ['0', '', '0', '1', '2', '3', '4', '1.0', '-1',
+           '(poly) 1 2', 'etelis_coruscans', '0.9']
+    assert parse_row_category(row) == 'etelis_coruscans'

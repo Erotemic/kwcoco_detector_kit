@@ -121,7 +121,8 @@ export VF_KCD_ROOT="${VF_KCD_ROOT:-$VF_SSD_ROOT/fish_kcd}"
 # VIAME CSV means the same thing here as it does in a VIAME run.
 export VF_FRAMES_DPATH="${VF_FRAMES_DPATH:-$VF_KCD_ROOT/frames}"
 
-# The kwcoco bundle: split .kwcoco.zip files plus their assets.
+# The kwcoco bundle: split .kwcoco.json files (plain JSON -- the converters
+# are stdlib-only and cannot write kwcoco's zipped form).
 export VF_BUNDLE_DPATH="${VF_BUNDLE_DPATH:-$VF_KCD_ROOT/bundle}"
 
 # Held-out test source. The FishTrack23 release ships its own Test/
@@ -140,9 +141,15 @@ export VF_TEST_INPUT_DPATH="${VF_TEST_INPUT_DPATH:-$VF_DATA_DPATH/Test}"
 export VF_LABELS_FPATH="${VF_LABELS_FPATH:-$VF_INPUT_DPATH/labels.txt}"
 
 # Split bundles consumed by the kit's `sweep` CLI.
-export VF_TRAIN_KWCOCO="${VF_TRAIN_KWCOCO:-$VF_BUNDLE_DPATH/train.kwcoco.zip}"
-export VF_VALI_KWCOCO="${VF_VALI_KWCOCO:-$VF_BUNDLE_DPATH/vali.kwcoco.zip}"
-export VF_TEST_KWCOCO="${VF_TEST_KWCOCO:-$VF_BUNDLE_DPATH/test.kwcoco.zip}"
+# .json, not .zip: prep_all.sh writes plain JSON because the converters are
+# stdlib-only and cannot produce kwcoco's zipped form. These originally said
+# .zip and nothing noticed, because the training path reads the KCD_* aliases
+# below and those were right. The head-to-head scripts read the VF_* names and
+# broke immediately. Defined once here; KCD_* now derives from these rather
+# than repeating the literals.
+export VF_TRAIN_KWCOCO="${VF_TRAIN_KWCOCO:-$VF_BUNDLE_DPATH/train.kwcoco.json}"
+export VF_VALI_KWCOCO="${VF_VALI_KWCOCO:-$VF_BUNDLE_DPATH/vali.kwcoco.json}"
+export VF_TEST_KWCOCO="${VF_TEST_KWCOCO:-$VF_BUNDLE_DPATH/test.kwcoco.json}"
 
 # Fraction of Train/ sequences held out as validation. Whole sequences
 # only -- a frame-level split puts adjacent frames of one fish track on
@@ -275,9 +282,9 @@ kcd_require_train_inputs() {
 
 # The kit CLI reads these; they mirror the VF_* split paths so the
 # container (which only receives KCD_* vars) can find the bundles.
-export KCD_TRAIN_KWCOCO="${KCD_TRAIN_KWCOCO:-$VF_BUNDLE_DPATH/train.kwcoco.json}"
-export KCD_VALI_KWCOCO="${KCD_VALI_KWCOCO:-$VF_BUNDLE_DPATH/vali.kwcoco.json}"
-export KCD_TEST_KWCOCO="${KCD_TEST_KWCOCO:-$VF_BUNDLE_DPATH/test.kwcoco.json}"
+export KCD_TRAIN_KWCOCO="${KCD_TRAIN_KWCOCO:-$VF_TRAIN_KWCOCO}"
+export KCD_VALI_KWCOCO="${KCD_VALI_KWCOCO:-$VF_VALI_KWCOCO}"
+export KCD_TEST_KWCOCO="${KCD_TEST_KWCOCO:-$VF_TEST_KWCOCO}"
 
 # The corpus and everything generated from it live on the NVMe, which is
 # outside $KCD_DATA_ROOT, so it has to be bind-mounted into the container

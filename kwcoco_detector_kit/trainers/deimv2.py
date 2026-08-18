@@ -346,7 +346,59 @@ def _dinov3_optimizer_block(lr: float, backbone_lr: float) -> Dict[str, Any]:
     }
 
 
-def _train_transforms_block(input_hw: Tuple[int, int]) -> Dict[str, Any]:
+# Upstream DEIMv2's augmentation policy boundaries, and the schedule length
+# they were written for. Used to rescale for shorter runs -- see
+# _aug_policy_epochs.
+_UPSTREAM_AUG_POLICY_EPOCHS = (4, 78, 148)
+_UPSTREAM_AUG_POLICY_TOTAL_EPOCHS = 150
+
+
+def _aug_policy_epochs(num_epochs: int) -> list:
+    """Scale the 4-stage augmentation boundaries to an actual schedule length.
+
+    DEIMv2's `stop_epoch` policy takes THREE boundaries defining FOUR stages
+    (engine/data/transforms/container.py:81-97):
+
+        epoch < e0            NoAug warmup -- policy ops skipped
+        e0 <= epoch < e1      Mosaic active with mosaic_prob
+        e1 <= epoch < e2      ZoomOut / IoUCrop / PhotometricDistort, no Mosaic
+        epoch >= e2           NoAug -- the clean final phase the recipe needs
+
+    Upstream's (4, 78, 148) assumes ~150 epochs. Passing them through unscaled
+    to a short run does not merely shift the boundaries -- it makes stages 3
+    and 4 UNREACHABLE. A 20-epoch run enters stage 2 at epoch 4 and stays there
+    to the end, so it never gets the clean fine-tuning epochs, and the model is
+    still seeing Mosaic when training stops.
+
+    This is the same class of bug the LR schedule already guards against just
+    below (`flat_epoch` / `no_aug_epoch` are derived from num_epochs for
+    exactly this reason); the policy was simply missed.
+
+    Boundaries are scaled by num_epochs / 150, then forced to be strictly
+    increasing and to leave at least one epoch in the final NoAug stage --
+    without that clamp, rounding on short schedules collapses stages onto each
+    other or pushes the last boundary past the end of training.
+    """
+    num_epochs = max(1, int(num_epochs))
+    scale = num_epochs / float(_UPSTREAM_AUG_POLICY_TOTAL_EPOCHS)
+    e0, e1, e2 = (int(round(e * scale)) for e in _UPSTREAM_AUG_POLICY_EPOCHS)
+
+    # Warmup is at least one epoch, and every stage boundary must advance.
+    e0 = max(1, e0)
+    e1 = max(e0 + 1, e1)
+    # The final NoAug stage must actually run: e2 <= num_epochs - 1.
+    e2 = min(max(e1 + 1, e2), max(0, num_epochs - 1))
+    # Clamping e2 down can invert the earlier boundaries on very short
+    # schedules (a 2-epoch smoke test cannot hold four distinct stages), so
+    # rebuild downward. The invariant callers rely on is 0 <= e0 <= e1 <= e2;
+    # equal boundaries simply make the corresponding stage empty, which
+    # DEIMv2's comparisons handle correctly.
+    e1 = min(e1, e2)
+    e0 = min(e0, max(0, e1 - 1))
+    return [int(e0), int(e1), int(e2)]
+
+
+def _train_transforms_block(input_hw: Tuple[int, int], num_epochs: int = None) -> Dict[str, Any]:
     H, W = int(input_hw[0]), int(input_hw[1])
     mosaic_out = H // 2
     return {
@@ -376,7 +428,11 @@ def _train_transforms_block(input_hw: Tuple[int, int]) -> Dict[str, Any]:
         ],
         "policy": {
             "name": "stop_epoch",
-            "epoch": [4, 78, 148],
+            # Scaled to the actual schedule length. Falls back to upstream's
+            # raw values only when the caller did not pass num_epochs, so an
+            # unscaled policy can never be produced silently for a short run.
+            "epoch": (_aug_policy_epochs(num_epochs) if num_epochs
+                      else list(_UPSTREAM_AUG_POLICY_EPOCHS)),
             "ops": ["Mosaic", "RandomPhotometricDistort", "RandomZoomOut", "RandomIoUCrop"],
         },
         "mosaic_prob": 0.5,
@@ -487,14 +543,14 @@ def _build_train_yml(
                     ),
                     "skip_empty": bool(train_wds_skip_empty),
                     "return_masks": False,
-                    "transforms": _train_transforms_block(input_hw),
+                    "transforms": _train_transforms_block(input_hw, num_epochs),
                 }
                 if train_wds_shards_dpath
                 else {
                     "img_folder": "/",
                     "ann_file": str(train_mscoco_fpath),
                     "return_masks": False,
-                    "transforms": _train_transforms_block(input_hw),
+                    "transforms": _train_transforms_block(input_hw, num_epochs),
                 }
             ),
             # PyTorch DataLoader rejects shuffle=True on IterableDataset

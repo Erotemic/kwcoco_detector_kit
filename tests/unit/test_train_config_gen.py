@@ -483,3 +483,70 @@ def test_non_wds_path_still_emits_legacy_coco_keys(tmp_path):
     # True wins (and CocoDetection is map-style, so shuffle=True is
     # fine for DataLoader).
     assert ds.get("type") != "WebDatasetCocoDetection"
+
+
+# ---------------------------------------------------------------------------
+# Augmentation policy must be scaled to the schedule length
+#
+# DEIMv2's `stop_epoch` policy takes three boundaries defining four stages
+# (engine/data/transforms/container.py:81-97):
+#
+#     epoch < e0        NoAug warmup
+#     e0..e1            Mosaic active
+#     e1..e2            ZoomOut / IoUCrop / PhotometricDistort, no Mosaic
+#     epoch >= e2       NoAug -- the clean final phase the recipe needs
+#
+# Upstream's (4, 78, 148) assumes ~150 epochs. Emitted unscaled into a short
+# run they do not merely shift: stages 3 and 4 become UNREACHABLE, so training
+# ends while Mosaic is still on and the model never sees the clean epochs. The
+# LR schedule already guards against this class of bug (flat_epoch and
+# no_aug_epoch derive from num_epochs); the policy was missed.
+# ---------------------------------------------------------------------------
+
+
+def _aug_policy(cfg):
+    return cfg["train_dataloader"]["dataset"]["transforms"]["policy"]["epoch"]
+
+
+@pytest.mark.parametrize("num_epochs", [3, 5, 8, 12, 20, 30, 45, 150])
+def test_aug_policy_boundaries_are_ordered_and_inside_the_schedule(
+        num_epochs, tmp_path):
+    trainer = _get_trainer()
+    cfg = _generate(trainer, tmp_path, variant="deimv2_dinov3_s",
+                    input_hw=(640, 640), num_epochs=num_epochs)
+    e0, e1, e2 = _aug_policy(cfg)
+    assert 0 <= e0 <= e1 <= e2, f"boundaries out of order: {[e0, e1, e2]}"
+    assert e2 <= num_epochs - 1, (
+        f"final NoAug stage starts at {e2} but training ends at "
+        f"{num_epochs - 1}; that stage would never run")
+
+
+@pytest.mark.parametrize("num_epochs", [3, 5, 8, 12, 20, 30, 45])
+def test_aug_policy_leaves_a_clean_final_phase(num_epochs, tmp_path):
+    """At least one epoch must run with the policy ops disabled."""
+    trainer = _get_trainer()
+    cfg = _generate(trainer, tmp_path, variant="deimv2_dinov3_s",
+                    input_hw=(640, 640), num_epochs=num_epochs)
+    _, _, e2 = _aug_policy(cfg)
+    assert num_epochs - e2 >= 1, (
+        f"{num_epochs}-epoch schedule leaves no NoAug epochs (e2={e2})")
+
+
+def test_aug_policy_preserves_upstream_at_150_epochs(tmp_path):
+    """The scaling must be a no-op on the schedule upstream tuned for."""
+    trainer = _get_trainer()
+    cfg = _generate(trainer, tmp_path, variant="deimv2_dinov3_s",
+                    input_hw=(640, 640), num_epochs=150)
+    assert _aug_policy(cfg) == [4, 78, 148]
+
+
+def test_aug_policy_regression_20_epochs_reaches_the_final_stage(tmp_path):
+    """Regression for gen001: 20 epochs emitted upstream's raw [4, 78, 148].
+
+    Training entered the Mosaic stage at epoch 4 and never left it, so the
+    model was still seeing Mosaic when the run ended.
+    """
+    trainer = _get_trainer()
+    cfg = _generate(trainer, tmp_path, variant="deimv2_dinov3_x",
+                    input_hw=(1024, 1024), num_epochs=20)
+    assert _aug_policy(cfg) == [1, 10, 19]

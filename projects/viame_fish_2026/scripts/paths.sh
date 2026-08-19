@@ -209,6 +209,57 @@ export KCD_USE_WEBDATASET="${KCD_USE_WEBDATASET:-0}"
 # keeps the banner and the slurm logs honest.
 export KCD_SCHEME="${KCD_SCHEME:-single_fish}"
 
+# -- Resume resolution ---------------------------------------------------
+#
+# KCD_RESUME_CKPT accepts:
+#
+#   auto (default)   resume from the most RECENT checkpoint in the workdir,
+#                    or start fresh if there are none
+#   <path>           resume from exactly that file
+#   null|none|fresh  start fresh, even if checkpoints exist
+#   noop|no|false|0
+#
+# "Most recent", not "best", is deliberate. Resuming after a kill wants the
+# latest training state; the best checkpoint may be several epochs stale, and
+# resuming from it silently discards the epochs since. Best-checkpoint
+# selection is a separate concern that happens at eval time.
+#
+# NOTE on how much this can currently recover: with train_policy=fixed,
+# DEIMv2 only writes last.pth and its periodic checkpoints while
+# `epoch < collate_fn.stop_epoch` (det_solver.py:111), and the kit sets that
+# stop_epoch to 1 for fixed policy -- so after epoch 0 the ONLY files that
+# update are best_stg1/best_stg2.pth, on eval improvement. Until that gate is
+# addressed, "most recent" in practice means "most recently improved". This
+# function is still correct; it just cannot conjure checkpoints nobody wrote.
+vf_resolve_resume_ckpt() {
+    local workdir="$1"
+    local requested="${KCD_RESUME_CKPT-auto}"
+
+    case "$(printf '%s' "$requested" | tr '[:upper:]' '[:lower:]')" in
+        ''|null|none|fresh|noop|no|false|0)
+            return 0 ;;                      # print nothing -> fresh run
+        auto)
+            ;;                               # fall through to discovery
+        *)
+            printf '%s\n' "$requested"       # explicit path, used verbatim
+            return 0 ;;
+    esac
+
+    [ -d "$workdir" ] || return 0            # nothing trained here yet
+
+    # Newest by mtime across every shape of checkpoint this stack writes:
+    # DEIMv2's last.pth / checkpointNNNN.pth / best_stg*.pth, plus the kit's
+    # per-epoch selection-journal staging (staging/epoch_NNNN.pth) when
+    # kcd_journal_dir is enabled.
+    local newest
+    newest="$(find "$workdir" -maxdepth 2 -type f \
+        \( -name 'last.pth' -o -name 'checkpoint*.pth' \
+           -o -name 'best_stg*.pth' -o -name 'epoch_*.pth' \) \
+        -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -n1 | cut -d' ' -f2-)"
+    [ -n "$newest" ] && printf '%s\n' "$newest"
+    return 0
+}
+
 kcd_require_path() {
     local label="$1"
     local path="$2"

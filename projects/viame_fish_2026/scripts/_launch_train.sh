@@ -82,6 +82,29 @@ print('  split disjointness: OK')
 PYEOF
 echo
 
+# Resolve KCD_RESUME_CKPT (default "auto"; see vf_resolve_resume_ckpt).
+#
+# The workdir is created by `sweep` and named after the candidate id, so on a
+# first run there is nothing here and this correctly resolves to empty. On a
+# re-run after a kill it finds the newest checkpoint and continues from it
+# rather than silently restarting -- which is what happened when job 299 was
+# launched into gen001's directory.
+KCD_RESUME_CKPT_REQUESTED="${KCD_RESUME_CKPT-auto}"
+_RESUME_WORKDIR=""
+if [ -d "$KCD_ROOT/runs" ]; then
+    _RESUME_WORKDIR="$(find "$KCD_ROOT/runs" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort | head -n1)"
+fi
+KCD_RESUME_CKPT="$(vf_resolve_resume_ckpt "$_RESUME_WORKDIR")"
+if [ -n "$KCD_RESUME_CKPT" ]; then
+    kcd_require_path "resume checkpoint" "$KCD_RESUME_CKPT"
+    echo "  resume:    $KCD_RESUME_CKPT"
+    echo "             (KCD_RESUME_CKPT=${KCD_RESUME_CKPT_REQUESTED:-auto}; set it to"
+    echo "              'fresh' to ignore existing checkpoints and start over)"
+else
+    echo "  resume:    <none> -- training from the init checkpoint"
+fi
+echo
+
 TOTAL_BATCH=$(( KCD_NUM_GPUS * ${KCD_PER_GPU_BATCH:-4} ))
 TOTAL_VAL_BATCH=$(( TOTAL_BATCH * ${KCD_VAL_BATCH_MULT:-1} ))
 

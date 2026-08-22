@@ -353,7 +353,7 @@ _UPSTREAM_AUG_POLICY_EPOCHS = (4, 78, 148)
 _UPSTREAM_AUG_POLICY_TOTAL_EPOCHS = 150
 
 
-def _aug_policy_epochs(num_epochs: int) -> list:
+def _aug_policy_epochs(num_epochs: int, stop_epoch: Optional[int] = None) -> list:
     """Scale the 4-stage augmentation boundaries to an actual schedule length.
 
     DEIMv2's `stop_epoch` policy takes THREE boundaries defining FOUR stages
@@ -378,16 +378,45 @@ def _aug_policy_epochs(num_epochs: int) -> list:
     increasing and to leave at least one epoch in the final NoAug stage --
     without that clamp, rounding on short schedules collapses stages onto each
     other or pushes the last boundary past the end of training.
+
+    ## No boundary may land on `stop_epoch`
+
+    At ``epoch == collate_fn.stop_epoch`` DEIMv2 reloads model, optimizer,
+    GradScaler and EMA state from ``best_stg1.pth``
+    (engine/solver/det_solver.py:83-86). If an augmentation boundary lands on
+    that same epoch, the optimizer and loss-scaler are reset to their state
+    from the *previous* augmentation regime at the exact step the input
+    distribution changes -- a stale fp16 loss scale meeting Mosaic/ZoomOut/
+    IoUCrop for the first time.
+
+    That is not hypothetical. `train_policy=fixed` pins ``stop_epoch = 1``,
+    and the scaling above clamps ``e0 = max(1, ...)``, which lands on 1 for
+    every schedule shorter than ~80 epochs. fish job 489 (12 epochs, policy
+    [1, 6, 11]) went irrecoverably NaN partway through epoch 1. gen001, whose
+    unscaled [4, 78, 148] kept the two events 3 epochs apart, hit a NaN
+    excursion at its own boundary epoch and *recovered*.
+
+    So each boundary is nudged off ``stop_epoch``. When no 4-stage schedule
+    fits without a collision -- only possible on 2-3 epoch smoke tests -- the
+    policy collapses to [0, 0, 0], i.e. NoAug throughout, which is strictly
+    safer than recreating the collision.
     """
     num_epochs = max(1, int(num_epochs))
     scale = num_epochs / float(_UPSTREAM_AUG_POLICY_TOTAL_EPOCHS)
     e0, e1, e2 = (int(round(e * scale)) for e in _UPSTREAM_AUG_POLICY_EPOCHS)
+    stop = None if stop_epoch is None else int(stop_epoch)
 
     # Warmup is at least one epoch, and every stage boundary must advance.
     e0 = max(1, e0)
+    if stop is not None and e0 == stop:
+        e0 += 1
     e1 = max(e0 + 1, e1)
+    if stop is not None and e1 == stop:
+        e1 += 1
     # The final NoAug stage must actually run: e2 <= num_epochs - 1.
     e2 = min(max(e1 + 1, e2), max(0, num_epochs - 1))
+    if stop is not None and e2 == stop:
+        e2 += 1
     # Clamping e2 down can invert the earlier boundaries on very short
     # schedules (a 2-epoch smoke test cannot hold four distinct stages), so
     # rebuild downward. The invariant callers rely on is 0 <= e0 <= e1 <= e2;
@@ -395,10 +424,19 @@ def _aug_policy_epochs(num_epochs: int) -> list:
     # DEIMv2's comparisons handle correctly.
     e1 = min(e1, e2)
     e0 = min(e0, max(0, e1 - 1))
+
+    if stop is not None and stop in (e0, e1, e2):
+        # The downward rebuild put a boundary back onto stop_epoch and there
+        # is no room to separate them. All-zero disables the policy ops for
+        # every epoch via container.py's `cur_epoch >= policy_epoch[-1]`
+        # last-stage branch, and unlike an all-num_epochs sentinel it still
+        # satisfies the ordering and "e2 inside the schedule" invariants.
+        return [0, 0, 0]
     return [int(e0), int(e1), int(e2)]
 
 
-def _train_transforms_block(input_hw: Tuple[int, int], num_epochs: int = None) -> Dict[str, Any]:
+def _train_transforms_block(input_hw: Tuple[int, int], num_epochs: int = None,
+                            stop_epoch: Optional[int] = None) -> Dict[str, Any]:
     H, W = int(input_hw[0]), int(input_hw[1])
     mosaic_out = H // 2
     return {
@@ -431,7 +469,7 @@ def _train_transforms_block(input_hw: Tuple[int, int], num_epochs: int = None) -
             # Scaled to the actual schedule length. Falls back to upstream's
             # raw values only when the caller did not pass num_epochs, so an
             # unscaled policy can never be produced silently for a short run.
-            "epoch": (_aug_policy_epochs(num_epochs) if num_epochs
+            "epoch": (_aug_policy_epochs(num_epochs, stop_epoch) if num_epochs
                       else list(_UPSTREAM_AUG_POLICY_EPOCHS)),
             "ops": ["Mosaic", "RandomPhotometricDistort", "RandomZoomOut", "RandomIoUCrop"],
         },
@@ -543,14 +581,16 @@ def _build_train_yml(
                     ),
                     "skip_empty": bool(train_wds_skip_empty),
                     "return_masks": False,
-                    "transforms": _train_transforms_block(input_hw, num_epochs),
+                    "transforms": _train_transforms_block(
+                        input_hw, num_epochs, policy.stop_epoch),
                 }
                 if train_wds_shards_dpath
                 else {
                     "img_folder": "/",
                     "ann_file": str(train_mscoco_fpath),
                     "return_masks": False,
-                    "transforms": _train_transforms_block(input_hw, num_epochs),
+                    "transforms": _train_transforms_block(
+                        input_hw, num_epochs, policy.stop_epoch),
                 }
             ),
             # PyTorch DataLoader rejects shuffle=True on IterableDataset
@@ -778,22 +818,33 @@ class DEIMv2Predictor:
         self._eval_h = int(eval_h)
         self._eval_w = int(eval_w)
         self._device = device
-        # fp16 autocast for inference on CUDA — the model trained under AMP,
-        # so fp16 is numerically safe here and ~2x faster on tensor cores
-        # (matters a lot for tiled eval's ~55 forward passes/image). Disable
-        # with KCD_EVAL_AMP=0. CPU path stays fp32.
+        # Autocast for inference on CUDA — the model trained under AMP, so
+        # reduced precision is numerically safe here and ~2x faster on tensor
+        # cores (matters a lot for tiled eval's ~55 forward passes/image).
+        # Disable with KCD_EVAL_AMP=0. CPU path stays fp32.
+        #
+        # The dtype MUST match what training used, and training now defaults
+        # to bfloat16 (see tpl/DEIMv2/engine/solver/det_engine.py). Evaluating
+        # bf16-trained weights under fp16 reintroduces exactly the ~65504
+        # ceiling that bf16 was adopted to escape, on a stack with a known
+        # history of activation excursions. KCD_AMP_DTYPE overrides both.
         self._use_amp = (
             str(device).startswith("cuda")
             and os.environ.get("KCD_EVAL_AMP", "1") != "0"
         )
+        self._amp_dtype_name = os.environ.get("KCD_AMP_DTYPE", "bfloat16").lower()
 
     @profile
     def _forward(self, im, sz):
-        """Model forward under no_grad + (CUDA) fp16 autocast."""
+        """Model forward under no_grad + (CUDA) bf16/fp16 autocast."""
         import contextlib
         import torch
+        if self._amp_dtype_name in ("bf16", "bfloat16") and torch.cuda.is_bf16_supported():
+            amp_dtype = torch.bfloat16
+        else:
+            amp_dtype = torch.float16
         amp = (
-            torch.autocast("cuda", dtype=torch.float16)
+            torch.autocast("cuda", dtype=amp_dtype)
             if self._use_amp else contextlib.nullcontext()
         )
         with torch.no_grad(), amp:

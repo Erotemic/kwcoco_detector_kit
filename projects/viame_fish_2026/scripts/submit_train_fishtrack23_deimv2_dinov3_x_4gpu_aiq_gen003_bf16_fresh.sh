@@ -108,7 +108,13 @@ export KCD_TRAIN_POLICY="${KCD_TRAIN_POLICY:-fixed}"
 export KCD_LR="${KCD_LR:-5e-4}"                         # upstream's tuned pair
 export KCD_BACKBONE_LR="${KCD_BACKBONE_LR:-1e-5}"
 export KCD_USE_AMP=true
-export KCD_AMP_DTYPE="${KCD_AMP_DTYPE:-bfloat16}"       # set float16 to A/B
+# Pinned so re-running this script reproduces gen003. The kit default has
+# since reverted to fp16: DEIMv2 is an fp16 recipe (no bf16 anywhere in its
+# training path, an unconditional GradScaler, published numbers from plain
+# --use-amp), and bf16 finished BELOW both fp16 runs -- 0.5406 vs 0.5440 and
+# 0.5443. The NaN excursions it was adopted to prevent are explained by the
+# stop_epoch collision, which is fixed independently.
+export KCD_AMP_DTYPE="${KCD_AMP_DTYPE:-bfloat16}"
 
 # ============================================================
 # Eval: whole-image, matching how the model trains.

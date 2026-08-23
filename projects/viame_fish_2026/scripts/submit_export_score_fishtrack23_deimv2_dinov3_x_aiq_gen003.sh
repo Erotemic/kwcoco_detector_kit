@@ -52,8 +52,11 @@ export KCD_TRAIN_POLICY="${KCD_TRAIN_POLICY:-fixed}"
 export KCD_LR="${KCD_LR:-5e-4}"
 export KCD_BACKBONE_LR="${KCD_BACKBONE_LR:-1e-5}"
 
-# Match training's precision. Overridable per the header when running against
-# an image that predates the float32 cast in _forward.
+# Pinned to bfloat16 because gen003 is the one run that TRAINED in bf16. The
+# kit default has since gone back to fp16 (DEIMv2's own recipe), so this has
+# to be explicit to score this checkpoint the way it was trained.
+# Overridable per the header when running against an image that predates the
+# float32 cast in _forward.
 export KCD_AMP_DTYPE="${KCD_AMP_DTYPE:-bfloat16}"
 
 # Whole-image eval, matching how the model was trained. Tiled eval would

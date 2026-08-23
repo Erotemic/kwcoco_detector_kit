@@ -823,16 +823,17 @@ class DEIMv2Predictor:
         # cores (matters a lot for tiled eval's ~55 forward passes/image).
         # Disable with KCD_EVAL_AMP=0. CPU path stays fp32.
         #
-        # The dtype MUST match what training used, and training now defaults
-        # to bfloat16 (see tpl/DEIMv2/engine/solver/det_engine.py). Evaluating
-        # bf16-trained weights under fp16 reintroduces exactly the ~65504
-        # ceiling that bf16 was adopted to escape, on a stack with a known
-        # history of activation excursions. KCD_AMP_DTYPE overrides both.
+        # The dtype tracks whatever training used, which defaults to fp16 --
+        # DEIMv2's own recipe (see tpl/DEIMv2/engine/solver/det_engine.py).
+        # KCD_AMP_DTYPE overrides both together, so a run trained under an
+        # explicit bf16 setting is scored the same way by passing the same
+        # value. Outputs are cast back to float32 in _forward regardless,
+        # since numpy has no bfloat16.
         self._use_amp = (
             str(device).startswith("cuda")
             and os.environ.get("KCD_EVAL_AMP", "1") != "0"
         )
-        self._amp_dtype_name = os.environ.get("KCD_AMP_DTYPE", "bfloat16").lower()
+        self._amp_dtype_name = os.environ.get("KCD_AMP_DTYPE", "float16").lower()
 
     @profile
     def _forward(self, im, sz):

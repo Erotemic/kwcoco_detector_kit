@@ -839,16 +839,32 @@ class DEIMv2Predictor:
         """Model forward under no_grad + (CUDA) bf16/fp16 autocast."""
         import contextlib
         import torch
-        if self._amp_dtype_name in ("bf16", "bfloat16") and torch.cuda.is_bf16_supported():
-            amp_dtype = torch.bfloat16
-        else:
+        # Resolve the dtype only when AMP is actually in play. Probing
+        # torch.cuda from a CPU-only process is at best pointless and at worst
+        # raises -- and the Docker build gate runs pytest without a GPU.
+        amp = contextlib.nullcontext()
+        if self._use_amp:
             amp_dtype = torch.float16
-        amp = (
-            torch.autocast("cuda", dtype=amp_dtype)
-            if self._use_amp else contextlib.nullcontext()
-        )
+            if self._amp_dtype_name in ("bf16", "bfloat16"):
+                try:
+                    if torch.cuda.is_bf16_supported():
+                        amp_dtype = torch.bfloat16
+                except Exception:
+                    pass          # keep fp16; the cast below handles either
+            amp = torch.autocast("cuda", dtype=amp_dtype)
         with torch.no_grad(), amp:
-            return self._model(im, sz)
+            outputs = self._model(im, sz)
+        # numpy has no bfloat16, so a downstream .numpy() on an autocast
+        # output raises "Got unsupported ScalarType BFloat16". fp16 never hit
+        # this because numpy DOES have float16, which is why the eval path
+        # survived every run before bf16 was adopted. Cast floating outputs
+        # back to float32 here, at the one boundary they all pass through,
+        # rather than at each .numpy() call site. Labels are int64 and must
+        # not be touched.
+        return tuple(
+            t.float() if torch.is_tensor(t) and t.is_floating_point() else t
+            for t in outputs
+        )
 
     @property
     def eval_spatial_size(self) -> Tuple[int, int]:

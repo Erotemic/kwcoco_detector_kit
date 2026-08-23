@@ -65,7 +65,12 @@ def test_parses_epochs_ap_and_wall_time():
 
 
 def test_multiple_evals_per_epoch_are_all_captured():
-    """DEIMv2 can eval both the raw model and the EMA model in one epoch."""
+    """Defensive: nothing guarantees exactly one eval block per epoch.
+
+    In practice DEIMv2 emits one AP per epoch here -- the ~0.62 values that
+    look like a second eval are Average RECALL lines, which share the rest of
+    the bracket text and must not be matched as AP.
+    """
     lines = [
         _epoch_end("2026-08-22T17:47:00", 3),
         _ap("2026-08-22T17:52:00", "0.539"),
@@ -240,6 +245,37 @@ def test_report_includes_remaining_estimate():
     text = lh.format_report(run, findings, num_epochs=24)
     assert "remaining" in text
     assert "no findings" in text
+
+
+def test_average_recall_is_not_parsed_as_precision():
+    """AR lines share the bracket text and would inflate AP if matched."""
+    lines = [
+        _epoch_end("2026-08-22T17:25:18", 0),
+        _ap("2026-08-22T17:30:28", "0.523"),
+        ("[2026-08-22T17:30:28]  Average Recall     (AR) @[ IoU=0.50:0.95 | "
+         "area=   all | maxDets=100 ] = 0.616"),
+    ]
+    run = lh.parse_log(lines)
+    assert run.epochs[0].aps == [0.523]
+
+
+def test_cycle_time_includes_eval_and_drives_the_eta():
+    """"Total time" is training only; an ETA built on it understates by hours.
+
+    Epoch 0 ends 17:25, epoch 1 ends 18:18 -> a 53 min cycle, against the
+    47:27 of training the epoch line reports.
+    """
+    lines = [
+        _epoch_end("2026-08-22T17:25:18", 0, hms="0:47:27"),
+        _ap("2026-08-22T17:30:28", "0.523"),
+        _epoch_end("2026-08-22T18:18:40", 1, hms="0:48:08"),
+        _ap("2026-08-22T18:23:52", "0.533"),
+    ]
+    run, findings = lh.health_of_lines(lines)
+    assert run.epochs[0].cycle_seconds is None       # nothing before it
+    assert run.epochs[1].cycle_seconds == pytest.approx(53 * 60 + 22)
+    text = lh.format_report(run, findings, num_epochs=24)
+    assert "incl. eval" in text
 
 
 def test_watch_emits_one_event_per_epoch_and_dedupes(tmp_path):

@@ -121,8 +121,15 @@ class ProgressSample:
 @dataclass
 class EpochRecord:
     epoch: int
+    #: Training time only, as logged by "Epoch: [N] Total time". EXCLUDES the
+    #: eval that follows it, so never use this alone for an ETA -- use
+    #: cycle_seconds, which is measured end-to-end.
     wall_seconds: Optional[float] = None
-    # DEIMv2 evaluates twice per epoch: the raw model and the EMA model.
+    #: Wall time from the previous epoch's end to this one's, so it includes
+    #: eval and the checkpoint save. None for the first epoch seen.
+    cycle_seconds: Optional[float] = None
+    #: A list because nothing guarantees one eval per epoch; in practice
+    #: DEIMv2 emits a single AP block per epoch here.
     aps: List[float] = field(default_factory=list)
 
     @property
@@ -175,6 +182,7 @@ def parse_log(lines: Iterable[str]) -> RunLog:
     out = RunLog()
     by_epoch = {}
     pending_ap_epoch = 0
+    prev_epoch_end = None
 
     for idx, raw in enumerate(lines, start=1):
         out.num_lines = idx
@@ -204,6 +212,10 @@ def parse_log(lines: Iterable[str]) -> RunLog:
                     + int(m.group(4)))
             rec = by_epoch.setdefault(ep, EpochRecord(epoch=ep))
             rec.wall_seconds = float(secs)
+            if ts is not None:
+                if prev_epoch_end is not None:
+                    rec.cycle_seconds = (ts - prev_epoch_end).total_seconds()
+                prev_epoch_end = ts
             pending_ap_epoch = ep
             continue
 
@@ -363,10 +375,18 @@ def format_report(run: RunLog, findings: Sequence[Finding], *,
             aps = "  ".join(f"{a:.3f}" for a in rec.aps) or "-"
             out.append(f"  {rec.epoch:5d}  {_fmt_hms(rec.wall_seconds):9s}  {aps}")
         done = [r for r in run.epochs if r.wall_seconds]
+        cycles = [r.cycle_seconds for r in run.epochs if r.cycle_seconds]
         if done and num_epochs:
-            mean = sum(r.wall_seconds for r in done) / len(done)
             left = max(0, int(num_epochs) - len(done))
-            out.append(f"  mean epoch {_fmt_hms(mean)}; {left} left "
+            # Prefer the end-to-end cycle: "Total time" is training only and
+            # omits the eval, which understates a 24-epoch ETA by hours.
+            if cycles:
+                mean = sum(cycles) / len(cycles)
+                label = "mean cycle (incl. eval)"
+            else:
+                mean = sum(r.wall_seconds for r in done) / len(done)
+                label = "mean epoch (train only)"
+            out.append(f"  {label} {_fmt_hms(mean)}; {left} left "
                        f"=> ~{_fmt_hms(mean * left)} remaining")
 
     out.append("")

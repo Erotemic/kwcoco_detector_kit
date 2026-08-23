@@ -112,6 +112,13 @@ class DemoDataCLI(kwconf.Config):
 def _register_module(name, module):
     """Wrap a module's __cli__ DataConfig as a ModalKit subcommand."""
     inner_cls = module.__cli__
+    if inner_cls is None:
+        # A module whose CLI is gated on an optional import (see
+        # monitoring/log_health.py). Skip it with a reason rather than dying
+        # inside type() with "bases must be types".
+        print(f"[kcd.cli] note: subcommand {name!r} unavailable "
+              f"(module exposes __cli__ = None)")
+        return
     bases = (inner_cls,)
     # Copy attributes and inject the __command__ field.
     attrs = {"__command__": name, "__doc__": inner_cls.__doc__}
@@ -143,6 +150,7 @@ def _register_subcommands():
     import kwcoco_detector_kit.trainers.sam2 as _sam2
     import kwcoco_detector_kit.data.distill as _distill
     import kwcoco_detector_kit.predict as _predict
+    import kwcoco_detector_kit.monitoring.log_health as _run_health
 
     _register_module("tile", _tile)
     _register_module("tile-corpus", _tile_corpus)
@@ -157,6 +165,7 @@ def _register_subcommands():
     _register_module("round-loop", _round)
     _register_module("manifest", _elig)
     _register_module("check-env", _audit)
+    _register_module("run-health", _run_health)
     _register_module("export-onnx", _export_onnx)
     _register_module("parity", _parity)
     _register_module("bench", _bench)

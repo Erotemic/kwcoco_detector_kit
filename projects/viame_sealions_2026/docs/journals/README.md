@@ -50,3 +50,5 @@ already in the code or research_plan — link to it.
   constraint](2026-05-29_nfs_must_be_negative_and_first_per_class_ap.md)
 - [2026-05-29 — per-checkpoint vali rescoring: in-train selection
   agrees, last.pth ≡ epoch-0.pth](2026-05-29_per_checkpoint_rescoring_results.md)
+- [2026-08-23 — a latent aug-policy collision, caught on the fish
+  project](2026-08-23_aug_policy_collision_inbound_from_fish.md)

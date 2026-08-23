@@ -210,3 +210,167 @@ runs:
         near-miss, since deimv2.py:525-534 scales flat_epoch/no_aug_epoch for
         exactly this reason without applying it to the policy above.
 
+
+  - id: fishtrack23_deimv2_dinov3_x_4gpu_aiq_gen002_warmstart
+    status: failed
+    purpose: >-
+      Warm start from gen001's epoch-12 weights on a corrected 12-epoch
+      schedule, to finish a schedule cleanly rather than resume a run whose
+      checkpoint bookkeeping was already anomalous.
+    entrypoint: scripts/submit_train_fishtrack23_deimv2_dinov3_x_4gpu_aiq_gen002_warmstart.sh
+    gpus: 4
+    variant: deimv2_dinov3_x
+    classes: [fish]
+    hyperparameters:
+      input_hw: [1024, 1024]
+      per_gpu_batch: 6        # total 24
+      num_epochs: 12
+      lr: 2e-4                # was 1e-3
+      backbone_lr: 1e-5
+      amp_dtype: float16
+      aug_policy_epochs: [1, 6, 11]   # THE DEFECT -- see notes
+    slurm_jobs: [297, 300, 301, 489]
+    epochs_completed: 1     # of 12; epochs 1-11 produced AP 0.000
+    artifact: >-
+      runs/deimv2_dinov3_x_1024x1024_fixed/best_stg2.pth (epoch 1, vali
+      AP 0.5443 -- the best number of any run at the time, reached after two
+      epochs rather than thirteen). NOT poisoned by the NaN: DEIMv2 rewrites
+      best_stg*.pth only on eval IMPROVEMENT, and a NaN model scores 0.0000.
+    results:
+      best_epoch: 1
+      box_mAP_50_95: 0.5443
+    notes:
+      - >-
+        ROOT CAUSE -- an augmentation boundary landed on collate_fn.stop_epoch.
+        train_policy=fixed pins stop_epoch=1, and at `epoch == stop_epoch`
+        DEIMv2 reloads model, optimizer, GradScaler and EMA state from
+        best_stg1.pth (det_solver.py:83-86). Commit 2b3a911's policy scaling
+        clamps e0 = max(1, ...), which lands on 1 for EVERY schedule shorter
+        than ~80 epochs -- so the fix for short schedules quietly created a
+        collision on all of them. The optimizer and fp16 loss scale were reset
+        to their epoch-0 (NoAug) values at the exact step the input
+        distribution changed to Mosaic/ZoomOut/IoUCrop.
+      - >-
+        Two runs, two NaN excursions, both in the FIRST epoch with
+        augmentation enabled: gen001 at epoch 4 of [4, 78, 148], gen002 at
+        epoch 1 of [1, 6, 11], each around step 7500 of 10464. gen001's
+        reload was 3 epochs earlier, so the two events were separated, and it
+        RECOVERED at epoch 5. gen002's collided and it never escaped.
+      - >-
+        NOT SELF-LIMITING. Once the weights are NaN every loss reads exactly
+        0.0000, so the gradients are 0 and FINITE: GradScaler finds nothing to
+        skip and upstream's `math.isfinite(loss_value)` guard 70 lines below
+        never fires. Job 489 trained 11 further epochs to AP 0.000 on 4 GPUs
+        at 3x the step time, because DEIMv2's NaN detector dumped an 819 MB
+        NaN.pth and printed a 300x4 tensor EVERY step -- 500,000 log lines.
+      - >-
+        Job 489 also froze for 2 h 03 m mid-epoch between steps 4000 and 4500
+        with no message. Unexplained; the same signature as job 296's 8.4x
+        slow steps. GPU contention from a stray vLLM server remains the
+        leading hypothesis and was never ruled in or out.
+      - >-
+        FIXED by a5cee5b (no augmentation boundary may coincide with
+        stop_epoch) and DEIMv2 fork 32c3cd7 (abort on non-finite pred_boxes
+        instead of dumping and continuing).
+
+  - id: fishtrack23_deimv2_dinov3_x_4gpu_aiq_gen003_bf16_fresh
+    status: complete
+    purpose: >-
+      Fresh from COCO with the stop_epoch collision fixed, a batch sized to the
+      cards, and bf16 -- the first fish run to complete its schedule.
+    entrypoint: scripts/submit_train_fishtrack23_deimv2_dinov3_x_4gpu_aiq_gen003_bf16_fresh.sh
+    score_entrypoint: scripts/submit_export_score_fishtrack23_deimv2_dinov3_x_aiq_gen003.sh
+    gpus: 4
+    variant: deimv2_dinov3_x
+    classes: [fish]
+    hyperparameters:
+      input_hw: [1024, 1024]
+      per_gpu_batch: 16       # total 64
+      num_epochs: 24
+      lr: 5e-4                # upstream's tuned pair for this config
+      backbone_lr: 1e-5
+      amp_dtype: bfloat16     # the only run that trained in bf16
+      aug_policy_epochs: [2, 12, 23]
+      flat_epoch: 12
+      tiled_eval: false
+    splits:
+      train: {sequences: 439, images: 251143, annotations: 561572}
+      vali:  {sequences: 46,  images: 35111,  annotations: 77230}
+      test:  {sequences: 69,  images: 33434,  annotations: 84694}
+    slurm_jobs: [490, 491]   # 490 train (+failed score), 491 score
+    started_at: 2026-08-22T12:37:00-04:00
+    completed_at: 2026-08-23T10:31:00-04:00
+    epochs_completed: 24    # of 24 -- .train_complete written
+    wall_time: 21h54m       # 54m49s per epoch end-to-end
+    optimizer_steps: ~94k   # 3924 steps/epoch
+    artifact: >-
+      runs/deimv2_dinov3_x_1024x1024_fixed/best_stg2.pth (epoch 21);
+      packages/fishtrack23/.../deimv2_dinov3_x.zip
+    results:
+      # HELD-OUT TEST split -- the same 69 sequences / 33,434 images / 84,694
+      # annotations gen001 was scored on, so directly comparable. iou_thresh
+      # 0.5, so an AP50. Scored under KCD_EVAL_AMP=0 (fp32).
+      test_AP50: 0.7285          # gen001: 0.7272
+      test_AUC: 0.8555           # gen001: 0.8504
+      test_max_f1: 0.74          # at score 0.44
+      test_split: {sequences: 69, images: 33434, annotations: 84694}
+      # VALI split, used for checkpoint selection.
+      best_epoch: 21
+      box_mAP_50_95: 0.5406      # gen001: 0.5440, gen002: 0.5443
+      box_mAP_50: 0.798
+      box_mAP_75: 0.584
+      AP_small: 0.192
+      AP_medium: 0.254
+      AP_large: 0.653
+      AR_100: 0.634
+      AR_50: 0.907
+    vram:
+      # torch.cuda.max_memory_allocated via MetricLogger, per GPU of 96 GB.
+      peak_allocated_gb: 37.8
+      working_set_gb: 1.26     # model + EMA + optimizer
+      per_sample_gb: 2.28
+      profile: >-
+        36.9 GB at epoch 0 step 0 -> 37.8 GB by epoch 14, then flat. Turning
+        augmentation on at epoch 2 added ~100 MB. No fragmentation creep over
+        24 epochs. Batch 32/GPU would fit in ~77 GB.
+    notes:
+      - >-
+        FIRST COMPLETED SCHEDULE on this corpus, and the first run with the
+        stop_epoch collision fixed. No NaN excursion at any point.
+      - >-
+        THE HEADLINE: held-out test AP50 0.7285 vs gen001's 0.7272 on the
+        identical split -- a marginal improvement, well inside noise. Vali went
+        the other way (0.5406 vs 0.5440), so the vali deficit did NOT carry
+        through to held-out data. Vali has been the weaker guide throughout.
+      - >-
+        Beware comparing vali across these runs. gen001's and gen002's numbers
+        benefit from DEIMv2 reloading best_stg1.pth after every non-improving
+        eval (det_solver.py:213-217), which repeatedly restores their best
+        weights and produces a sawtooth loss curve. gen003 never leaned on
+        that; its trajectory is monotone.
+      - >-
+        UPDATE-STARVED, most likely. gen003 took ~94k optimizer steps to reach
+        0.5406; gen001 took ~136k to reach 0.5440. The batch increase (24 ->
+        64) bought throughput (57 -> 89 img/s) at the cost of 2.7x fewer steps
+        per epoch, and AP plateaued from epoch 6. This is what gen004 tests.
+      - >-
+        bf16 WAS A MISTAKE and the default has been reverted (DEIMv2 fork
+        4d7d253). DEIMv2 is an fp16 recipe: no bfloat16 anywhere in its
+        training path, a GradScaler constructed unconditionally (fp16
+        underflow machinery, a vestige under bf16), and every published COCO
+        number from plain `--use-amp`. bf16 also costs three mantissa bits
+        (7 vs 10) in a model whose localization is fine-grained-distribution
+        based (reg_max=32, loss_fgl, loss_ddf). It was adopted to prevent NaN
+        excursions that the collision already explains.
+      - >-
+        The post-training scoring pass in job 490 died on its first image with
+        "TypeError: Got unsupported ScalarType BFloat16" -- numpy has float16
+        but no bfloat16, so every .numpy() downstream of the eval autocast
+        worked for exactly as long as that autocast was fp16. Fixed in 03e48a9
+        by casting floating outputs to float32 in DEIMv2Predictor._forward.
+        Training was never at risk; job 491 re-scored the finished checkpoint.
+      - >-
+        AP dipped at epoch 14 (0.536 -> 0.523), two epochs after the aug stage
+        change and the start of cosine decay at epoch 12, then recovered to its
+        peak by epoch 21. The final NoAug epoch 23 fell to 0.526; best_stg2
+        captured epoch 21 regardless.

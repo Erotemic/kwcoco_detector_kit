@@ -27,3 +27,9 @@ Keep code references precise (`file.py:line` plus commit SHAs).
 
 - [2026-08-14 — orientation: what it would take to train the best fish
   detector](2026-08-14_orientation.md)
+- [2026-08-14 — aiq: RF-DETR baseline audit + DEIMv2 prep
+  runbook](2026-08-14_aiq_baseline_audit_and_deim_prep.md)
+- [2026-08-17 — DEIM gen001: 13 good epochs, then a DDP
+  deadlock](2026-08-17_deim_gen001_deadlock_at_epoch13.md)
+- [2026-08-23 — the stop_epoch collision, and the first completed
+  schedule](2026-08-23_stop_epoch_collision_and_gen003.md)

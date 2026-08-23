@@ -22,12 +22,31 @@
 #         64     88.9    52.6 min      54          212k   <- gen003's batch
 #        128    103.0    46.1 min      62          122k
 #
-# Doubling to 128 buys 16% more images/hour and HALVES the updates. And updates
-# are what we appear to be short of: gen001 reached vali AP 0.5440 on ~136k
-# steps, gen003 only 0.5406 on ~94k. gen003 was update-starved, not
-# under-fed -- which also explains the AP plateau from epoch 6 onward.
+# Doubling to 128 buys 16% more images/hour and HALVES the updates, and there is
+# no evidence that more images per hour is what this model needs.
 #
-# 48 epochs at batch 64 gives ~212k steps: 1.6x gen001, 2.3x gen003.
+# ## Why 48 epochs -- and what this is NOT based on
+#
+# An earlier draft justified this as fixing "update starvation", from vali:
+# gen001 reached 0.5440 on ~136k steps, gen003 only 0.5406 on ~94k. The
+# held-out test numbers do not support that reading. On test, gen003 scored
+# 0.7285 with ~94k steps against gen001's 0.7272 with ~136k -- so per update
+# gen003 was MORE efficient, not starved. Vali and test disagree here, and vali
+# is the weaker measure (gen001's is additionally flattered by DEIMv2 reloading
+# best_stg1.pth on every non-improving eval, det_solver.py:213-217).
+#
+# The honest reasons for a longer schedule are narrower, and both stand:
+#
+#   1. gen003 was still improving when its schedule ran out. Vali AP over its
+#      last epochs went 0.537, 0.539, 0.540, 0.541 (peak, epoch 21). A run that
+#      is still climbing at the end of its cosine has not been given its full
+#      schedule, whatever the per-update accounting says.
+#   2. Nothing at 24 epochs was unstable, so length is the cheapest untried
+#      axis. 48 epochs at batch 64 is ~212k steps in ~44 h.
+#
+# If gen004 also plateaus, the next lever is NOT more epochs -- it is the data
+# or the input resolution, since two schedule lengths and two batch sizes will
+# then have landed in the same place.
 #
 # ## What is inherited (do not re-litigate)
 #

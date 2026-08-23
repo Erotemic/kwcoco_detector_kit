@@ -152,9 +152,15 @@ batch while step count scales inversely, so across a fixed 48 h: batch 64 gives
 54 epochs / 212k steps, batch 128 gives 62 epochs / 122k steps. Doubling the
 batch buys 16% more images per hour and halves the updates.
 
-And updates look like what we are short of — gen001 reached 0.5440 on ~136k
-steps, gen003 only 0.5406 on ~94k. **gen003 was update-starved, not
-under-fed**, which also accounts for its AP plateauing from epoch 6.
+It is tempting to read gen003 as update-starved — gen001 reached vali 0.5440
+on ~136k steps, gen003 only 0.5406 on ~94k. **The test numbers say otherwise.**
+On held-out data gen003 scored *higher on fewer steps*: 0.7285 at ~94k against
+gen001's 0.7272 at ~136k. Per update it was the more efficient run, and the
+batch increase cost nothing measurable.
+
+What is true is that gen003 was **still climbing when its schedule ended** —
+vali ran 0.537, 0.539, 0.540, 0.541 over its last epochs before the final NoAug
+one. That, not update starvation, is the case for a longer schedule.
 
 ## Lessons
 

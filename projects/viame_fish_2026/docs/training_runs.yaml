@@ -349,10 +349,16 @@ runs:
         weights and produces a sawtooth loss curve. gen003 never leaned on
         that; its trajectory is monotone.
       - >-
-        UPDATE-STARVED, most likely. gen003 took ~94k optimizer steps to reach
-        0.5406; gen001 took ~136k to reach 0.5440. The batch increase (24 ->
-        64) bought throughput (57 -> 89 img/s) at the cost of 2.7x fewer steps
-        per epoch, and AP plateaued from epoch 6. This is what gen004 tests.
+        NOT update-starved, on the evidence that matters. The vali numbers
+        suggest it (0.5406 on ~94k steps vs gen001's 0.5440 on ~136k), but on
+        held-out test gen003 scored HIGHER on FEWER steps -- 0.7285 at ~94k vs
+        0.7272 at ~136k. Per update it was the more efficient run. The batch
+        increase (24 -> 64) bought throughput (57 -> 89 img/s) at 2.7x fewer
+        steps per epoch and cost nothing measurable on test.
+      - >-
+        STILL CLIMBING AT THE END, though: vali over the last epochs ran 0.537,
+        0.539, 0.540, 0.541 (peak, epoch 21) before the final NoAug epoch. That
+        -- not update starvation -- is the case for gen004's longer schedule.
       - >-
         bf16 WAS A MISTAKE and the default has been reverted (DEIMv2 fork
         4d7d253). DEIMv2 is an fp16 recipe: no bfloat16 anywhere in its

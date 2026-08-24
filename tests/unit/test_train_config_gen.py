@@ -631,3 +631,58 @@ def test_short_schedule_with_no_room_disables_augmentation(tmp_path):
                     input_hw=(1024, 1024), num_epochs=3)
     assert _aug_policy(cfg) == [0, 0, 0]
     assert _stop_epoch(cfg) not in _aug_policy(cfg)
+
+
+# ---------------------------------------------------------------------------
+# flat_epoch: the flat-LR phase must be decoupled from the schedule length.
+#
+# FlatCosineLR holds the target LR for flat_epoch, then anneals. The flat phase
+# is where this stack misbehaves: at constant LR the model oscillates, every
+# non-improving eval trips DEIMv2's restore-the-best branch, and nothing
+# accumulates. fish gen004 (job 492) ran 48 epochs -> flat_epoch 24 and never
+# beat its own epoch-1 score across 21 flat epochs; gen003's 24 -> flat 12 made
+# all its gains in the cosine tail. Lengthening a schedule must therefore be
+# able to buy cosine epochs rather than flat ones.
+# ---------------------------------------------------------------------------
+
+
+def _flat(cfg):
+    return cfg["flat_epoch"]
+
+
+@pytest.mark.parametrize("num_epochs,expected", [(12, 6), (24, 12), (36, 18),
+                                                 (48, 24)])
+def test_flat_epoch_defaults_to_half_the_schedule(num_epochs, expected,
+                                                  tmp_path, monkeypatch):
+    monkeypatch.delenv("KCD_FLAT_EPOCH", raising=False)
+    trainer = _get_trainer()
+    cfg = _generate(trainer, tmp_path, variant="deimv2_dinov3_x",
+                    input_hw=(1024, 1024), num_epochs=num_epochs)
+    assert _flat(cfg) == expected
+
+
+def test_flat_epoch_env_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("KCD_FLAT_EPOCH", "12")
+    trainer = _get_trainer()
+    cfg = _generate(trainer, tmp_path, variant="deimv2_dinov3_x",
+                    input_hw=(1024, 1024), num_epochs=36)
+    assert _flat(cfg) == 12          # 24 cosine epochs, not 18
+
+
+@pytest.mark.parametrize("raw,expected", [("999", 35), ("0", 1), ("-5", 1)])
+def test_flat_epoch_override_is_clamped(raw, expected, tmp_path, monkeypatch):
+    """The cosine phase must always run for at least one epoch."""
+    monkeypatch.setenv("KCD_FLAT_EPOCH", raw)
+    trainer = _get_trainer()
+    cfg = _generate(trainer, tmp_path, variant="deimv2_dinov3_x",
+                    input_hw=(1024, 1024), num_epochs=36)
+    assert _flat(cfg) == expected
+    assert _flat(cfg) < 36
+
+
+def test_flat_epoch_garbage_falls_back_to_the_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("KCD_FLAT_EPOCH", "not-a-number")
+    trainer = _get_trainer()
+    cfg = _generate(trainer, tmp_path, variant="deimv2_dinov3_x",
+                    input_hw=(1024, 1024), num_epochs=36)
+    assert _flat(cfg) == 18

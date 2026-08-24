@@ -353,6 +353,27 @@ _UPSTREAM_AUG_POLICY_EPOCHS = (4, 78, 148)
 _UPSTREAM_AUG_POLICY_TOTAL_EPOCHS = 150
 
 
+def _flat_epoch(num_epochs: int) -> int:
+    """Epochs held at the target LR before FlatCosineLR starts annealing.
+
+    Defaults to half the schedule, matching upstream's shape. ``KCD_FLAT_EPOCH``
+    overrides it absolutely; values outside ``[1, num_epochs - 1]`` are clamped
+    so the cosine phase always runs for at least one epoch.
+    """
+    num_epochs = max(1, int(num_epochs))
+    default = max(1, num_epochs // 2)
+    raw = os.environ.get("KCD_FLAT_EPOCH", "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        print(f"[deimv2] WARN: KCD_FLAT_EPOCH={raw!r} is not an int; "
+              f"using {default}", flush=True)
+        return default
+    return max(1, min(value, max(1, num_epochs - 1)))
+
+
 def _aug_policy_epochs(num_epochs: int, stop_epoch: Optional[int] = None) -> list:
     """Scale the 4-stage augmentation boundaries to an actual schedule length.
 
@@ -626,7 +647,16 @@ def _build_train_yml(
         # both scaled to num_epochs so short runs actually anneal + get a small
         # no-aug tail. (Override-friendly: a recipe wanting constant LR can set
         # epoches via a longer schedule.)
-        "flat_epoch": max(1, int(num_epochs) // 2),
+        # KCD_FLAT_EPOCH overrides the default half-and-half split. It exists
+        # because the flat phase is where this stack misbehaves: at constant LR
+        # the model oscillates, every non-improving eval trips DEIMv2's
+        # restore-the-best branch (det_solver.py:213), and no progress
+        # accumulates. fish gen004 (job 492) ran 48 epochs => flat_epoch 24 and
+        # never beat its own epoch-1 score in 21 epochs of flat LR, while
+        # gen003's 24 epochs => flat_epoch 12 made all of its gains in the
+        # cosine tail. Lengthening a schedule should therefore buy COSINE
+        # epochs, not flat ones, and that needs the two decoupled.
+        "flat_epoch": _flat_epoch(num_epochs),
         "no_aug_epoch": max(1, round(int(num_epochs) * 0.1)),
         "optimizer": optimizer,
     }

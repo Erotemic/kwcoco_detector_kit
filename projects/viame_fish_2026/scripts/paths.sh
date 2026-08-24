@@ -151,6 +151,68 @@ export VF_TRAIN_KWCOCO="${VF_TRAIN_KWCOCO:-$VF_BUNDLE_DPATH/train.kwcoco.json}"
 export VF_VALI_KWCOCO="${VF_VALI_KWCOCO:-$VF_BUNDLE_DPATH/vali.kwcoco.json}"
 export VF_TEST_KWCOCO="${VF_TEST_KWCOCO:-$VF_BUNDLE_DPATH/test.kwcoco.json}"
 
+# ========================================================================
+# Native-resolution tiling (gen005 onwards)
+# ========================================================================
+#
+# ## Why
+#
+# Whole-frame training resizes 1920x1200 to the model's 1024x1024, which is
+# an x-scale of 0.533 and a y-scale of 0.853 -- it discards nearly half the
+# horizontal resolution AND distorts aspect by 1.6x. 97% of the corpus is
+# 1920-wide, so this is the common case, not an edge case. The RF-DETR
+# baseline never pays it: its VIAME config uses adaptive chipping
+# (chip_width 720, chip_step 480, chip_adaptive_thresh 1.6 Mpx), so every
+# image above 1.6 Mpx is cut into 720px windows at NATIVE scale.
+#
+# gen003's own metrics show the cost: AP_small 0.192 against AP_large 0.653.
+# The sea-lion project hit the same wall and measured the fix -- windowed
+# native-resolution eval lifted pup AP 0.123 -> 0.838
+# (viame_sealions_2026/docs/journals/2026-06-06_gen005_small_object_floor.md).
+#
+# ## The window is 1024, deliberately larger than RF-DETR's 720
+#
+# A 1024 window is 2.0x the area of a 720 window, so FEWER of them cover a
+# frame: 5.87 tiles/frame at 25% overlap versus RF-DETR's 7.90. More context
+# per window, full native resolution, and 26% fewer crops than the baseline.
+#
+# And because the window equals the model input, each tile is fed 1:1 -- no
+# resize, no aspect distortion, anywhere in the pipeline.
+#
+# ## Parameter notes
+#
+# source_scales is 1.0 ONLY, unlike the sea-lion recipe's 1.0,0.5. Their pups
+# vanish at scale; fish are p50 150x109 and p1 42x44, all detectable at
+# native. A single scale also keeps this a clean resolution experiment rather
+# than two changes at once. DEIMv2's FPN supplies internal multi-scale
+# features regardless.
+#
+# stride_frac 0.75 gives a 256 px seam, comfortably wider than the p50 fish
+# (150 px), so a typical fish appears whole in at least one window.
+#
+# oversize_factor 1.2 leaves the 968x728 images (2.5% of the corpus) untiled,
+# since they are already below the window size.
+export KCD_TILE_SIZE="${KCD_TILE_SIZE:-1024}"
+export KCD_TILE_SOURCE_SCALES="${KCD_TILE_SOURCE_SCALES:-1.0}"
+export KCD_TILE_STRIDE_FRAC="${KCD_TILE_STRIDE_FRAC:-0.75}"
+export KCD_TILE_MIN_GT_AREA_FRAC="${KCD_TILE_MIN_GT_AREA_FRAC:-0.0005}"
+export KCD_TILE_MIN_KEEP_FRACTION="${KCD_TILE_MIN_KEEP_FRACTION:-0.20}"
+export KCD_TILE_OVERSIZE_FACTOR="${KCD_TILE_OVERSIZE_FACTOR:-1.2}"
+export KCD_TILE_KEEP_NEGATIVE="${KCD_TILE_KEEP_NEGATIVE:-true}"
+export KCD_TILE_CATEGORY_NAMES="${KCD_TILE_CATEGORY_NAMES:-fish}"
+export KCD_TILE_MODE="${KCD_TILE_MODE:-multiscale}"
+export KCD_TILE_JPEG_QUALITY="${KCD_TILE_JPEG_QUALITY:-90}"
+
+# Where the tiled bundles land. Train and vali are tiled; TEST IS NOT.
+# The held-out test number must stay comparable to gen001's 0.7272 and
+# gen003's 0.7285, both measured over whole test images, so test keeps its
+# full frames and tiled EVAL slides windows over them at inference time.
+# Vali is tiled because DEIMv2's per-epoch eval drives checkpoint selection
+# and has to measure the same thing training optimises.
+export VF_TILE_DPATH="${VF_TILE_DPATH:-$VF_KCD_ROOT/tiles_${KCD_TILE_SIZE}}"
+export VF_TILE_TRAIN_KWCOCO="${VF_TILE_TRAIN_KWCOCO:-$VF_TILE_DPATH/train/tiles.kwcoco.json}"
+export VF_TILE_VALI_KWCOCO="${VF_TILE_VALI_KWCOCO:-$VF_TILE_DPATH/vali/tiles.kwcoco.json}"
+
 # Fraction of Train/ sequences held out as validation. Whole sequences
 # only -- a frame-level split puts adjacent frames of one fish track on
 # both sides of the boundary, which is how the RF-DETR run ended up

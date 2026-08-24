@@ -108,6 +108,33 @@ echo
 TOTAL_BATCH=$(( KCD_NUM_GPUS * ${KCD_PER_GPU_BATCH:-4} ))
 TOTAL_VAL_BATCH=$(( TOTAL_BATCH * ${KCD_VAL_BATCH_MULT:-1} ))
 
+# Tiled (windowed) eval. Every fish submit script has exported
+# KCD_TILED_EVAL since gen001, but this launcher never forwarded it, so the
+# sweep always used its own default (False) and the variable was inert. That
+# was harmless while every run wanted whole-image eval; it is not harmless now
+# that a run trains on native-resolution tiles, because evaluating a
+# tile-trained model on whole images resized to the model input measures the
+# wrong thing entirely.
+#
+# `sweep --tiled_eval` is a flag, so it must be PRESENT or ABSENT -- passing
+# `--tiled_eval False` would still enable it.
+TILED_EVAL_FLAGS=()
+case "$(printf '%s' "${KCD_TILED_EVAL:-False}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on)
+        TILED_EVAL_FLAGS+=(--tiled_eval)
+        [ -n "${KCD_TILED_EVAL_WINDOW:-}" ] && \
+            TILED_EVAL_FLAGS+=(--tiled_eval_window "$KCD_TILED_EVAL_WINDOW")
+        [ -n "${KCD_TILED_EVAL_OVERLAP:-}" ] && \
+            TILED_EVAL_FLAGS+=(--tiled_eval_overlap "$KCD_TILED_EVAL_OVERLAP")
+        [ -n "${KCD_TILED_EVAL_BATCH:-}" ] && \
+            TILED_EVAL_FLAGS+=(--tiled_eval_batch "$KCD_TILED_EVAL_BATCH")
+        echo "  eval:      TILED (window ${KCD_TILED_EVAL_WINDOW:-model input}, overlap ${KCD_TILED_EVAL_OVERLAP:-0.25})"
+        ;;
+    *)
+        echo "  eval:      whole-image"
+        ;;
+esac
+
 DIST_FLAG=(--num_gpus "$KCD_NUM_GPUS")
 [ "$KCD_NUM_GPUS" -gt 1 ] && DIST_FLAG+=(--distributed true)
 
@@ -135,6 +162,7 @@ set -x
     ${KCD_DO_BENCH:+--do_bench "$KCD_DO_BENCH"} \
     ${KCD_RESUME_CKPT:+--resume "$KCD_RESUME_CKPT"} \
     ${KCD_EVAL_DEVICE:+--eval_device "$KCD_EVAL_DEVICE"} \
+    "${TILED_EVAL_FLAGS[@]}" \
     "${INIT_FLAG[@]}" \
     "${DIST_FLAG[@]}"
 set +x

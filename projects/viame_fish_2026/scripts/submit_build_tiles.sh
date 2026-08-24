@@ -25,6 +25,13 @@ source "$SCRIPT_DIR/paths.sh"
 # Drive the tiling launcher instead of the training one, reusing the same
 # sbatch + docker machinery.
 export KCD_LAUNCH_SCRIPT=_launch_tiles.sh
+
+# Resolve the tiling SOURCES on the host and hand them over under KCD_ names,
+# since only ^KCD_ is forwarded into the container. Passing them explicitly
+# also keeps this independent of KCD_TRAIN_KWCOCO, which gen005 repoints at
+# the tiled bundle.
+export KCD_TILE_SRC_TRAIN="${KCD_TILE_SRC_TRAIN:-$VF_TRAIN_KWCOCO}"
+export KCD_TILE_SRC_VALI="${KCD_TILE_SRC_VALI:-$VF_VALI_KWCOCO}"
 export KCD_RUN_NAME="${KCD_RUN_NAME:-fishtrack23_build_tiles_${KCD_TILE_SIZE}}"
 
 # _submit_train.sh's contract still applies (it pre-flights bundles and the
@@ -51,7 +58,8 @@ echo "fish tile build"
 echo "  window:  ${KCD_TILE_SIZE}px native (RF-DETR's baseline uses 720)"
 echo "  scales:  $KCD_TILE_SOURCE_SCALES"
 echo "  stride:  $KCD_TILE_STRIDE_FRAC"
-echo "  out:     $VF_TILE_DPATH"
+echo "  out:     $KCD_TILE_DPATH"
+echo "  src:     $KCD_TILE_SRC_TRAIN"
 echo
 
 exec bash "$SCRIPT_DIR/_submit_train.sh"

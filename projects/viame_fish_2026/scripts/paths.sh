@@ -213,6 +213,21 @@ export VF_TILE_DPATH="${VF_TILE_DPATH:-$VF_KCD_ROOT/tiles_${KCD_TILE_SIZE}}"
 export VF_TILE_TRAIN_KWCOCO="${VF_TILE_TRAIN_KWCOCO:-$VF_TILE_DPATH/train/tiles.kwcoco.json}"
 export VF_TILE_VALI_KWCOCO="${VF_TILE_VALI_KWCOCO:-$VF_TILE_DPATH/vali/tiles.kwcoco.json}"
 
+# Bridge the tile paths into KCD_* names. This is NOT cosmetic: _submit_train.sh
+# forwards only variables matching ^KCD_ into the container
+# (_submit_train.sh:72), so a VF_* path is re-derived in-container from
+# $HOME -- which is /root there, not the user's home. That is the same hazard
+# the VF_USER comment at the top of this file describes for $USER, and it is
+# what made the first tiling job (slurm 493) look for
+# /root/ssd-data/fish_kcd/bundle/train.kwcoco.json.
+#
+# Anything the container must see has to be resolved on the host and exported
+# under a KCD_ name. The ${VAR:-default} form means the forwarded value wins
+# in-container and the host default applies on the host.
+export KCD_TILE_DPATH="${KCD_TILE_DPATH:-$VF_TILE_DPATH}"
+export KCD_TILE_TRAIN_KWCOCO="${KCD_TILE_TRAIN_KWCOCO:-$VF_TILE_TRAIN_KWCOCO}"
+export KCD_TILE_VALI_KWCOCO="${KCD_TILE_VALI_KWCOCO:-$VF_TILE_VALI_KWCOCO}"
+
 # Fraction of Train/ sequences held out as validation. Whole sequences
 # only -- a frame-level split puts adjacent frames of one fish track on
 # both sides of the boundary, which is how the RF-DETR run ended up

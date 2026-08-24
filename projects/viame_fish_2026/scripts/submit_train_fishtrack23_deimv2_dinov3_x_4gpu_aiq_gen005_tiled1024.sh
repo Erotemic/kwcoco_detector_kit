@@ -71,14 +71,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/paths.sh"
 
 # Train and vali come from the tile bundles; test stays whole-frame.
-kcd_require_path "tiled train bundle" "$VF_TILE_TRAIN_KWCOCO" || {
+kcd_require_path "tiled train bundle" "$KCD_TILE_TRAIN_KWCOCO" || {
     echo "  Build it first:" >&2
     echo "    bash projects/viame_fish_2026/scripts/submit_build_tiles.sh" >&2
     exit 1
 }
-kcd_require_path "tiled vali bundle" "$VF_TILE_VALI_KWCOCO" || exit 1
-export KCD_TRAIN_KWCOCO="$VF_TILE_TRAIN_KWCOCO"
-export KCD_VALI_KWCOCO="$VF_TILE_VALI_KWCOCO"
+kcd_require_path "tiled vali bundle" "$KCD_TILE_VALI_KWCOCO" || exit 1
+export KCD_TRAIN_KWCOCO="$KCD_TILE_TRAIN_KWCOCO"
+export KCD_VALI_KWCOCO="$KCD_TILE_VALI_KWCOCO"
 export KCD_TEST_KWCOCO="$VF_TEST_KWCOCO"        # whole frames, on purpose
 
 kcd_require_init_checkpoint "deimv2_dinov3_x" || exit 1

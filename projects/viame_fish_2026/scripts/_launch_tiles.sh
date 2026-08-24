@@ -10,10 +10,15 @@
 # hashed "universal" tile cache shared across schemes, because it trains many
 # class schemes off one tiling. Fish has a single scheme, so tiles land at a
 # fixed path and the train script points at them. If the tile parameters
-# change, change VF_TILE_DPATH (or KCD_TILE_SIZE, which is in its default)
+# change, change KCD_TILE_DPATH (or KCD_TILE_SIZE, which is in its default)
 # so the old bundle is not silently reused.
 #
 # Tiles TRAIN and VALI. Not test -- see the note in paths.sh.
+#
+# EVERY PATH HERE MUST BE A KCD_* VARIABLE. This script runs inside the
+# container, where $HOME is /root, and _submit_train.sh forwards only ^KCD_
+# names -- so a VF_* path silently re-derives to /root/ssd-data/... That is
+# exactly how slurm job 493 failed.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,10 +29,15 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 : "${KCD_TILE_SIZE:?_launch_tiles.sh: missing KCD_TILE_SIZE}"
 : "${KCD_TILE_SOURCE_SCALES:?_launch_tiles.sh: missing KCD_TILE_SOURCE_SCALES}"
 : "${KCD_TILE_STRIDE_FRAC:?_launch_tiles.sh: missing KCD_TILE_STRIDE_FRAC}"
-: "${VF_TILE_DPATH:?_launch_tiles.sh: missing VF_TILE_DPATH}"
+: "${KCD_TILE_DPATH:?_launch_tiles.sh: missing KCD_TILE_DPATH}"
+: "${KCD_TILE_SRC_TRAIN:?_launch_tiles.sh: missing KCD_TILE_SRC_TRAIN}"
+: "${KCD_TILE_SRC_VALI:?_launch_tiles.sh: missing KCD_TILE_SRC_VALI}"
 
-kcd_require_path "train bundle" "$VF_TRAIN_KWCOCO" || exit 1
-kcd_require_path "vali bundle"  "$VF_VALI_KWCOCO"  || exit 1
+# Sources are passed explicitly rather than read from KCD_TRAIN_KWCOCO, which
+# the gen005 submit script repoints at the TILED bundle -- tiling that would
+# be a silent no-op or a nested re-tile.
+kcd_require_path "source train bundle" "$KCD_TILE_SRC_TRAIN" || exit 1
+kcd_require_path "source vali bundle"  "$KCD_TILE_SRC_VALI"  || exit 1
 
 echo "=============================================================="
 echo " fish tiling: ${KCD_TILE_SIZE}px native windows"
@@ -37,7 +47,7 @@ echo "  tile_size:     $KCD_TILE_SIZE"
 echo "  source_scales: $KCD_TILE_SOURCE_SCALES"
 echo "  stride_frac:   $KCD_TILE_STRIDE_FRAC  (overlap $(python3 -c "print(f'{(1-float('$KCD_TILE_STRIDE_FRAC'))*100:.0f}%')"))"
 echo "  keep_negative: $KCD_TILE_KEEP_NEGATIVE"
-echo "  out:           $VF_TILE_DPATH"
+echo "  out:           $KCD_TILE_DPATH"
 echo
 
 tile_split() {
@@ -64,8 +74,8 @@ tile_split() {
     echo "[$name] wrote $dst"
 }
 
-tile_split train "$VF_TRAIN_KWCOCO" "$VF_TILE_TRAIN_KWCOCO"
-tile_split vali  "$VF_VALI_KWCOCO"  "$VF_TILE_VALI_KWCOCO"
+tile_split train "$KCD_TILE_SRC_TRAIN" "$KCD_TILE_TRAIN_KWCOCO"
+tile_split vali  "$KCD_TILE_SRC_VALI"  "$KCD_TILE_VALI_KWCOCO"
 
 echo
 echo "=============================================================="
@@ -73,7 +83,7 @@ echo " done"
 echo "=============================================================="
 "$PYTHON_BIN" - <<'PYEOF'
 import json, os
-for name, key in (("train", "VF_TILE_TRAIN_KWCOCO"), ("vali", "VF_TILE_VALI_KWCOCO")):
+for name, key in (("train", "KCD_TILE_TRAIN_KWCOCO"), ("vali", "KCD_TILE_VALI_KWCOCO")):
     p = os.environ[key]
     d = json.load(open(p))
     n_img, n_ann = len(d["images"]), len(d["annotations"])
@@ -81,4 +91,4 @@ for name, key in (("train", "VF_TILE_TRAIN_KWCOCO"), ("vali", "VF_TILE_VALI_KWCO
     print(f"  {name}: {n_img:,} tiles, {n_ann:,} annotations, "
           f"{empty:,} empty ({100*empty/max(1,n_img):.1f}%)")
 PYEOF
-echo "  disk: $(du -sh "$VF_TILE_DPATH" 2>/dev/null | cut -f1)"
+echo "  disk: $(du -sh "$KCD_TILE_DPATH" 2>/dev/null | cut -f1)"

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Static scan for names used but never bound, per function.
+"""Static scans that stand in for the test suite on a host without one.
+
+1. Names used but never bound, per function.
+2. Names imported from a kit/test module that the target does not define.
 
 Exists because this repo's real test gate runs inside the Docker image, and the
 dev VM has neither pytest, numpy nor kwconf -- so an edit that references an
@@ -149,6 +152,72 @@ def check_file(path):
     return findings
 
 
+# ---------------------------------------------------------------------------
+# 2. imported-but-nonexistent names
+#
+# `from kwcoco_detector_kit.x import y` where x has no y is an ImportError at
+# collection time, which fails an entire test FILE rather than one test -- so
+# it is worth catching without a working interpreter environment.
+# ---------------------------------------------------------------------------
+
+
+def _top_level_names(path):
+    tree = ast.parse(Path(path).read_text())
+    names = set()
+    for n in tree.body:
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(n.name)
+        elif isinstance(n, ast.Assign):
+            for t in n.targets:
+                names |= _bound_by(t)
+        elif isinstance(n, ast.AnnAssign):
+            names |= _bound_by(n.target)
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            for a in n.names:
+                names.add((a.asname or a.name).split(".")[0])
+        elif isinstance(n, (ast.If, ast.Try)):
+            # Conditional definitions are real definitions. _lineprofile binds
+            # `profile` in a try/except so the kit works with or without
+            # line_profiler installed; treating only tree.body as authoritative
+            # reported that as missing.
+            for sub in ast.walk(n):
+                if isinstance(sub, (ast.Import, ast.ImportFrom)):
+                    for a in sub.names:
+                        names.add((a.asname or a.name).split(".")[0])
+                elif isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                      ast.ClassDef)):
+                    names.add(sub.name)
+                elif isinstance(sub, ast.Assign):
+                    for t in sub.targets:
+                        names |= _bound_by(t)
+                elif isinstance(sub, ast.AnnAssign):
+                    names |= _bound_by(sub.target)
+    return names
+
+
+def check_imports(path):
+    findings = []
+    try:
+        tree = ast.parse(Path(path).read_text())
+    except SyntaxError:
+        return findings
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.ImportFrom) or not n.module:
+            continue
+        if not (n.module.startswith("kwcoco_detector_kit")
+                or n.module.startswith("tests")):
+            continue
+        target = Path(n.module.replace(".", "/") + ".py")
+        if not target.exists():                 # package __init__ re-exports
+            continue
+        have = _top_level_names(target)
+        for a in n.names:
+            if a.name != "*" and a.name not in have:
+                findings.append(
+                    (f"{n.module} does not define {a.name!r}", n.lineno))
+    return findings
+
+
 def main(argv):
     roots = argv[1:] or ["kwcoco_detector_kit"]
     total = 0
@@ -156,7 +225,7 @@ def main(argv):
         for path in sorted(Path(root).rglob("*.py")):
             if "__pycache__" in str(path) or "testdata" in path.parts:
                 continue
-            for msg, line in check_file(path):
+            for msg, line in check_file(path) + check_imports(path):
                 print(f"{path}:{line}: {msg}")
                 total += 1
     print(f"\n{total} finding(s)")

@@ -33,10 +33,13 @@
 # flat_epoch is now overridable via KCD_FLAT_EPOCH, so a longer schedule buys
 # cosine epochs instead of flat ones:
 #
-#   gen003        24 epochs, flat 12 -> 12 cosine   vali 0.5406, test 0.7285
-#   gen004 (492)  48 epochs, flat 24 -> 21 flat epochs run, killed
+#   gen003        24 epochs, flat 12 -> 12 cosine   vali 0.5406
+#   gen004 (492)  48 epochs, flat 24 -> 21 flat epochs run, killed at 0.5342
 #   THIS RUN      36 epochs, flat 12 -> 24 cosine   (same flat phase as gen003,
 #                                                    twice the annealing tail)
+#
+# Vali only. The held-out test split does not inform schedule choices -- see
+# the holdout-discipline note in paths.sh.
 #
 # Holding the flat phase at gen003's proven 12 epochs and spending the extra
 # budget entirely on annealing is the smallest change consistent with where the

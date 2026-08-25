@@ -13,10 +13,15 @@
 # chipping -- chip_width 720, chip_step 480, chip_adaptive_thresh 1.6 Mpx --
 # so every image above 1.6 Mpx is cut into 720px windows at NATIVE scale.
 #
-# gen003's metrics show what it cost us: AP_small 0.192 against AP_large
-# 0.653. And two schedule experiments (gen003 at 24 epochs, gen004 at 48) have
-# now landed within noise of each other on held-out test, which is what being
-# resolution-limited rather than schedule-limited looks like.
+# gen003's VALI metrics show what it cost us: AP_small 0.192 against AP_large
+# 0.653. And three schedule shapes have now failed to move VALI -- gen001 24
+# epochs 0.5440, gen003 24 epochs 0.5406, gen004 48 epochs 0.5342 -- which is
+# what being resolution-limited rather than schedule-limited looks like.
+#
+# (An earlier draft of this header argued the same point from the held-out TEST
+# scores. That was test-set leakage: using the final holdout to pick a research
+# direction. The vali evidence above says the same thing and is the evidence we
+# are entitled to use.)
 #
 # The sea-lion project measured the fix on the same failure mode: windowed
 # native-resolution eval lifted pup AP 0.123 -> 0.838.
@@ -64,7 +69,8 @@
 # image and NMS-merges (eval/tiled_predictor.py), with keep_full merging a
 # whole-image pass so fish larger than a window still get recalled. The test
 # bundle is deliberately NOT tiled, so the headline number stays directly
-# comparable to gen001's 0.7272 and gen003's 0.7285.
+# comparable to the two scores already on record for it. That comparability is
+# for the FINAL report only -- see the holdout-discipline note in paths.sh.
 #
 # Note this is the first fish run where KCD_TILED_EVAL does anything at all:
 # _launch_train.sh never forwarded it to the sweep before, so every previous
@@ -127,9 +133,14 @@ export KCD_USE_AMP=true
 #   gen003  bf16  frames  aug@e2  22 augmented epochs, no excursion
 #
 # Three fp16 NaNs, all sudden-onset inside an augmented epoch at stable loss;
-# zero for bf16, which is also the only run to have completed a schedule. And
-# my supporting argument was weak -- I cited gen003's lower VALI, but its
-# held-out TEST score (0.7285) is still the best number this project has.
+# zero for bf16, which is also the only run to have completed a schedule. These
+# are training-time facts -- NaN counts and completed epochs -- not a holdout
+# comparison, so they are a legitimate basis for the choice.
+#
+# The vali gap that motivated reverting to fp16 is real but small (gen003 bf16
+# 0.5406 against gen001 fp16 0.5440) and confounded: gen001's vali is inflated
+# by the best_stg1 reload repeatedly restoring its best weights, a mechanism
+# only fixed in d89309f. A run that cannot finish is worth less than 0.003 AP.
 #
 # Tiling plausibly raises the rate: tiles already carry edge-truncated boxes
 # (min_keep_fraction 0.20) and RandomIoUCrop/RandomZoomOut then crop a crop.

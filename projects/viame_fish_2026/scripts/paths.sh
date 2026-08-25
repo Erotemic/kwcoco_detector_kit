@@ -152,6 +152,37 @@ export VF_VALI_KWCOCO="${VF_VALI_KWCOCO:-$VF_BUNDLE_DPATH/vali.kwcoco.json}"
 export VF_TEST_KWCOCO="${VF_TEST_KWCOCO:-$VF_BUNDLE_DPATH/test.kwcoco.json}"
 
 # ========================================================================
+# HOLDOUT DISCIPLINE -- read before quoting a test number
+# ========================================================================
+#
+# VF_TEST_KWCOCO is the FINAL holdout. It is not a second validation set, and
+# it must not inform any design decision: not the schedule, not the dtype, not
+# the input resolution, not which checkpoint to keep. All of that comes from
+# vali, which exists for exactly this purpose and is sequence-disjoint from
+# train for exactly this reason.
+#
+# This rule is written down because it was broken. Between 2026-08-23 and
+# 2026-08-25 the test scores were used to argue at least four decisions: that
+# gen003 was fine despite lower vali, that gen003 was not update-starved, that
+# bf16 cost nothing, and -- most seriously -- that the project was
+# resolution-limited rather than schedule-limited, which is what motivated the
+# whole tiling effort. Every one of those conclusions happens to survive on
+# vali evidence alone, and they have been re-grounded on it, but the process
+# was wrong and the holdout is correspondingly less clean than its two recorded
+# scores suggest.
+#
+# Scope of the contamination, for whoever reports the final number: test has
+# been SCORED twice (gen001 job 299, gen003 job 491) and CONSULTED for
+# decisions roughly four times. Two model evaluations against 33,434 images and
+# 84,694 annotations is mild leakage, not a ruined split -- but the final
+# figure should be reported with that history attached rather than as a clean
+# generalization estimate.
+#
+# Going forward: decide on vali, score test once, on the single model you have
+# already chosen.
+
+
+# ========================================================================
 # Native-resolution tiling (gen005 onwards)
 # ========================================================================
 #
@@ -204,9 +235,9 @@ export KCD_TILE_MODE="${KCD_TILE_MODE:-multiscale}"
 export KCD_TILE_JPEG_QUALITY="${KCD_TILE_JPEG_QUALITY:-90}"
 
 # Where the tiled bundles land. Train and vali are tiled; TEST IS NOT.
-# The held-out test number must stay comparable to gen001's 0.7272 and
-# gen003's 0.7285, both measured over whole test images, so test keeps its
-# full frames and tiled EVAL slides windows over them at inference time.
+# The held-out test number must stay comparable to the scores already on
+# record, both measured over whole test images, so test keeps its full frames
+# and tiled EVAL slides windows over them at inference time.
 # Vali is tiled because DEIMv2's per-epoch eval drives checkpoint selection
 # and has to measure the same thing training optimises.
 export VF_TILE_DPATH="${VF_TILE_DPATH:-$VF_KCD_ROOT/tiles_${KCD_TILE_SIZE}}"

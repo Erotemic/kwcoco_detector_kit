@@ -452,6 +452,11 @@ runs:
         SCHEDULE SIZING WAS ACCURATE: epoch 0 wall 1:32:50 against a 93 min
         estimate; cycle 1:43:50 against 103 min.
       - >-
+        DECISION BASIS: bf16 is chosen on training-time evidence (NaN counts,
+        completed schedules), not on the held-out test scores. An earlier
+        version of this note cited test; see the holdout-discipline rule in
+        scripts/paths.sh.
+      - >-
         THIRD fp16 NaN, same signature every time -- sudden onset at stable
         loss, inside an augmented epoch. gen001 e4 s7500 (loss 36.5), gen002
         e1 s7700 (31.5), gen005 e3 s2874 (34.4). bf16 has never produced one
@@ -466,3 +471,33 @@ runs:
         AP dropped 0.530 -> 0.461 at epoch 2, the first augmented epoch. Worth
         watching on the relaunch; it may be normal for the regime change, or a
         precursor to the excursion.
+
+# ===========================================================================
+# HOLDOUT DISCIPLINE
+# ===========================================================================
+#
+# test_AP50 / test_AUC appear in the gen001 and gen003 entries above because
+# those runs were scored. They are NOT a selection signal and must not be used
+# to choose a schedule, dtype, resolution, or checkpoint -- that is what vali
+# is for.
+#
+# This is recorded because the rule was broken. Between 2026-08-23 and
+# 2026-08-25 the test scores were used to argue four decisions, including the
+# pivot to native-resolution tiling. All four have since been re-grounded on
+# vali, and none reversed, but the holdout is less clean than two recorded
+# scores would suggest.
+#
+# Contamination scope for the final report: SCORED twice (gen001 job 299,
+# gen003 job 491), CONSULTED for decisions about four times, against a split of
+# 69 sequences / 33,434 images / 84,694 annotations.
+#
+# Rule: decide on vali, score test once, on the model already chosen.
+holdout_discipline:
+  split: test
+  times_scored: 2         # gen001 (job 299), gen003 (job 491)
+  times_consulted_for_decisions: 4
+  contaminated: true
+  decisions_regrounded_on_vali: true
+  rule: >-
+    Decide on vali. Score test once, on the single model already selected.
+    Report the final number with this history attached.

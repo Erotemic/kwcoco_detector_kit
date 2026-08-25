@@ -162,6 +162,35 @@ What is true is that gen003 was **still climbing when its schedule ended** —
 vali ran 0.537, 0.539, 0.540, 0.541 over its last epochs before the final NoAug
 one. That, not update starvation, is the case for a longer schedule.
 
+## Correction: these test numbers were used for decisions, and should not have been
+
+Added 2026-08-25. The comparisons above are reported honestly, but they were
+also *acted on*, and that was a methodological error.
+
+Between 2026-08-23 and 2026-08-25 the held-out test scores were used to argue
+at least four decisions: that gen003 was fine despite lower vali; that gen003
+was not update-starved; that bf16 cost nothing; and -- most seriously -- that
+the project was resolution-limited rather than schedule-limited, which is what
+motivated the entire tiling effort.
+
+That is test-set leakage. The holdout exists to estimate generalization once,
+for a model already chosen. Using it to pick a research direction converts it
+into a validation set and inflates whatever is finally reported from it.
+
+Every one of those conclusions happens to survive on vali evidence alone:
+
+  - resolution-limited: gen003's VALI AP_small 0.192 against AP_large 0.653,
+    and three schedule shapes that failed to move vali (0.5440 / 0.5406 /
+    0.5342).
+  - bf16: three fp16 NaNs against zero for bf16, and only bf16 has completed a
+    schedule. Training-time facts, no holdout involved.
+
+So no decision has been reversed -- but they have been re-grounded, and the
+standing rule is now written into paths.sh next to the test bundle. Scope, for
+whoever reports the final number: test has been SCORED twice and CONSULTED
+about four times. Two evaluations against 33,434 images is mild leakage rather
+than a ruined split, but the final figure carries that history.
+
 ## Lessons
 
 1. **A boundary that lands on another mechanism's boundary is a bug**, even
@@ -173,8 +202,13 @@ one. That, not update starvation, is the case for a longer schedule.
    a 20-minute one was a `raise` that upstream declined to write.
 4. **Change one variable.** gen003 moved dtype, batch and schedule together, so
    its 0.5406 cannot be attributed. gen004 moves only the schedule.
-5. **Trust the held-out split.** Vali said gen003 was worse; test said it was
-   marginally better. Only one of those is a generalization measure.
+5. **Fix vali rather than reaching for test.** Vali said gen003 was worse and
+   test said marginally better, and I resolved that by believing test -- which
+   is precisely the move that spends a holdout. The right response was to ask
+   why vali was untrustworthy. It had two fixable defects: the best_stg1 reload
+   inflating earlier runs (d89309f) and a train/eval resolution mismatch
+   (gen005 tiles vali to match training). Both are now fixed, and vali is the
+   decision signal from here.
 
 ## Next
 

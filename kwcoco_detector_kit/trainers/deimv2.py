@@ -30,7 +30,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import yaml
 
@@ -758,7 +758,7 @@ def _dump_policy_json(workdir: Path, *, candidate_id: str, variant: str,
                      batch: int, val_batch: int, num_epochs: int,
                      lr: float, backbone_lr: float, use_amp: bool,
                      init_ckpt: str, generated_cfg_fpath: Path,
-                     category_names=None):
+                     recipe: "DEIMv2Recipe", category_names=None):
     H, W = int(input_hw[0]), int(input_hw[1])
     obj = {
         "candidate_id": candidate_id,
@@ -1264,6 +1264,10 @@ class DEIMv2Trainer:
             use_amp=bool(use_amp),
             init_ckpt=str(_effective_init_ckpt or ""),
             generated_cfg_fpath=cfg_fpath,
+            # Same resolution _build_train_yml performs, so policy.json cannot
+            # report a schedule the generated config does not use.
+            recipe=scale_recipe(extract_recipe(str(upstream_cfg)),
+                                int(num_epochs)),
             category_names=category_names,
         )
 

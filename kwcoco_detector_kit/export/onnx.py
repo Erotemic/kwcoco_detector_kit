@@ -165,6 +165,29 @@ def export_onnx(
     )
 
 
+def _normalize_from_train_yml(workdir: Path):
+    """Recover (mean, std) from the run's generated train.yml val transforms.
+
+    Identity when absent -- the contract for HGNetv2 variants and for every
+    DEIMv2 checkpoint trained before normalization was emitted.
+    """
+    import yaml as _yaml
+    ident = ([0.0, 0.0, 0.0], [1.0, 1.0, 1.0])
+    cfg_fpath = Path(workdir) / "generated_configs" / "train.yml"
+    if not cfg_fpath.exists():
+        return ident
+    try:
+        cfg = _yaml.safe_load(cfg_fpath.read_text()) or {}
+        ops = cfg["val_dataloader"]["dataset"]["transforms"]["ops"]
+    except Exception:
+        return ident
+    for op in ops or []:
+        if isinstance(op, dict) and op.get("type") == "Normalize":
+            return ([float(v) for v in op.get("mean", ident[0])],
+                    [float(v) for v in op.get("std", ident[1])])
+    return ident
+
+
 def _export_inproc(
     *,
     trainer,
@@ -237,9 +260,17 @@ def _export_inproc(
     except ImportError:
         pass
 
+    # Preprocessing comes from the SAME generated config the predictor reads,
+    # so the exported contract cannot drift from what the model was trained
+    # with. A checkpoint trained before normalization was added exports the
+    # identity, which is correct for it.
+    _nmean, _nstd = _normalize_from_train_yml(workdir)
+
     write_modelspec(
         out_fpath,
         input_hw=(H, W),
+        normalize_mean=_nmean,
+        normalize_std=_nstd,
         postprocess_score_thresh=float(score_thresh),
         variant=variant,
         category_names=names,

@@ -37,6 +37,8 @@ import yaml
 from kwcoco_detector_kit._lineprofile import profile
 from kwcoco_detector_kit.trainers._registry import register_trainer
 from kwcoco_detector_kit._env import raise_nofile_limit
+from kwcoco_detector_kit.trainers._deimv2_recipe import (
+    extract_recipe, scale_recipe)
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +300,8 @@ def _resolve_policy(
 # ---------------------------------------------------------------------------
 
 
-def _hgnetv2_optimizer_block(lr: float, backbone_lr: float) -> Dict[str, Any]:
+def _hgnetv2_optimizer_block(lr: float, backbone_lr: float,
+                             weight_decay: float) -> Dict[str, Any]:
     return {
         "type": "AdamW",
         "params": [
@@ -318,11 +321,12 @@ def _hgnetv2_optimizer_block(lr: float, backbone_lr: float) -> Dict[str, Any]:
         ],
         "lr": float(lr),
         "betas": [0.9, 0.999],
-        "weight_decay": 0.0001,
+        "weight_decay": float(weight_decay),
     }
 
 
-def _dinov3_optimizer_block(lr: float, backbone_lr: float) -> Dict[str, Any]:
+def _dinov3_optimizer_block(lr: float, backbone_lr: float,
+                            weight_decay: float) -> Dict[str, Any]:
     return {
         "type": "AdamW",
         "params": [
@@ -342,26 +346,72 @@ def _dinov3_optimizer_block(lr: float, backbone_lr: float) -> Dict[str, Any]:
         ],
         "lr": float(lr),
         "betas": [0.9, 0.999],
-        "weight_decay": 0.0001,
+        "weight_decay": float(weight_decay),
     }
 
 
-# Upstream DEIMv2's augmentation policy boundaries, and the schedule length
-# they were written for. Used to rescale for shorter runs -- see
-# _aug_policy_epochs.
-_UPSTREAM_AUG_POLICY_EPOCHS = (4, 78, 148)
-_UPSTREAM_AUG_POLICY_TOTAL_EPOCHS = 150
+# The augmentation policy, the LR-schedule landmarks, the mixup/copyblend
+# windows, stop_epoch, matcher_change_epoch and weight_decay all come from
+# _deimv2_recipe, which READS them out of the selected upstream config.
+#
+# This file used to carry its own copies. They had drifted:
+#   _UPSTREAM_AUG_POLICY_EPOCHS = (4, 78, 148) over 150 epochs matched NO
+#   config in this tree -- DINOv3-X is [4, 29, 50] over 58, and S/M/L are
+#   different again (132/102/68 epochs). Every run scaled from a schedule that
+#   does not exist.
+#
+# The collision-avoidance code that lived here is gone too. It forbade ANY
+# augmentation boundary from coinciding with stop_epoch, but upstream sets the
+# FINAL boundary equal to stop_epoch deliberately (both 50 for X): the epoch
+# that ends heavy augmentation is the epoch that enters the final EMA stage.
+# Only the boundary that TURNS augmentation ON must stay clear of the reload,
+# and scale_recipe's clamps guarantee that because e0 >= 1 while stop_epoch is
+# e2 >= e1 >= e0.
 
 
-def _flat_epoch(num_epochs: int) -> int:
+#: ImageNet statistics the DINOv3 backbone's COCO checkpoint was trained with.
+#: Upstream applies these in the config (deimv2_dinov3_x_coco.yml:77) AND in
+#: every inference tool (tools/inference/{torch,onnx,trt}_inf.py). The kit
+#: emitted them NOWHERE -- train, val and both predictor paths all fed raw
+#: [0, 1] tensors, so a COCO detector optimised for normalized DINO inputs was
+#: handed a different input distribution on every run this project has done.
+#:
+#: The backbone does not normalize internally: the only `normalize` in
+#: engine/backbone/dinov3/ is pos_embed_rope_normalize_coords, which is
+#: positional-embedding coordinate handling. So adding this does not
+#: double-normalize.
+#:
+#: These must stay in lockstep with export/modelspec.py's preprocess block or
+#: the deployed ONNX graph receives a different contract than training used.
+DINO_NORMALIZE_MEAN = [0.485, 0.456, 0.406]
+DINO_NORMALIZE_STD = [0.229, 0.224, 0.225]
+
+
+def _amp_dtype_is_bf16() -> bool:
+    """Whether training will run under bfloat16 (see det_engine.py).
+
+    Resolved from the same environment variable the trainer reads, so the
+    generated YAML and the runtime agree.
+    """
+    return os.environ.get("KCD_AMP_DTYPE", "float16").strip().lower() in (
+        "bf16", "bfloat16")
+
+
+def _flat_epoch(num_epochs: int, recipe_default: int) -> int:
     """Epochs held at the target LR before FlatCosineLR starts annealing.
 
-    Defaults to half the schedule, matching upstream's shape. ``KCD_FLAT_EPOCH``
-    overrides it absolutely; values outside ``[1, num_epochs - 1]`` are clamped
-    so the cosine phase always runs for at least one epoch.
+    ``recipe_default`` is upstream's own flat_epoch rescaled to this schedule
+    by _deimv2_recipe. ``KCD_FLAT_EPOCH`` overrides it absolutely; values
+    outside ``[1, num_epochs - 1]`` are clamped so the cosine phase always runs
+    for at least one epoch.
+
+    The override exists because the flat phase is where this stack has
+    misbehaved -- at constant LR the model oscillates and trips DEIMv2's
+    restore-the-best branch -- but the DEFAULT is now upstream's ratio (29/58
+    for DINOv3-X) rather than a kit-invented one.
     """
     num_epochs = max(1, int(num_epochs))
-    default = max(1, num_epochs // 2)
+    default = max(1, min(int(recipe_default), max(1, num_epochs - 1)))
     raw = os.environ.get("KCD_FLAT_EPOCH", "").strip()
     if not raw:
         return default
@@ -374,90 +424,10 @@ def _flat_epoch(num_epochs: int) -> int:
     return max(1, min(value, max(1, num_epochs - 1)))
 
 
-def _aug_policy_epochs(num_epochs: int, stop_epoch: Optional[int] = None) -> list:
-    """Scale the 4-stage augmentation boundaries to an actual schedule length.
-
-    DEIMv2's `stop_epoch` policy takes THREE boundaries defining FOUR stages
-    (engine/data/transforms/container.py:81-97):
-
-        epoch < e0            NoAug warmup -- policy ops skipped
-        e0 <= epoch < e1      Mosaic active with mosaic_prob
-        e1 <= epoch < e2      ZoomOut / IoUCrop / PhotometricDistort, no Mosaic
-        epoch >= e2           NoAug -- the clean final phase the recipe needs
-
-    Upstream's (4, 78, 148) assumes ~150 epochs. Passing them through unscaled
-    to a short run does not merely shift the boundaries -- it makes stages 3
-    and 4 UNREACHABLE. A 20-epoch run enters stage 2 at epoch 4 and stays there
-    to the end, so it never gets the clean fine-tuning epochs, and the model is
-    still seeing Mosaic when training stops.
-
-    This is the same class of bug the LR schedule already guards against just
-    below (`flat_epoch` / `no_aug_epoch` are derived from num_epochs for
-    exactly this reason); the policy was simply missed.
-
-    Boundaries are scaled by num_epochs / 150, then forced to be strictly
-    increasing and to leave at least one epoch in the final NoAug stage --
-    without that clamp, rounding on short schedules collapses stages onto each
-    other or pushes the last boundary past the end of training.
-
-    ## No boundary may land on `stop_epoch`
-
-    At ``epoch == collate_fn.stop_epoch`` DEIMv2 reloads model, optimizer,
-    GradScaler and EMA state from ``best_stg1.pth``
-    (engine/solver/det_solver.py:83-86). If an augmentation boundary lands on
-    that same epoch, the optimizer and loss-scaler are reset to their state
-    from the *previous* augmentation regime at the exact step the input
-    distribution changes -- a stale fp16 loss scale meeting Mosaic/ZoomOut/
-    IoUCrop for the first time.
-
-    That is not hypothetical. `train_policy=fixed` pins ``stop_epoch = 1``,
-    and the scaling above clamps ``e0 = max(1, ...)``, which lands on 1 for
-    every schedule shorter than ~80 epochs. fish job 489 (12 epochs, policy
-    [1, 6, 11]) went irrecoverably NaN partway through epoch 1. gen001, whose
-    unscaled [4, 78, 148] kept the two events 3 epochs apart, hit a NaN
-    excursion at its own boundary epoch and *recovered*.
-
-    So each boundary is nudged off ``stop_epoch``. When no 4-stage schedule
-    fits without a collision -- only possible on 2-3 epoch smoke tests -- the
-    policy collapses to [0, 0, 0], i.e. NoAug throughout, which is strictly
-    safer than recreating the collision.
-    """
-    num_epochs = max(1, int(num_epochs))
-    scale = num_epochs / float(_UPSTREAM_AUG_POLICY_TOTAL_EPOCHS)
-    e0, e1, e2 = (int(round(e * scale)) for e in _UPSTREAM_AUG_POLICY_EPOCHS)
-    stop = None if stop_epoch is None else int(stop_epoch)
-
-    # Warmup is at least one epoch, and every stage boundary must advance.
-    e0 = max(1, e0)
-    if stop is not None and e0 == stop:
-        e0 += 1
-    e1 = max(e0 + 1, e1)
-    if stop is not None and e1 == stop:
-        e1 += 1
-    # The final NoAug stage must actually run: e2 <= num_epochs - 1.
-    e2 = min(max(e1 + 1, e2), max(0, num_epochs - 1))
-    if stop is not None and e2 == stop:
-        e2 += 1
-    # Clamping e2 down can invert the earlier boundaries on very short
-    # schedules (a 2-epoch smoke test cannot hold four distinct stages), so
-    # rebuild downward. The invariant callers rely on is 0 <= e0 <= e1 <= e2;
-    # equal boundaries simply make the corresponding stage empty, which
-    # DEIMv2's comparisons handle correctly.
-    e1 = min(e1, e2)
-    e0 = min(e0, max(0, e1 - 1))
-
-    if stop is not None and stop in (e0, e1, e2):
-        # The downward rebuild put a boundary back onto stop_epoch and there
-        # is no room to separate them. All-zero disables the policy ops for
-        # every epoch via container.py's `cur_epoch >= policy_epoch[-1]`
-        # last-stage branch, and unlike an all-num_epochs sentinel it still
-        # satisfies the ordering and "e2 inside the schedule" invariants.
-        return [0, 0, 0]
-    return [int(e0), int(e1), int(e2)]
-
-
 def _train_transforms_block(input_hw: Tuple[int, int], num_epochs: int = None,
-                            stop_epoch: Optional[int] = None) -> Dict[str, Any]:
+                            stop_epoch: Optional[int] = None,
+                            aug_policy_epochs=None,
+                            family: str = "dinov3") -> Dict[str, Any]:
     H, W = int(input_hw[0]), int(input_hw[1])
     mosaic_out = H // 2
     return {
@@ -483,6 +453,13 @@ def _train_transforms_block(input_hw: Tuple[int, int], num_epochs: int = None,
             {"type": "Resize", "size": [H, W]},
             {"type": "SanitizeBoundingBoxes", "min_size": 1},
             {"type": "ConvertPILImage", "dtype": "float32", "scale": True},
+            # DINOv3 ONLY. All four dinov3_*_coco.yml normalize; all eight
+            # hgnetv2_*_coco.yml do not (base/deimv2.yml:104-105 goes straight
+            # to ConvertBoxes). Applying it to HGNetv2 would hand ITS COCO
+            # checkpoint an input distribution it never trained on -- the exact
+            # mistake being fixed here, just in the other direction.
+            *([{"type": "Normalize", "mean": list(DINO_NORMALIZE_MEAN),
+                "std": list(DINO_NORMALIZE_STD)}] if family == "dinov3" else []),
             {"type": "ConvertBoxes", "fmt": "cxcywh", "normalize": True},
         ],
         "policy": {
@@ -490,21 +467,26 @@ def _train_transforms_block(input_hw: Tuple[int, int], num_epochs: int = None,
             # Scaled to the actual schedule length. Falls back to upstream's
             # raw values only when the caller did not pass num_epochs, so an
             # unscaled policy can never be produced silently for a short run.
-            "epoch": (_aug_policy_epochs(num_epochs, stop_epoch) if num_epochs
-                      else list(_UPSTREAM_AUG_POLICY_EPOCHS)),
+            # Resolved from the selected upstream config by
+            # _deimv2_recipe.scale_recipe -- never reconstructed here. See that
+            # module for why the kit no longer carries its own constants.
+            "epoch": [int(v) for v in aug_policy_epochs],
             "ops": ["Mosaic", "RandomPhotometricDistort", "RandomZoomOut", "RandomIoUCrop"],
         },
         "mosaic_prob": 0.5,
     }
 
 
-def _val_transforms_block(input_hw: Tuple[int, int]) -> Dict[str, Any]:
+def _val_transforms_block(input_hw: Tuple[int, int],
+                          family: str = "dinov3") -> Dict[str, Any]:
     H, W = int(input_hw[0]), int(input_hw[1])
     return {
         "type": "Compose",
         "ops": [
             {"type": "Resize", "size": [H, W]},
             {"type": "ConvertPILImage", "dtype": "float32", "scale": True},
+            *([{"type": "Normalize", "mean": list(DINO_NORMALIZE_MEAN),
+                "std": list(DINO_NORMALIZE_STD)}] if family == "dinov3" else []),
         ],
     }
 
@@ -555,10 +537,16 @@ def _build_train_yml(
     train_wds_skip_empty: bool = False,
 ) -> Dict[str, Any]:
     H, W = int(input_hw[0]), int(input_hw[1])
+
+    # The recipe is READ from the selected upstream config and rescaled, never
+    # reconstructed from constants in this file. See _deimv2_recipe for the
+    # four hyperparameters that had silently drifted when it was.
+    recipe = scale_recipe(extract_recipe(str(upstream_cfg_fpath)), num_epochs)
+
     if family == "hgnetv2":
-        optimizer = _hgnetv2_optimizer_block(lr, backbone_lr)
+        optimizer = _hgnetv2_optimizer_block(lr, backbone_lr, recipe.weight_decay)
     elif family == "dinov3":
-        optimizer = _dinov3_optimizer_block(lr, backbone_lr)
+        optimizer = _dinov3_optimizer_block(lr, backbone_lr, recipe.weight_decay)
     else:
         raise ValueError(f"unknown variant family {family!r}")
 
@@ -567,6 +555,11 @@ def _build_train_yml(
         "output_dir": str(workdir),
         "summary_dir": str(workdir / "summary"),
         "use_amp": bool(use_amp),
+        # GradScaler exists to keep fp16 gradients out of underflow. Under
+        # bf16 it is a vestige. Disabling it (rather than removing it) keeps
+        # YAMLConfig.scaler returning an object, so det_engine.py stays in its
+        # autocast branch and scale/unscale_/step/update become pass-throughs.
+        "scaler": {"type": "GradScaler", "enabled": not _amp_dtype_is_bf16()},
         "task": "detection",
         "num_classes": int(num_classes),
         "remap_mscoco_category": False,
@@ -603,7 +596,8 @@ def _build_train_yml(
                     "skip_empty": bool(train_wds_skip_empty),
                     "return_masks": False,
                     "transforms": _train_transforms_block(
-                        input_hw, num_epochs, policy.stop_epoch),
+                        input_hw, num_epochs, recipe.stop_epoch,
+                        recipe.aug_policy_epochs, family),
                 }
                 if train_wds_shards_dpath
                 else {
@@ -611,7 +605,8 @@ def _build_train_yml(
                     "ann_file": str(train_mscoco_fpath),
                     "return_masks": False,
                     "transforms": _train_transforms_block(
-                        input_hw, num_epochs, policy.stop_epoch),
+                        input_hw, num_epochs, recipe.stop_epoch,
+                        recipe.aug_policy_epochs, family),
                 }
             ),
             # PyTorch DataLoader rejects shuffle=True on IterableDataset
@@ -621,11 +616,26 @@ def _build_train_yml(
             # shardshuffle + worker-local sample buffer, so this is
             # the right semantic too.
             "shuffle": False if train_wds_shards_dpath else True,
+            # stop_epoch comes from the RECIPE, not from the input-resolution
+            # policy. The kit used to set it to 1 whenever multiscale was off,
+            # treating it as a "stop varying input size" switch. It is much
+            # more: at `epoch == stop_epoch` DEIMv2 reloads the stage-1 best
+            # checkpoint and restarts EMA (det_solver.py:83-86). Pinning it to
+            # 1 collapsed stage 1 to a single epoch and made best_stg1.pth a
+            # permanent snapshot of epoch 0.
+            #
+            # mixup_epochs and copyblend_epochs were previously not emitted at
+            # all. DEIMv2 merges dicts recursively, so they silently inherited
+            # upstream's full-length schedule and never terminated on a short
+            # run -- the clean final stage the recipe is built around could not
+            # happen even when the transform policy said it should.
             "collate_fn": {
                 "type": "BatchImageCollateFunction",
                 "base_size": int(policy.base_size),
                 "base_size_repeat": policy.base_size_repeat,
-                "stop_epoch": int(policy.stop_epoch),
+                "stop_epoch": int(recipe.stop_epoch),
+                "mixup_epochs": [int(v) for v in recipe.mixup_epochs],
+                "copyblend_epochs": [int(v) for v in recipe.copyblend_epochs],
             },
         },
         "val_dataloader": {
@@ -635,7 +645,7 @@ def _build_train_yml(
                 "img_folder": "/",
                 "ann_file": str(vali_mscoco_fpath),
                 "return_masks": False,
-                "transforms": _val_transforms_block(input_hw),
+                "transforms": _val_transforms_block(input_hw, family),
             },
         },
         "epoches": int(num_epochs),
@@ -656,8 +666,14 @@ def _build_train_yml(
         # gen003's 24 epochs => flat_epoch 12 made all of its gains in the
         # cosine tail. Lengthening a schedule should therefore buy COSINE
         # epochs, not flat ones, and that needs the two decoupled.
-        "flat_epoch": _flat_epoch(num_epochs),
-        "no_aug_epoch": max(1, round(int(num_epochs) * 0.1)),
+        "flat_epoch": _flat_epoch(num_epochs, recipe.flat_epoch),
+        "no_aug_epoch": int(recipe.no_aug_epoch),
+        # Previously not emitted, so it inherited upstream's absolute value
+        # (45 for DINOv3-X) and was unreachable on every schedule the kit has
+        # ever run.
+        "DEIMCriterion": {
+            "matcher": {"matcher_change_epoch": int(recipe.matcher_change_epoch)},
+        },
         "optimizer": optimizer,
     }
 
@@ -775,6 +791,24 @@ def _dump_policy_json(workdir: Path, *, candidate_id: str, variant: str,
 # ---------------------------------------------------------------------------
 
 
+def _normalize_from_cfg(yaml_cfg: Dict[str, Any]):
+    """Recover (mean, std) from a generated config's val transforms.
+
+    Returns the identity (zeros / ones) when no ``Normalize`` op is present,
+    which is the correct contract for HGNetv2 variants and for every DEIMv2
+    checkpoint trained before normalization was added.
+    """
+    try:
+        ops = yaml_cfg["val_dataloader"]["dataset"]["transforms"]["ops"]
+    except (KeyError, TypeError):
+        return [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]
+    for op in ops or []:
+        if isinstance(op, dict) and op.get("type") == "Normalize":
+            return ([float(v) for v in op.get("mean", [0.0, 0.0, 0.0])],
+                    [float(v) for v in op.get("std", [1.0, 1.0, 1.0])])
+    return [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]
+
+
 class DEIMv2Predictor:
     """Inference adapter for a trained DEIMv2 checkpoint.
 
@@ -865,6 +899,20 @@ class DEIMv2Predictor:
         )
         self._amp_dtype_name = os.environ.get("KCD_AMP_DTYPE", "float16").lower()
 
+        # Preprocessing is READ OUT of the config this model was built from,
+        # not re-derived from the variant. That makes train/predict parity
+        # structural: a checkpoint trained without Normalize (every DEIMv2 run
+        # before gen006, and every HGNetv2 run ever) is scored without it, and
+        # one trained with it is scored with it -- automatically, with no
+        # version flag to get wrong.
+        import torch as _torch
+        mean, std = _normalize_from_cfg(cfg.yaml_cfg)
+        self._norm_mean = _torch.tensor(
+            mean, dtype=_torch.float32, device=device).view(1, 3, 1, 1)
+        self._norm_std = _torch.tensor(
+            std, dtype=_torch.float32, device=device).view(1, 3, 1, 1)
+        self._normalizes = mean != [0.0, 0.0, 0.0] or std != [1.0, 1.0, 1.0]
+
     @profile
     def _forward(self, im, sz):
         """Model forward under no_grad + (CUDA) bf16/fp16 autocast."""
@@ -916,9 +964,13 @@ class DEIMv2Predictor:
         except NotImplementedError:
             resized = kwimage.imresize(image_np, dsize=(self._eval_w, self._eval_h),
                                        interpolation="linear")
+        # /255 then ImageNet-normalize, matching the training transforms and
+        # upstream's own inference tools. Omitting the normalize step was a
+        # silent train/deploy divergence for every run before gen006.
         chw = torch.from_numpy(
             (resized.astype(np.float32) / 255.0).transpose(2, 0, 1)[None, ...]
         ).to(self._device)
+        chw = (chw - self._norm_mean) / self._norm_std
         W, H = int(orig_size[0]), int(orig_size[1])
         sz = torch.tensor([[W, H]], dtype=torch.int64, device=self._device)
         labels, boxes, scores = self._forward(chw, sz)
@@ -989,6 +1041,9 @@ class DEIMv2Predictor:
         # the GPU between forward passes.
         batch_u8 = torch.from_numpy(np.stack(crops_u8, axis=0)).to(self._device)
         batch = batch_u8.permute(0, 3, 1, 2).to(torch.float32).div_(255.0)
+        # In-place so the windowed evaluator's ~4 windows/image do not pay an
+        # extra full-tensor allocation per batch.
+        batch.sub_(self._norm_mean).div_(self._norm_std)
         sz = torch.tensor(sizes, dtype=torch.int64, device=self._device)
         labels, boxes, scores = self._forward(batch, sz)
         # One .cpu() per tensor (not per detection) — columnar transfer.

@@ -9,6 +9,19 @@ and an earlier `_flat_epoch` deleted with the block around it).
 
 AST-only: no imports, no dependencies, runs anywhere python3 does.
 
+Scope and known gaps
+--------------------
+Checks FUNCTION bodies only, against module-level bindings plus each enclosing
+function's (closures are legitimate and must not be flagged). Argument
+collection is deliberately over-permissive -- every ``ast.arg`` in a subtree
+counts, including nested defs and lambdas -- because a checker with false
+positives gets ignored, and the bug class it exists for still surfaces.
+
+It does NOT catch module-level order errors, e.g. a ``__main__`` guard calling
+a function defined below it. A version that tried produced nine false positives
+from comprehension and lambda bindings while catching none, so it was removed.
+Running the script once catches that case anyway.
+
     python3 dev/check_undefined_names.py kwcoco_detector_kit tests
 """
 import ast
@@ -132,6 +145,7 @@ def check_file(path):
                     else [n for n in getattr(node, "body", [])
                           if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]):
             _walk_scopes(sub, outer, findings, seen)
+
     return findings
 
 
@@ -140,7 +154,7 @@ def main(argv):
     total = 0
     for root in roots:
         for path in sorted(Path(root).rglob("*.py")):
-            if "__pycache__" in str(path):
+            if "__pycache__" in str(path) or "testdata" in path.parts:
                 continue
             for msg, line in check_file(path):
                 print(f"{path}:{line}: {msg}")
@@ -149,10 +163,6 @@ def main(argv):
     return 1 if total else 0
 
 
-if __name__ == "__main__":
-    if "--selftest" in sys.argv:
-        sys.exit(_selftest())
-    sys.exit(main(sys.argv))
 
 
 def _selftest():
@@ -168,3 +178,9 @@ def _selftest():
         f"flagged a legitimate closure/lambda: {found}"
     print("selftest OK: catches the out-of-scope read, ignores closures/lambdas")
     return 0
+
+
+if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        sys.exit(_selftest())
+    sys.exit(main(sys.argv))

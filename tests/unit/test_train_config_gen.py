@@ -486,21 +486,22 @@ def test_non_wds_path_still_emits_legacy_coco_keys(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Augmentation policy must be scaled to the schedule length
+# Schedule emission.
 #
-# DEIMv2's `stop_epoch` policy takes three boundaries defining four stages
-# (engine/data/transforms/container.py:81-97):
+# The tests that used to live here asserted the kit's own copy of DEIMv2's
+# schedule -- (4, 78, 148) over 150 epochs -- and a rule that no augmentation
+# boundary may coincide with stop_epoch. Both are now known wrong:
 #
-#     epoch < e0        NoAug warmup
-#     e0..e1            Mosaic active
-#     e1..e2            ZoomOut / IoUCrop / PhotometricDistort, no Mosaic
-#     epoch >= e2       NoAug -- the clean final phase the recipe needs
+#   * (4, 78, 148) is the HGNETV2-N recipe, over 160 epochs, not 150, and not
+#     DINOv3's. Each variant has its own totals (58/68/102/132/160/500).
+#   * upstream deliberately sets the FINAL boundary equal to stop_epoch for
+#     DINOv3 (both 50), while atto/femto/pico deliberately decouple them
+#     (468 vs 400).
 #
-# Upstream's (4, 78, 148) assumes ~150 epochs. Emitted unscaled into a short
-# run they do not merely shift: stages 3 and 4 become UNREACHABLE, so training
-# ends while Mosaic is still on and the model never sees the clean epochs. The
-# LR schedule already guards against this class of bug (flat_epoch and
-# no_aug_epoch derive from num_epochs); the policy was missed.
+# The schedule is now read from the selected upstream config and rescaled;
+# tests/unit/test_deimv2_recipe.py covers that extraction and its scaling
+# against all twelve vendored variants. What belongs HERE is only that the
+# generated YAML actually carries the resolved values into the right keys.
 # ---------------------------------------------------------------------------
 
 
@@ -508,181 +509,113 @@ def _aug_policy(cfg):
     return cfg["train_dataloader"]["dataset"]["transforms"]["policy"]["epoch"]
 
 
-@pytest.mark.parametrize("num_epochs", [3, 5, 8, 12, 20, 30, 45, 150])
-def test_aug_policy_boundaries_are_ordered_and_inside_the_schedule(
-        num_epochs, tmp_path):
-    trainer = _get_trainer()
-    cfg = _generate(trainer, tmp_path, variant="deimv2_dinov3_s",
-                    input_hw=(640, 640), num_epochs=num_epochs)
-    e0, e1, e2 = _aug_policy(cfg)
-    assert 0 <= e0 <= e1 <= e2, f"boundaries out of order: {[e0, e1, e2]}"
-    assert e2 <= num_epochs - 1, (
-        f"final NoAug stage starts at {e2} but training ends at "
-        f"{num_epochs - 1}; that stage would never run")
+def _collate(cfg):
+    return cfg["train_dataloader"]["collate_fn"]
 
 
-@pytest.mark.parametrize("num_epochs", [3, 5, 8, 12, 20, 30, 45])
-def test_aug_policy_leaves_a_clean_final_phase(num_epochs, tmp_path):
-    """At least one epoch must run with the policy ops disabled."""
-    trainer = _get_trainer()
-    cfg = _generate(trainer, tmp_path, variant="deimv2_dinov3_s",
-                    input_hw=(640, 640), num_epochs=num_epochs)
-    _, _, e2 = _aug_policy(cfg)
-    assert num_epochs - e2 >= 1, (
-        f"{num_epochs}-epoch schedule leaves no NoAug epochs (e2={e2})")
-
-
-def test_aug_policy_preserves_upstream_at_150_epochs(tmp_path):
-    """The scaling must be a no-op on the schedule upstream tuned for."""
-    trainer = _get_trainer()
-    cfg = _generate(trainer, tmp_path, variant="deimv2_dinov3_s",
-                    input_hw=(640, 640), num_epochs=150)
-    assert _aug_policy(cfg) == [4, 78, 148]
-
-
-def test_aug_policy_regression_20_epochs_reaches_the_final_stage(tmp_path):
-    """Regression for gen001: 20 epochs emitted upstream's raw [4, 78, 148].
-
-    Training entered the Mosaic stage at epoch 4 and never left it, so the
-    model was still seeing Mosaic when the run ended.
-
-    e0 is 2 rather than 1 because train_policy=fixed pins stop_epoch=1 and no
-    augmentation boundary may land there -- see the collision tests below.
-    """
+def test_generated_config_carries_the_resolved_dinov3_x_schedule(tmp_path):
+    """The gen006 schedule, end to end through config generation."""
     trainer = _get_trainer()
     cfg = _generate(trainer, tmp_path, variant="deimv2_dinov3_x",
-                    input_hw=(1024, 1024), num_epochs=20)
-    assert _aug_policy(cfg) == [2, 10, 19]
+                    input_hw=(1024, 1024), num_epochs=14)
+    collate = _collate(cfg)
+    assert cfg["epoches"] == 14
+    assert cfg["flat_epoch"] == 7
+    assert cfg["no_aug_epoch"] == 2
+    assert _aug_policy(cfg) == [1, 7, 12]
+    assert collate["stop_epoch"] == 12
+    assert collate["mixup_epochs"] == [1, 7]
+    assert collate["copyblend_epochs"] == [1, 12]
+    assert cfg["DEIMCriterion"]["matcher"]["matcher_change_epoch"] == 11
+    assert cfg["optimizer"]["weight_decay"] == pytest.approx(1.25e-4)
 
 
-# ---------------------------------------------------------------------------
-# No augmentation boundary may coincide with collate_fn.stop_epoch.
-#
-# At `epoch == stop_epoch` DEIMv2 reloads model, optimizer, GradScaler and EMA
-# state from best_stg1.pth (engine/solver/det_solver.py:83-86). A boundary on
-# that same epoch resets the optimizer and loss scale to the previous
-# augmentation regime's state at the exact step the input distribution
-# changes.
-#
-# Regression for fish job 489: train_policy=fixed pins stop_epoch=1, and the
-# scaling clamps e0 = max(1, ...), which lands on 1 for every schedule shorter
-# than ~80 epochs. That run (12 epochs, policy [1, 6, 11]) went irrecoverably
-# NaN partway through epoch 1 -- every loss exactly 0.0 thereafter, AP 0.000
-# for the rest of the schedule. gen001, whose unscaled [4, 78, 148] kept the
-# two events 3 epochs apart, hit a NaN excursion at its own boundary and
-# recovered.
-# ---------------------------------------------------------------------------
+def test_mixup_and_copyblend_are_emitted_at_all(tmp_path):
+    """They were previously absent, so short runs inherited upstream's
+    absolute [4, 29] / [4, 50] via DEIMv2's recursive dict merge and never
+    terminated."""
+    trainer = _get_trainer()
+    collate = _collate(_generate(trainer, tmp_path, variant="deimv2_dinov3_x",
+                                 input_hw=(1024, 1024), num_epochs=14))
+    assert "mixup_epochs" in collate and "copyblend_epochs" in collate
+    assert collate["mixup_epochs"][1] <= 14
+    assert collate["copyblend_epochs"][1] <= 14
 
 
-def _stop_epoch(cfg):
-    return cfg["train_dataloader"]["collate_fn"]["stop_epoch"]
+def test_matcher_change_epoch_is_reachable(tmp_path):
+    """Previously inherited 45 and never fired on any schedule the kit ran."""
+    trainer = _get_trainer()
+    cfg = _generate(trainer, tmp_path, variant="deimv2_dinov3_x",
+                    input_hw=(1024, 1024), num_epochs=14)
+    assert cfg["DEIMCriterion"]["matcher"]["matcher_change_epoch"] < 14
 
 
-@pytest.mark.parametrize("num_epochs", [2, 3, 4, 6, 8, 12, 16, 20, 24, 30,
-                                        40, 56, 80, 150])
-def test_no_aug_boundary_lands_on_stop_epoch(num_epochs, tmp_path):
+def test_stop_epoch_is_not_pinned_to_one_for_fixed_policy(tmp_path):
+    """train_policy=fixed used to force stop_epoch=1, which froze
+    best_stg1.pth at epoch 0 and turned DEIMv2's restore-the-best branch into
+    a reset to the start (fish job 492)."""
+    trainer = _get_trainer()
+    cfg = _generate(trainer, tmp_path, variant="deimv2_dinov3_x",
+                    input_hw=(1024, 1024), train_policy="fixed", num_epochs=14)
+    assert _collate(cfg)["stop_epoch"] == 12
+
+
+@pytest.mark.parametrize("num_epochs", [5, 8, 14, 24, 58])
+def test_augmentation_never_starts_on_the_stop_epoch(num_epochs, tmp_path):
+    """The gen002 failure: the checkpoint/optimizer/GradScaler reload landing
+    on the epoch that first enables augmentation. Only the ON boundary matters
+    -- upstream aligns the OFF boundary with stop_epoch on purpose."""
     trainer = _get_trainer()
     cfg = _generate(trainer, tmp_path, variant="deimv2_dinov3_x",
                     input_hw=(1024, 1024), num_epochs=num_epochs)
-    policy = _aug_policy(cfg)
-    stop = _stop_epoch(cfg)
-    assert stop not in policy, (
-        f"{num_epochs}-epoch schedule puts an augmentation boundary on "
-        f"stop_epoch={stop} (policy {policy}); DEIMv2 reloads optimizer and "
-        f"GradScaler state at that epoch")
+    assert _aug_policy(cfg)[0] != _collate(cfg)["stop_epoch"]
 
 
-@pytest.mark.parametrize("num_epochs", [2, 3, 4, 6, 8, 12, 16, 20, 24, 30,
-                                        40, 56, 80, 150])
-def test_aug_policy_stays_ordered_after_stop_epoch_decoupling(
-        num_epochs, tmp_path):
-    """Nudging boundaries must not break the ordering invariant."""
+def test_weight_decay_follows_the_variant(tmp_path):
+    """Was hardcoded to 1e-4 for every variant."""
     trainer = _get_trainer()
-    cfg = _generate(trainer, tmp_path, variant="deimv2_dinov3_x",
-                    input_hw=(1024, 1024), num_epochs=num_epochs)
-    e0, e1, e2 = _aug_policy(cfg)
-    assert 0 <= e0 <= e1 <= e2, f"boundaries out of order: {[e0, e1, e2]}"
-
-
-def test_multiscale_late_stop_epoch_leaves_upstream_policy_alone(tmp_path):
-    """The nudge must only fire on an actual collision.
-
-    multiscale pins stop_epoch = num_epochs - 4, which is far from every
-    boundary at 150 epochs, so upstream's tuned values must survive intact.
-    """
-    trainer = _get_trainer()
-    cfg = _generate(trainer, tmp_path, variant="deimv2_dinov3_x",
-                    input_hw=(1024, 1024), train_policy="multiscale",
-                    num_epochs=150)
-    assert _aug_policy(cfg) == [4, 78, 148]
-
-
-def test_short_schedule_with_no_room_disables_augmentation(tmp_path):
-    """When no 4-stage schedule avoids the collision, fall back to NoAug.
-
-    A 3-epoch smoke test cannot hold four stages and keep a boundary off
-    stop_epoch=1. Disabling the policy ops entirely is safer than recreating
-    the collision, and is expressed as [0, 0, 0] so every epoch takes
-    container.py's `cur_epoch >= policy_epoch[-1]` NoAug branch while keeping
-    the ordering and in-schedule invariants the other tests assert.
-    """
-    trainer = _get_trainer()
-    cfg = _generate(trainer, tmp_path, variant="deimv2_dinov3_x",
-                    input_hw=(1024, 1024), num_epochs=3)
-    assert _aug_policy(cfg) == [0, 0, 0]
-    assert _stop_epoch(cfg) not in _aug_policy(cfg)
+    x = _generate(trainer, tmp_path / "x", variant="deimv2_dinov3_x",
+                  input_hw=(640, 640), num_epochs=14)
+    s = _generate(trainer, tmp_path / "s", variant="deimv2_dinov3_s",
+                  input_hw=(640, 640), num_epochs=14)
+    assert x["optimizer"]["weight_decay"] == pytest.approx(1.25e-4)
+    assert s["optimizer"]["weight_decay"] == pytest.approx(1e-4)
 
 
 # ---------------------------------------------------------------------------
-# flat_epoch: the flat-LR phase must be decoupled from the schedule length.
-#
-# FlatCosineLR holds the target LR for flat_epoch, then anneals. The flat phase
-# is where this stack misbehaves: at constant LR the model oscillates, every
-# non-improving eval trips DEIMv2's restore-the-best branch, and nothing
-# accumulates. fish gen004 (job 492) ran 48 epochs -> flat_epoch 24 and never
-# beat its own epoch-1 score across 21 flat epochs; gen003's 24 -> flat 12 made
-# all its gains in the cosine tail. Lengthening a schedule must therefore be
-# able to buy cosine epochs rather than flat ones.
+# flat_epoch: recipe-derived default, env override.
 # ---------------------------------------------------------------------------
 
 
-def _flat(cfg):
-    return cfg["flat_epoch"]
-
-
-@pytest.mark.parametrize("num_epochs,expected", [(12, 6), (24, 12), (36, 18),
-                                                 (48, 24)])
-def test_flat_epoch_defaults_to_half_the_schedule(num_epochs, expected,
-                                                  tmp_path, monkeypatch):
+def test_flat_epoch_defaults_to_the_recipe_value(tmp_path, monkeypatch):
+    """29/58 rescaled, not the kit's old num_epochs // 2."""
     monkeypatch.delenv("KCD_FLAT_EPOCH", raising=False)
     trainer = _get_trainer()
     cfg = _generate(trainer, tmp_path, variant="deimv2_dinov3_x",
-                    input_hw=(1024, 1024), num_epochs=num_epochs)
-    assert _flat(cfg) == expected
+                    input_hw=(1024, 1024), num_epochs=14)
+    assert cfg["flat_epoch"] == 7
 
 
 def test_flat_epoch_env_override(tmp_path, monkeypatch):
-    monkeypatch.setenv("KCD_FLAT_EPOCH", "12")
+    monkeypatch.setenv("KCD_FLAT_EPOCH", "4")
     trainer = _get_trainer()
     cfg = _generate(trainer, tmp_path, variant="deimv2_dinov3_x",
-                    input_hw=(1024, 1024), num_epochs=36)
-    assert _flat(cfg) == 12          # 24 cosine epochs, not 18
+                    input_hw=(1024, 1024), num_epochs=14)
+    assert cfg["flat_epoch"] == 4
 
 
-@pytest.mark.parametrize("raw,expected", [("999", 35), ("0", 1), ("-5", 1)])
+@pytest.mark.parametrize("raw,expected", [("999", 13), ("0", 1), ("-5", 1)])
 def test_flat_epoch_override_is_clamped(raw, expected, tmp_path, monkeypatch):
-    """The cosine phase must always run for at least one epoch."""
     monkeypatch.setenv("KCD_FLAT_EPOCH", raw)
     trainer = _get_trainer()
     cfg = _generate(trainer, tmp_path, variant="deimv2_dinov3_x",
-                    input_hw=(1024, 1024), num_epochs=36)
-    assert _flat(cfg) == expected
-    assert _flat(cfg) < 36
+                    input_hw=(1024, 1024), num_epochs=14)
+    assert cfg["flat_epoch"] == expected
 
 
-def test_flat_epoch_garbage_falls_back_to_the_default(tmp_path, monkeypatch):
+def test_flat_epoch_garbage_falls_back_to_the_recipe(tmp_path, monkeypatch):
     monkeypatch.setenv("KCD_FLAT_EPOCH", "not-a-number")
     trainer = _get_trainer()
     cfg = _generate(trainer, tmp_path, variant="deimv2_dinov3_x",
-                    input_hw=(1024, 1024), num_epochs=36)
-    assert _flat(cfg) == 18
+                    input_hw=(1024, 1024), num_epochs=14)
+    assert cfg["flat_epoch"] == 7

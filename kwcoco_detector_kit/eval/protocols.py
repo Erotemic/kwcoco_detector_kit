@@ -170,8 +170,29 @@ class EvalProtocol:
         }
 
 
+#: Parameters that fall back to another when the caller does not supply them.
+#: ``source_window_hw`` was split out of ``train_input_hw`` so a tile-trained
+#: model can be evaluated with a SOURCE-pixel window that differs from its
+#: model input. Callers that predate the split -- and every whole-frame run --
+#: pass only ``train_input_hw``, and must keep resolving to exactly the same
+#: protocol they did before, so the fallback belongs HERE rather than in
+#: resolve_plan. Putting it only in the caller silently broke direct
+#: resolve_protocol(TRUE_TILED_V1, train_input_hw=...) calls.
+_PARAM_FALLBACKS = {
+    "source_window_hw": "train_input_hw",
+}
+
+
 def resolve_protocol(protocol: EvalProtocol, **params: Any) -> EvalProtocol:
-    """Replace every :class:`Param` placeholder with a concrete value."""
+    """Replace every :class:`Param` placeholder with a concrete value.
+
+    Unsupplied parameters fall back per :data:`_PARAM_FALLBACKS`, so callers
+    that predate a parameter split continue to resolve unchanged.
+    """
+    params = dict(params)
+    for name, source in _PARAM_FALLBACKS.items():
+        if params.get(name) is None and params.get(source) is not None:
+            params[name] = params[source]
     regime = protocol.regime
     kwargs = {}
     for f in dataclasses.fields(regime):

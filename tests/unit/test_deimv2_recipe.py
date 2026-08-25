@@ -101,17 +101,14 @@ def test_scaled_invariants_hold(num_epochs):
     r = extract_recipe(_cfg("deimv2_dinov3_x"))
     s = scale_recipe(r, num_epochs)
     e0, e1, e2 = s.aug_policy_epochs
-    assert 0 <= e0 <= e1 <= e2 <= num_epochs
-    # Upstream couples these deliberately: the epoch that ends heavy
-    # augmentation is the epoch that enters the final EMA stage.
-    assert s.stop_epoch == e2
-    assert s.mixup_epochs == (e0, e1)
-    assert s.copyblend_epochs == (e0, e2)
-    # The reload at stop_epoch must not coincide with augmentation turning ON
-    # -- that pairing is what destroyed fish gen002.
-    assert e0 != s.stop_epoch or num_epochs <= 2
+    assert 0 < e0 <= e1 <= e2 <= max(1, num_epochs - 1)
+    assert 1 <= s.stop_epoch <= num_epochs
     assert s.matcher_change_epoch < num_epochs
     assert 1 <= s.flat_epoch <= max(1, num_epochs - 1)
+    # NOTE: stop_epoch == e2 and mixup == (e0, e1) hold for DINOv3 but are NOT
+    # universal -- hgnetv2_n's copyblend is (4, 78) against e2=148, and
+    # atto/femto/pico put stop_epoch at 468 against e2=400. Asserting them here
+    # is what let a scaler that reconstructed those fields look correct.
 
 
 def test_loader_has_no_shared_mutable_state():
@@ -161,3 +158,67 @@ def test_the_phantom_constant_belonged_to_hgnetv2_n():
 def test_flat_epoch_is_always_inside_the_schedule(variant):
     r = extract_recipe(_cfg(variant))
     assert 1 <= r.flat_epoch <= r.total_epochs
+
+
+# ---------------------------------------------------------------------------
+# Per-field scaling. An earlier scaler rebuilt mixup/copyblend/stop_epoch from
+# the policy boundaries, which is right for DINOv3 and wrong for four of the
+# twelve variants.
+# ---------------------------------------------------------------------------
+
+ALL_VARIANTS = DINOV3 + ["deimv2_hgnetv2_" + s for s in
+                         ("atto", "femto", "pico", "n", "s", "m", "l", "x")]
+
+
+@pytest.mark.parametrize("variant", ALL_VARIANTS)
+@pytest.mark.parametrize("num_epochs", [2, 5, 14, 24, 58])
+def test_disabled_augmentation_never_becomes_enabled(variant, num_epochs):
+    """atto/femto/pico ship mixup and copyblend as (40000, 15000).
+
+    Start after end is upstream's 'never run this'. Clamping such a window into
+    range -- which a naive scaler does -- turns an augmentation the recipe
+    disabled back on.
+    """
+    from kwcoco_detector_kit.trainers._deimv2_recipe import augmentation_is_disabled
+    r = extract_recipe(_cfg(variant))
+    s = scale_recipe(r, num_epochs)
+    for field in ("mixup_epochs", "copyblend_epochs"):
+        if augmentation_is_disabled(getattr(r, field)):
+            assert augmentation_is_disabled(getattr(s, field)), (
+                f"{variant} {field} was disabled upstream "
+                f"{getattr(r, field)} and became {getattr(s, field)}")
+
+
+def test_hgnetv2_n_copyblend_is_not_rebuilt_from_the_policy():
+    """Its copyblend ends at 78, not at e2=148."""
+    r = extract_recipe(_cfg("deimv2_hgnetv2_n"))
+    assert r.copyblend_epochs == (4, 78)
+    assert r.aug_policy_epochs[2] == 148
+    s = scale_recipe(r, 14)
+    # 78/160 * 14 = 6.8 -> 7, NOT 148/160 * 14 = 13
+    assert s.copyblend_epochs[1] == 7
+
+
+def test_stop_epoch_is_not_forced_to_equal_the_final_boundary():
+    """atto decouples them: stop_epoch 468 against e2 400."""
+    r = extract_recipe(_cfg("deimv2_hgnetv2_atto"))
+    assert r.stop_epoch == 468 and r.aug_policy_epochs[2] == 400
+    s = scale_recipe(r, 14)
+    assert s.stop_epoch != s.aug_policy_epochs[2]
+
+
+@pytest.mark.parametrize("variant", ALL_VARIANTS)
+def test_identity_at_native_schedule_for_every_variant(variant):
+    r = extract_recipe(_cfg(variant))
+    assert scale_recipe(r, r.total_epochs) == r
+
+
+@pytest.mark.parametrize("variant", ALL_VARIANTS)
+@pytest.mark.parametrize("num_epochs", [2, 5, 14, 24])
+def test_enabled_window_never_starts_in_the_warmup_epoch(variant, num_epochs):
+    from kwcoco_detector_kit.trainers._deimv2_recipe import augmentation_is_disabled
+    s = scale_recipe(extract_recipe(_cfg(variant)), num_epochs)
+    for field in ("mixup_epochs", "copyblend_epochs"):
+        w = getattr(s, field)
+        if not augmentation_is_disabled(w):
+            assert w[0] >= 1, f"{variant} {field}={w} would fire during warmup"

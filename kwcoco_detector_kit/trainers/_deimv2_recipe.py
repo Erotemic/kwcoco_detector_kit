@@ -173,16 +173,39 @@ def extract_recipe(upstream_cfg_fpath: str) -> DEIMv2Recipe:
 
 
 def scale_recipe(recipe: DEIMv2Recipe, num_epochs: int) -> DEIMv2Recipe:
-    """Rescale a recipe's landmarks to ``num_epochs``, preserving its shape.
+    """Rescale a recipe to ``num_epochs``, scaling EVERY field independently.
 
-    Clamps keep the invariants that make the schedule meaningful even on very
-    short smoke-test runs, where rounding would otherwise collapse stages onto
-    each other:
+    An earlier version reconstructed ``mixup_epochs``, ``copyblend_epochs`` and
+    ``stop_epoch`` from the three policy boundaries, on the assumption that
+    upstream always couples them. It does for DINOv3, and for hgnetv2 l/m/s/x.
+    It does not for the rest, and the assumption silently corrupted them:
 
-      * ``0 <= e0 <= e1 <= e2 <= num_epochs``
-      * at least one epoch of heavy augmentation, when the schedule has room
-      * ``stop_epoch == e2`` (upstream's deliberate coupling)
-      * ``matcher_change_epoch < num_epochs`` so it is actually reachable
+      hgnetv2_n      copyblend is (4, 78), NOT (4, e2=148)
+      atto/femto/pico  mixup and copyblend are (40000, 15000) -- start AFTER
+                       end, i.e. deliberately DISABLED -- and stop_epoch is
+                       468 while e2 is 400
+
+    Rebuilding those from the policy would have re-enabled augmentations
+    upstream turned off and moved a stage boundary on four of twelve variants.
+    So each field is scaled from its own value and nothing is inferred.
+
+    Clamping is applied only where a value must be in range to be meaningful:
+
+      * the policy triple, which drives a four-stage state machine and must
+        satisfy ``0 < e0 <= e1 <= e2 <= num_epochs - 1`` so the final NoAug
+        stage actually runs;
+      * ``stop_epoch``, ``flat_epoch``, ``no_aug_epoch`` and
+        ``matcher_change_epoch``, which must fall inside the schedule to fire.
+
+    ``mixup_epochs`` and ``copyblend_epochs`` are deliberately NOT clamped:
+    clamping them into range is precisely what would enable a disabled
+    augmentation. Scaling alone preserves the sentinel, since 40000 * (14/500)
+    is still 1120 -- far outside a 14-epoch run.
+
+    The guarantee is one-directional, by design. A DISABLED window can never
+    become enabled. An ENABLED window may collapse to empty (start == end) on a
+    schedule with no room for it -- a 2-epoch smoke test -- which turns the
+    augmentation off rather than corrupting it, and is the safe failure.
     """
     num_epochs = max(1, int(num_epochs))
     total = max(1, int(recipe.total_epochs))
@@ -193,14 +216,27 @@ def scale_recipe(recipe: DEIMv2Recipe, num_epochs: int) -> DEIMv2Recipe:
     def s(v: int) -> int:
         return int(round(v * r))
 
+    def s_pair(pair):
+        """Scale an augmentation window, preserving a disabled sentinel.
+
+        For an ENABLED window the start is floored at 1, matching the rule
+        applied to the policy's own e0: upstream never starts augmenting in
+        epoch 0, and rounding a small start (4/132 -> 0.35) down to 0 would fire
+        mixup during the NoAug warmup epoch the policy is simultaneously
+        declaring. A DISABLED window (start >= end) is left exactly as scaled,
+        because flooring its start is what would drag it back into range.
+        """
+        lo, hi = s(int(pair[0])), s(int(pair[1]))
+        if int(pair[0]) < int(pair[1]):
+            lo = max(1, lo)
+        return (lo, hi)
+
     e0, e1, e2 = (s(v) for v in recipe.aug_policy_epochs)
-    # The final NoAug stage must run, so e2 cannot reach the end.
     e2 = min(max(e2, 1), max(1, num_epochs - 1))
-    # Augmentation must start before it ends, and after at least one warmup
-    # epoch -- an aug boundary at epoch 0 has nothing to warm up from.
     e0 = min(max(e0, 1), e2)
     e1 = min(max(e1, e0), e2)
 
+    stop = min(max(s(recipe.stop_epoch), 1), num_epochs)
     flat = min(max(s(recipe.flat_epoch), 1), max(1, num_epochs - 1))
     no_aug = min(max(s(recipe.no_aug_epoch), 1), max(1, num_epochs - 1))
     matcher = min(max(s(recipe.matcher_change_epoch), 0), max(0, num_epochs - 1))
@@ -210,9 +246,18 @@ def scale_recipe(recipe: DEIMv2Recipe, num_epochs: int) -> DEIMv2Recipe:
         flat_epoch=flat,
         no_aug_epoch=no_aug,
         aug_policy_epochs=(e0, e1, e2),
-        mixup_epochs=(e0, e1),
-        copyblend_epochs=(e0, e2),
-        stop_epoch=e2,
+        mixup_epochs=s_pair(recipe.mixup_epochs),
+        copyblend_epochs=s_pair(recipe.copyblend_epochs),
+        stop_epoch=stop,
         matcher_change_epoch=matcher,
         weight_decay=recipe.weight_decay,
     ).validate()
+
+
+def augmentation_is_disabled(window) -> bool:
+    """Upstream encodes 'never run this' as a start at/after the end.
+
+    atto/femto/pico use ``(40000, 15000)``. Any scaling of that pair keeps the
+    relationship, which is what makes it safe to carry through unclamped.
+    """
+    return int(window[0]) >= int(window[1])

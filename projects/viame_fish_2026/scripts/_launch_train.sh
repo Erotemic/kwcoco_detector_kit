@@ -157,9 +157,9 @@ set -x
     --use_amp "${KCD_USE_AMP:-true}" \
     --train_num_workers "${KCD_TRAIN_NUM_WORKERS:-8}" \
     --val_num_workers "${KCD_VAL_NUM_WORKERS:-4}" \
-    ${KCD_DO_EXPORT:+--do_export "$KCD_DO_EXPORT"} \
-    ${KCD_DO_EVAL:+--do_eval "$KCD_DO_EVAL"} \
-    ${KCD_DO_BENCH:+--do_bench "$KCD_DO_BENCH"} \
+    ${KCD_DO_EXPORT:+--do_export="$KCD_DO_EXPORT"} \
+    ${KCD_DO_EVAL:+--do_eval="$KCD_DO_EVAL"} \
+    ${KCD_DO_BENCH:+--do_bench="$KCD_DO_BENCH"} \
     ${KCD_RESUME_CKPT:+--resume "$KCD_RESUME_CKPT"} \
     ${KCD_EVAL_DEVICE:+--eval_device "$KCD_EVAL_DEVICE"} \
     "${TILED_EVAL_FLAGS[@]}" \

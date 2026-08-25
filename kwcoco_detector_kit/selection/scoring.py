@@ -143,6 +143,14 @@ class KitScorer:
                 nms_thresh=float(regime.nms_iou),
                 batch_size=self.tiled_batch,
                 pre_nms_score_thresh=float(binding.protocol.score_thresh),
+                # Frozen to match run_kwcoco_eval, whose default is False.
+                # TiledPredictor's own default is True, so leaving it implicit
+                # made selection rerank checkpoints under a DIFFERENT inference
+                # procedure than the one that produced the baseline they are
+                # compared against. Two numbers from two procedures are not a
+                # comparison. False is chosen because it is what the existing
+                # baseline evaluator already does.
+                per_window_nms=False,
             )
         if isinstance(regime, Resize):
             # DEIMv2Predictor.predict_image resizes the whole image to the

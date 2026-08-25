@@ -218,7 +218,10 @@ def resolve_plan(
     size or the model is measured at a different object scale than it saw.
     """
     class_support = class_support or {}
-    window_hw = tuple(int(v) for v in (source_window_hw or train_input_hw))
+    # May be None: resolve_protocol falls back to train_input_hw itself, which
+    # is where the compatibility contract lives.
+    window_hw = (tuple(int(v) for v in source_window_hw)
+                 if source_window_hw else None)
 
     def _binding(entry: Mapping[str, str]) -> Binding:
         proto = resolve_protocol(

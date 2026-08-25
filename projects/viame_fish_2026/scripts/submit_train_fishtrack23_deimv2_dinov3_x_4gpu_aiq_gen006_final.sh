@@ -78,7 +78,26 @@ kcd_require_path "tiled train bundle" "$KCD_TILE_TRAIN_KWCOCO" || {
 kcd_require_path "tiled vali bundle" "$KCD_TILE_VALI_KWCOCO" || exit 1
 export KCD_TRAIN_KWCOCO="$KCD_TILE_TRAIN_KWCOCO"
 export KCD_VALI_KWCOCO="$KCD_TILE_VALI_KWCOCO"
-export KCD_TEST_KWCOCO="$VF_TEST_KWCOCO"        # untouched until selection
+export KCD_TEST_KWCOCO="$VF_TEST_KWCOCO"        # required by the CLI contract
+
+# The sweep defaults do_eval / do_export / do_bench to True
+# (pareto_sweep.py:231-233), and _launch_train.sh forwards KCD_TEST_KWCOCO into
+# it. Left alone, finishing training would immediately score this model on the
+# HELD-OUT TEST SPLIT -- exactly what the holdout-discipline rule in paths.sh
+# forbids -- and would export and bench the ordinary last checkpoint before
+# true-tiled selection has chosen one.
+#
+# All three are off. Score test ONCE, after a checkpoint is selected.
+#
+# These are `isflag` options, so they are passed to the sweep in the `=` form
+# (--do_eval=False). A bare `--do_eval False` risks parsing as the flag plus a
+# stray positional, i.e. silently ENABLING what we meant to disable. VERIFY in
+# the job log that the sweep's resolved config shows all three False before
+# walking away -- the failure mode here is spending the holdout, which cannot
+# be undone.
+export KCD_DO_EVAL="${KCD_DO_EVAL:-False}"
+export KCD_DO_EXPORT="${KCD_DO_EXPORT:-False}"
+export KCD_DO_BENCH="${KCD_DO_BENCH:-False}"
 
 kcd_require_init_checkpoint "deimv2_dinov3_x" || exit 1
 export KCD_RESUME_CKPT="${KCD_RESUME_CKPT:-fresh}"
@@ -139,6 +158,7 @@ echo "  epochs:    $KCD_NUM_EPOCHS   lr $KCD_LR / $KCD_BACKBONE_LR   amp $KCD_AM
 echo "  schedule:  from the upstream recipe -- expect policy [1, 7, 12],"
 echo "             stop 12, matcher 11, flat 7, wd 1.25e-4 in the banner"
 echo "  eval:      tiled, ${KCD_TILED_EVAL_WINDOW}px source window, overlap $KCD_TILED_EVAL_OVERLAP"
+echo "  eval/export/bench: DISABLED (verify 'do_eval': False in the sweep config dump)"
 echo "  expect:    ~33 h"
 echo
 

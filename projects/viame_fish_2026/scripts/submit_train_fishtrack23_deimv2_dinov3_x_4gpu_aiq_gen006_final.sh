@@ -61,8 +61,13 @@
 # That fixes B (gen001 vs gen003 on full vali, true-tiled 1229) and it must be
 # recorded in the journal BEFORE this launches. Success is pre-registered as
 # B + 0.01 AP50 with a sequence-bootstrap 90% CI whose lower bound clears zero;
-# B + 0.02 is a strong result; AP50:95 must not regress by more than 0.01. The
-# held-out test split stays untouched until a checkpoint is selected.
+# B + 0.02 is a strong result. The held-out test split stays untouched until a
+# checkpoint is selected.
+#
+# AP50:95 is deliberately NOT part of the criterion. The frozen protocol scores
+# at iou_thresh 0.5 and the whole selection path is built on AP@0.5, so an
+# AP50:95 clause would be a threshold nothing computes. It can be measured
+# diagnostically on the selected models afterwards.
 #
 # ## Submit (from the kit root, on aiq-gpu, AFTER rebuilding the image)
 #

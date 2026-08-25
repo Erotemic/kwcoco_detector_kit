@@ -21,7 +21,8 @@ from kwcoco_detector_kit.trainers.deimv2 import _resolve_upstream_cfg_fpath
 
 DINOV3 = ["deimv2_dinov3_s", "deimv2_dinov3_m",
           "deimv2_dinov3_l", "deimv2_dinov3_x"]
-HGNETV2 = ["deimv2_hgnetv2_n", "deimv2_hgnetv2_x"]
+HGNETV2 = ["deimv2_hgnetv2_" + s for s in
+           ("atto", "femto", "pico", "n", "s", "m", "l", "x")]
 
 
 def _cfg(variant):
@@ -51,6 +52,8 @@ def test_extracted_recipe_matches_the_vendored_yaml(variant):
     assert list(recipe.mixup_epochs) == list(collate["mixup_epochs"])
     assert list(recipe.copyblend_epochs) == list(collate["copyblend_epochs"])
     assert recipe.stop_epoch == collate["stop_epoch"]
+    assert recipe.matcher_change_epoch == \
+        raw["DEIMCriterion"]["matcher"]["matcher_change_epoch"]
     assert recipe.weight_decay == raw["optimizer"]["weight_decay"]
 
 

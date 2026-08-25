@@ -286,6 +286,13 @@ def _resolve_policy(
     return _PolicyResolution(
         base_size=int(base),
         base_size_repeat=repeat,
+        # NOTE: this field no longer controls training. collate_fn.stop_epoch
+        # comes from the upstream recipe (see _deimv2_recipe). What remains
+        # here is the MULTISCALE input-size switch, which is the only thing
+        # this policy object was ever entitled to decide -- the name is kept
+        # narrow deliberately, because conflating "stop varying input size"
+        # with DEIMv2's stage-1/stage-2 boundary is what pinned it to 1 and
+        # froze best_stg1.pth at epoch 0.
         stop_epoch=int(stop_epoch_default if repeat else 1),
         requested_min=int(req_min),
         requested_max=int(req_max),
@@ -766,7 +773,17 @@ def _dump_policy_json(workdir: Path, *, candidate_id: str, variant: str,
         "requested_train_resolution_max": int(policy.requested_max),
         "multiscale_base_size": int(policy.base_size),
         "multiscale_repeat": int(policy.base_size_repeat or 0),
+        # Named for what it actually is. It is NOT collate_fn.stop_epoch --
+        # that is recipe-derived and recorded separately below -- and reporting
+        # it under the bare name made policy.json claim 1 while training used
+        # 12.
         "multiscale_stop_epoch": int(policy.stop_epoch),
+        "recipe_stop_epoch": int(recipe.stop_epoch),
+        "recipe_aug_policy_epochs": [int(v) for v in recipe.aug_policy_epochs],
+        "recipe_mixup_epochs": [int(v) for v in recipe.mixup_epochs],
+        "recipe_copyblend_epochs": [int(v) for v in recipe.copyblend_epochs],
+        "recipe_matcher_change_epoch": int(recipe.matcher_change_epoch),
+        "recipe_weight_decay": float(recipe.weight_decay),
         "train_batch": int(batch),
         "val_batch": int(val_batch),
         "num_epochs": int(num_epochs),
@@ -794,9 +811,14 @@ def _dump_policy_json(workdir: Path, *, candidate_id: str, variant: str,
 def _normalize_from_cfg(yaml_cfg: Dict[str, Any]):
     """Recover (mean, std) from a generated config's val transforms.
 
-    Returns the identity (zeros / ones) when no ``Normalize`` op is present,
-    which is the correct contract for HGNetv2 variants and for every DEIMv2
-    checkpoint trained before normalization was added.
+    ABSENCE means identity, and is legitimate: HGNetv2 variants never
+    normalize, and no DEIMv2 checkpoint trained before gen006 does either.
+
+    A PRESENT-BUT-MALFORMED op is a different thing entirely and must raise.
+    Falling back to identity there would silently score or export a DINO model
+    under a contract it was not trained with -- the exact class of mismatch
+    this whole change set exists to remove, reintroduced by an over-broad
+    ``except``.
     """
     try:
         ops = yaml_cfg["val_dataloader"]["dataset"]["transforms"]["ops"]
@@ -804,8 +826,23 @@ def _normalize_from_cfg(yaml_cfg: Dict[str, Any]):
         return [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]
     for op in ops or []:
         if isinstance(op, dict) and op.get("type") == "Normalize":
-            return ([float(v) for v in op.get("mean", [0.0, 0.0, 0.0])],
-                    [float(v) for v in op.get("std", [1.0, 1.0, 1.0])])
+            try:
+                mean = [float(v) for v in op["mean"]]
+                std = [float(v) for v in op["std"]]
+            except (KeyError, TypeError, ValueError) as ex:
+                raise ValueError(
+                    f"malformed Normalize op in the val transforms: {op!r}. "
+                    f"Refusing to fall back to identity -- that would run the "
+                    f"model under a different input contract than it trained "
+                    f"with."
+                ) from ex
+            if len(mean) != 3 or len(std) != 3:
+                raise ValueError(
+                    f"Normalize op must give 3 channels, got mean={mean} "
+                    f"std={std}")
+            if any(v == 0 for v in std):
+                raise ValueError(f"Normalize std has a zero channel: {std}")
+            return mean, std
     return [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]
 
 

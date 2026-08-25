@@ -123,6 +123,19 @@ class SlidingWindow:
     window: Any  # (H, W) tuple or Param
     overlap: float = 0.25
     nms_iou: float = 0.5
+    #: Whether each window is NMS'd before the cross-window merge.
+    #:
+    #: This IS part of the measurement, not a speed knob, so it belongs in the
+    #: protocol identity. NMS is greedy and order-dependent: a box suppressed
+    #: inside one window never reaches the global pass, and if its suppressor
+    #: is itself later suppressed by a higher-scoring box from a neighbouring
+    #: window, the two settings produce different final detections.
+    #:
+    #: It was previously implicit, and the two call sites disagreed --
+    #: run_kwcoco_eval defaulted False while TiledPredictor defaulted True --
+    #: so a baseline and a rerank could carry the same fingerprint while
+    #: having been computed differently.
+    per_window_nms: bool = True
     kind: str = field(default="sliding_window", init=False)
 
 
@@ -275,8 +288,12 @@ def definition_of(protocol: EvalProtocol, dataset: DatasetBinding) -> Dict[str, 
 # Canonical protocol registry (versioned constants; reviewed code changes)
 # ---------------------------------------------------------------------------
 
+#: V1 is retained only so historical records remain interpretable. It predates
+#: per_window_nms being part of the identity, which means a V1 fingerprint does
+#: not pin down how its numbers were produced -- that ambiguity is why V2
+#: exists. Do not resolve new work against it.
 TRUE_TILED_V1 = EvalProtocol(
-    name="true_tiled",
+    name="true_tiled_v1_legacy",
     version=1,
     # The sliding window is a SOURCE-pixel size, not the model input. For a
     # tile-trained model they differ: gen005/gen006 cut 1229px source tiles and
@@ -298,8 +315,21 @@ WHOLE_RESIZE_V1 = EvalProtocol(
     score_thresh=0.001,
 )
 
+#: V2 makes per_window_nms explicit and pins it to False, matching
+#: run_kwcoco_eval's long-standing default -- the procedure that produced every
+#: baseline number this project has. Selection now constructs its predictor the
+#: same way, so a candidate and its baseline are finally measured alike.
+TRUE_TILED_V2 = EvalProtocol(
+    name="true_tiled",
+    version=2,
+    regime=SlidingWindow(window=Param("source_window_hw"), overlap=0.25,
+                         nms_iou=0.5, per_window_nms=False),
+    class_filter=ClassFilter(class_agnostic=True, exclude_distractors=True),
+    score_thresh=0.001,
+)
+
 PROTOCOLS: Dict[str, EvalProtocol] = {
-    p.name: p for p in [TRUE_TILED_V1, WHOLE_RESIZE_V1]
+    p.name: p for p in [TRUE_TILED_V2, TRUE_TILED_V1, WHOLE_RESIZE_V1]
 }
 
 

@@ -50,12 +50,18 @@ CANDIDATE_ID="${KCD_CANDIDATE_ID:-deimv2_dinov3_x_1024x1024_fixed}"
 RUNS="${KCD_BASELINE_RUNS:-fishtrack23_deimv2_dinov3_x_4gpu_aiq_gen001 fishtrack23_deimv2_dinov3_x_4gpu_aiq_gen003_bf16_fresh}"
 OUT_ROOT="${KCD_BASELINE_OUT:-$KCD_TILE_DPATH/../baseline_vali}"
 
+# Evaluation precision is frozen and explicit. Left unset it would default to
+# fp16 here while gen006 trains and reranks under bf16, so the baseline and the
+# candidate would be measured at different precision.
+export KCD_AMP_DTYPE="${KCD_AMP_DTYPE:-bfloat16}"
+
 echo "=============================================================="
 echo " baseline B -- full vali, true-tiled ${WINDOW}px"
 echo "=============================================================="
 echo "  vali:     $KCD_VALI_KWCOCO"
 echo "  window:   ${WINDOW} px source, overlap ${OVERLAP}, keep_full"
 echo "  runs:     $RUNS"
+echo "  amp:      ${KCD_AMP_DTYPE}  (frozen; must match gen006's eval precision)"
 echo "  out:      $OUT_ROOT"
 echo
 
@@ -69,7 +75,7 @@ for RUN in $RUNS; do
     fi
     echo "[$RUN] scoring ..."
     KCD_BASELINE_RUN="$RUN" KCD_BASELINE_WORKDIR="$WORKDIR" \
-    KCD_BASELINE_EVALROOT="$OUT_ROOT/$RUN" \
+    KCD_BASELINE_EVALROOT="$OUT_ROOT/w${WINDOW}_o${OVERLAP}_${KCD_AMP_DTYPE:-bfloat16}/$RUN" \
     "$PYTHON_BIN" - <<'PYEOF'
 import json, os, pathlib
 import kwcoco_detector_kit.trainers  # registers the plugins
@@ -109,7 +115,14 @@ out = run_kwcoco_eval(
     kcd_root=evalroot,
     candidate_id=run,
     category_names=category_names,
-    force=bool(int(os.environ.get("KCD_FORCE_EVAL", "0"))),
+    # ALWAYS recompute. run_kwcoco_eval reuses an existing
+    # detect_metrics.json whenever force is false, and it does not check that
+    # the stored result was produced with this window, overlap, NMS setting,
+    # dtype or preprocessing. gen001 and gen003 both already have metrics on
+    # disk from WHOLE-IMAGE eval on the TEST split; silently reporting one of
+    # those as the frozen 1229px vali baseline would poison the pre-registered
+    # criterion at its root.
+    force=True,
     tiled_eval=True,
     tiled_window=window,
     tiled_overlap=float(os.environ.get("KCD_TILED_EVAL_OVERLAP", "0.25")),
@@ -129,27 +142,45 @@ echo " B summary"
 echo "=============================================================="
 "$PYTHON_BIN" - <<PYEOF
 import json, pathlib
+# Use the kit's own extraction rather than "first nocls_measures we find".
+# measures_from_detect_metrics reads the exact
+# 'area_range=all,iou_thresh=0.5' block and applies the distractor-sidecar
+# rule, which is what selection will use to rerank gen006. B and the candidate
+# must be read the same way, not merely computed the same way.
+from kwcoco_detector_kit.selection.scoring import measures_from_detect_metrics
+
 root = pathlib.Path("$OUT_ROOT")
 rows = []
-for d in sorted(root.iterdir()):
-    m = list(d.rglob("detect_metrics.json")) if d.is_dir() else []
-    if not m:
+for metrics in sorted(root.rglob("detect_metrics.json")):
+    run_dir = metrics.parent
+    while run_dir != root and not (run_dir / "contract.txt").exists():
+        run_dir = run_dir.parent
+    m = measures_from_detect_metrics(metrics)
+    ap = m.get("AP@0.5")
+    if ap is None:
+        print(f"  {metrics}: no AP@0.5 block -- SKIPPED")
         continue
-    data = json.loads(m[0].read_text())
-    for key, blob in data.items():
-        if not isinstance(blob, dict):
-            continue
-        ap = (blob.get("nocls_measures") or {}).get("ap")
-        if ap is not None:
-            contract = (d / "contract.txt")
-            rows.append((d.name, float(ap), key,
-                         contract.read_text().strip() if contract.exists() else "?"))
-            break
-for name, ap, key, contract in rows:
-    print(f"  {name:52} AP {ap:.4f}   [{key}]  {contract}")
+    contract = (run_dir / "contract.txt")
+    rows.append((run_dir.name, float(ap),
+                 contract.read_text().strip() if contract.exists() else "?"))
+
+for name, ap, contract in rows:
+    print(f"  {name:52} AP\@0.5 {ap:.4f}   {contract}")
 if rows:
     b = max(r[1] for r in rows)
     print()
-    print(f"  B = {b:.4f}   (success: >= {b+0.01:.4f}, strong: >= {b+0.02:.4f})")
-    print("  RECORD THIS IN THE JOURNAL BEFORE LAUNCHING gen006.")
+    print(f"  B = {b:.4f}")
+    print(f"    success:        >= {b+0.01:.4f}  AND paired sequence-bootstrap")
+    print(f"                    90% CI lower bound > 0")
+    print(f"    strong success: >= {b+0.02:.4f}")
+    print()
+    print("  Bootstrap procedure (run once gen006 predictions exist):")
+    print("    resample the 46 VALI SEQUENCES with replacement, 10,000 times;")
+    print("    recompute AP\@0.5 for both models on each resample; take the")
+    print("    5th percentile of (gen006 - B). Sequences, not images: 35,111")
+    print("    vali frames carry only ~2,140 tracks across 46 sequences, so")
+    print("    per-image resampling would badly understate the interval.")
+    print()
+    print("  RECORD B, THIS PROTOCOL AND THIS PROCEDURE IN THE JOURNAL BEFORE")
+    print("  LAUNCHING gen006. A threshold fixed afterwards is not a threshold.")
 PYEOF

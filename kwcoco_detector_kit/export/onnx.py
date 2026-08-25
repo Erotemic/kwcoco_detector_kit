@@ -179,12 +179,23 @@ def _normalize_from_train_yml(workdir: Path):
     try:
         cfg = _yaml.safe_load(cfg_fpath.read_text()) or {}
         ops = cfg["val_dataloader"]["dataset"]["transforms"]["ops"]
-    except Exception:
+    except (KeyError, TypeError, ValueError):
         return ident
     for op in ops or []:
         if isinstance(op, dict) and op.get("type") == "Normalize":
-            return ([float(v) for v in op.get("mean", ident[0])],
-                    [float(v) for v in op.get("std", ident[1])])
+            # Present but malformed must NOT degrade to identity -- that would
+            # ship an ONNX artifact declaring a preprocessing contract the
+            # weights were not trained under.
+            try:
+                mean = [float(v) for v in op["mean"]]
+                std = [float(v) for v in op["std"]]
+            except (KeyError, TypeError, ValueError) as ex:
+                raise ValueError(
+                    f"malformed Normalize op in {cfg_fpath}: {op!r}") from ex
+            if len(mean) != 3 or len(std) != 3 or any(v == 0 for v in std):
+                raise ValueError(
+                    f"invalid Normalize op in {cfg_fpath}: mean={mean} std={std}")
+            return mean, std
     return ident
 
 

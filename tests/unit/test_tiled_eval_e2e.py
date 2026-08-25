@@ -134,9 +134,22 @@ def test_pre_nms_floor_drops_low_scores(tmp_path):
     assert all(s >= 0.5 for (_g, _c, s, _b) in high)
 
 
-def test_per_window_nms_off_matches_on(tmp_path):
-    # The global NMS subsumes per-window NMS, so toggling per_window_nms must
-    # not change the final predictions (it's purely a speed knob).
+def test_per_window_nms_is_a_measurement_choice_not_a_speed_knob(tmp_path):
+    """This test previously asserted the two settings are equivalent.
+
+    They are not, in general. NMS is greedy and order-dependent: a box
+    suppressed inside one window never reaches the cross-window pass, and if
+    its suppressor is itself later suppressed by a higher-scoring detection
+    from a neighbouring window, the survivor differs between settings. The old
+    assertion held only because this fixture's boxes are well separated.
+
+    So the guarantee we actually want is not equality of outputs -- it is that
+    the setting is recorded in the protocol identity, which is asserted in
+    test_selection_protocols.py. Here we only check both paths run and produce
+    valid detections, and that per-window NMS never yields MORE boxes than
+    leaving it off (it can only suppress earlier).
+    """
     on = _pred_boxes(_run(tmp_path / "on", tiled=True, per_window_nms=True))
     off = _pred_boxes(_run(tmp_path / "off", tiled=True, per_window_nms=False))
-    assert on == off
+    assert on and off
+    assert len(on) <= len(off)

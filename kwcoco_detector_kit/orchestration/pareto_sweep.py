@@ -228,6 +228,17 @@ class SweepConfig(kwconf.Config):
                 "GPU isn't starved by HDD/JPEG decode between inference "
                 "spikes. 0 = sequential read.")
     keep_going = kwconf.Value(True, isflag=True, help="continue past failed cells")
+    selection_journal = kwconf.Value(
+        False, isflag=True,
+        help=(
+            "Stage EVERY epoch's checkpoint into <workdir>/staging and append "
+            "a selection journal, so a detached worker can rerank them under "
+            "the true-tiled protocol after training. Without it only DEIMv2's "
+            "own best_stg*.pth survive, and the best checkpoint under the "
+            "DEPLOYMENT geometry may not be the one in-loop validation "
+            "picked. Costs ~1 checkpoint of disk per epoch."
+        ),
+    )
     do_export = kwconf.Value(True, isflag=True, help="run ONNX export per cell")
     do_eval = kwconf.Value(True, isflag=True, help="run kwcoco eval per cell")
     do_bench = kwconf.Value(True, isflag=True, help="run ONNX desktop bench per cell")
@@ -456,6 +467,14 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
         extra={"category_names": category_names,
                "candidate_id": candidate_id,
                "init_checkpoint": init_ckpt or "",
+               # The trainer has honoured this since the selection subsystem
+               # landed; the sweep simply never passed it, so per-epoch staging
+               # was unreachable from a normal run.
+               "selection_journal_dpath": (
+                   str(workdir / "staging")
+                   if bool(getattr(config, "selection_journal", False))
+                   else None
+               ),
                "train_num_workers": int(config.train_num_workers),
                "val_num_workers": int(config.val_num_workers),
                "train_wds_shards_dpath": (

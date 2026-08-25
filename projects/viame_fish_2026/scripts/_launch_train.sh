@@ -160,6 +160,7 @@ set -x
     ${KCD_DO_EXPORT:+--do_export="$KCD_DO_EXPORT"} \
     ${KCD_DO_EVAL:+--do_eval="$KCD_DO_EVAL"} \
     ${KCD_DO_BENCH:+--do_bench="$KCD_DO_BENCH"} \
+    ${KCD_SELECTION_JOURNAL:+--selection_journal="$KCD_SELECTION_JOURNAL"} \
     ${KCD_RESUME_CKPT:+--resume "$KCD_RESUME_CKPT"} \
     ${KCD_EVAL_DEVICE:+--eval_device "$KCD_EVAL_DEVICE"} \
     "${TILED_EVAL_FLAGS[@]}" \

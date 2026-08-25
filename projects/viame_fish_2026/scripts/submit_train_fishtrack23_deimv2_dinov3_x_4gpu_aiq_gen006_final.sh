@@ -100,28 +100,56 @@ export KCD_TEST_KWCOCO="$VF_TEST_KWCOCO"        # required by the CLI contract
 # the job log that the sweep's resolved config shows all three False before
 # walking away -- the failure mode here is spending the holdout, which cannot
 # be undone.
-export KCD_DO_EVAL="${KCD_DO_EVAL:-False}"
-export KCD_DO_EXPORT="${KCD_DO_EXPORT:-False}"
-export KCD_DO_BENCH="${KCD_DO_BENCH:-False}"
+export KCD_DO_EVAL=False
+export KCD_DO_EXPORT=False
+export KCD_DO_BENCH=False
 
+# ============================================================
+# Stale-environment guard
+# ============================================================
+# Everything below this line is HARD-PINNED, not defaulted. `${VAR:-default}`
+# lets a leftover export from a previous experiment silently change the one run
+# this allocation buys -- and several of these have been overridden by hand
+# during debugging in the last few days (KCD_AMP_DTYPE, KCD_FLAT_EPOCH,
+# KCD_INIT_CHECKPOINT, KCD_NUM_EPOCHS). A wrong value here is not recoverable.
+#
+# Clear the ones whose mere PRESENCE changes behaviour, then assign the rest
+# unconditionally. Override deliberately by editing this file, which leaves a
+# diff, rather than by exporting into the shell, which leaves nothing.
+# NOTE: KCD_TILE_SIZE_ONDISK is deliberately NOT cleared here. paths.sh has
+# already derived it from the tile cache's own metadata by this point, so
+# unsetting it would leave the eval window EMPTY rather than force a
+# recomputation.
+for _stale in KCD_FLAT_EPOCH KCD_INIT_CHECKPOINT KCD_TRAIN_FROM_SCRATCH \
+              KCD_FORCE_EVAL; do
+    if [ -n "${!_stale:-}" ]; then
+        echo "  note: clearing inherited $_stale=${!_stale}" >&2
+        unset "$_stale"
+    fi
+done
+unset _stale
+
+# KCD_FLAT_EPOCH must stay unset so the recipe's 7 applies. KCD_INIT_CHECKPOINT
+# must stay unset so kcd_resolve_init_checkpoint picks the COCO weights rather
+# than some fish checkpoint left over from a warm-start experiment.
 kcd_require_init_checkpoint "deimv2_dinov3_x" || exit 1
-export KCD_RESUME_CKPT="${KCD_RESUME_CKPT:-fresh}"
+export KCD_RESUME_CKPT=fresh
 
 # ============================================================
 # Hyperparameters
 # ============================================================
 export KCD_VARIANT=deimv2_dinov3_x
 export KCD_CATEGORY_NAMES=fish
-export KCD_NUM_GPUS="${KCD_NUM_GPUS:-4}"
-export KCD_PER_GPU_BATCH="${KCD_PER_GPU_BATCH:-8}"      # global 32, upstream's
-export KCD_VAL_BATCH_MULT="${KCD_VAL_BATCH_MULT:-1}"
-export KCD_NUM_EPOCHS="${KCD_NUM_EPOCHS:-14}"
-export KCD_INPUT_HW="${KCD_INPUT_HW:-[1024, 1024]}"
-export KCD_TRAIN_POLICY="${KCD_TRAIN_POLICY:-fixed}"
-export KCD_LR="${KCD_LR:-5e-4}"
-export KCD_BACKBONE_LR="${KCD_BACKBONE_LR:-1e-5}"
+export KCD_NUM_GPUS=4
+export KCD_PER_GPU_BATCH=8              # global 32, upstream's pairing
+export KCD_VAL_BATCH_MULT=1
+export KCD_NUM_EPOCHS=14
+export KCD_INPUT_HW="[1024, 1024]"
+export KCD_TRAIN_POLICY=fixed
+export KCD_LR=5e-4
+export KCD_BACKBONE_LR=1e-5
 export KCD_USE_AMP=true
-export KCD_AMP_DTYPE="${KCD_AMP_DTYPE:-bfloat16}"
+export KCD_AMP_DTYPE=bfloat16
 
 # KCD_FLAT_EPOCH is deliberately NOT set. The recipe supplies 7 (upstream's
 # 29/58 rescaled), which is the value we want, and leaving it unset means the
@@ -135,11 +163,29 @@ export KCD_AMP_DTYPE="${KCD_AMP_DTYPE:-bfloat16}"
 # 1229 is the tile cache's actual on-disk size, resolved from its metadata in
 # paths.sh rather than recomputed as 1024*1.2. A 1024 window would slide at a
 # different object scale than training used.
-export KCD_TILED_EVAL="${KCD_TILED_EVAL:-True}"
+export KCD_TILED_EVAL=True
 export KCD_TILED_EVAL_WINDOW="${KCD_TILED_EVAL_WINDOW:-$KCD_TILE_SIZE_ONDISK}"
-export KCD_TILED_EVAL_OVERLAP="${KCD_TILED_EVAL_OVERLAP:-0.25}"
+if ! [[ "$KCD_TILED_EVAL_WINDOW" =~ ^[0-9]+$ ]] || [ "$KCD_TILED_EVAL_WINDOW" -lt 64 ]; then
+    echo "ERROR: tiled-eval window did not resolve: '$KCD_TILED_EVAL_WINDOW'" >&2
+    echo "  It comes from the tile cache metadata via KCD_TILE_SIZE_ONDISK." >&2
+    echo "  Expected the on-disk tile size (1229 for the current cache)." >&2
+    exit 1
+fi
+export KCD_TILED_EVAL_OVERLAP=0.25
 export KCD_TILED_EVAL_BATCH="${KCD_TILED_EVAL_BATCH:-64}"
 export KCD_EVAL_DEVICE="${KCD_EVAL_DEVICE:-cuda}"
+
+# ============================================================
+# Per-epoch checkpoint staging
+# ============================================================
+# Stage EVERY epoch so the final choice can be made under the DEPLOYMENT
+# geometry (true-tiled, 1229px) rather than under in-loop tile validation,
+# which is a surrogate. In-loop validation stays on and still drives
+# best_stg*.pth; this only adds candidates.
+#
+# All 14 are kept -- ~11 GB against 393 GB free, and on a one-shot run the
+# cheapest possible mistake is discarding the epoch that turns out to be best.
+export KCD_SELECTION_JOURNAL=True
 
 # ============================================================
 # Slurm on aiq

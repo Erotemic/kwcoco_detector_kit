@@ -520,6 +520,7 @@ def _build_train_yml(
     *,
     workdir: Path,
     upstream_cfg_fpath: str,
+    recipe: "DEIMv2Recipe",
     train_mscoco_fpath: str,
     vali_mscoco_fpath: str,
     family: str,
@@ -544,11 +545,6 @@ def _build_train_yml(
     train_wds_skip_empty: bool = False,
 ) -> Dict[str, Any]:
     H, W = int(input_hw[0]), int(input_hw[1])
-
-    # The recipe is READ from the selected upstream config and rescaled, never
-    # reconstructed from constants in this file. See _deimv2_recipe for the
-    # four hyperparameters that had silently drifted when it was.
-    recipe = scale_recipe(extract_recipe(str(upstream_cfg_fpath)), num_epochs)
 
     if family == "hgnetv2":
         optimizer = _hgnetv2_optimizer_block(lr, backbone_lr, recipe.weight_decay)
@@ -1170,9 +1166,16 @@ class DEIMv2Trainer:
         )
         upstream_cfg = _resolve_upstream_cfg_fpath(canonical)
 
+        # Resolved exactly ONCE, then handed to both the config builder and the
+        # provenance dump. Resolving it twice would let the generated YAML and
+        # policy.json drift apart -- which is the whole failure mode this
+        # module exists to prevent, one level up.
+        recipe = scale_recipe(extract_recipe(str(upstream_cfg)), int(num_epochs))
+
         yml = _build_train_yml(
             workdir=workdir,
             upstream_cfg_fpath=upstream_cfg,
+            recipe=recipe,
             train_mscoco_fpath=str(train_ann_fpath),
             vali_mscoco_fpath=str(vali_ann_fpath),
             family=family,
@@ -1264,10 +1267,7 @@ class DEIMv2Trainer:
             use_amp=bool(use_amp),
             init_ckpt=str(_effective_init_ckpt or ""),
             generated_cfg_fpath=cfg_fpath,
-            # Same resolution _build_train_yml performs, so policy.json cannot
-            # report a schedule the generated config does not use.
-            recipe=scale_recipe(extract_recipe(str(upstream_cfg)),
-                                int(num_epochs)),
+            recipe=recipe,          # the SAME object the YAML was built from
             category_names=category_names,
         )
 

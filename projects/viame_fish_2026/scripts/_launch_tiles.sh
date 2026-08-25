@@ -51,6 +51,16 @@ echo "  keep_negative: $KCD_TILE_KEEP_NEGATIVE"
 echo "  out:           $KCD_TILE_DPATH"
 echo
 
+# Build the argv as an ARRAY rather than a backslash-continued command.
+#
+# Job 494 tiled train successfully and then died with
+#   _launch_tiles.sh: line 78: jpeg_quality: command not found
+# where line 78 was the `tile_split vali` CALL. A bare `jpeg_quality` can only
+# reach bash as a command word if a line continuation stopped continuing, which
+# is the one failure mode this form does not have. I could not reproduce it
+# from the committed text, so this is a structural fix rather than a diagnosed
+# one -- but an array has no continuations to lose, and `set -x` around the
+# call means a recurrence prints the exact argv instead of a bare shell error.
 tile_split() {
     local name="$1" src="$2" dst="$3"
     if [ -f "$dst" ]; then
@@ -59,19 +69,30 @@ tile_split() {
     fi
     echo "[$name] tiling $src"
     mkdir -p "$(dirname "$dst")"
-    "$PYTHON_BIN" -m kwcoco_detector_kit tile \
-        "$src" "$dst" \
-        --mode "$KCD_TILE_MODE" \
-        --tile_size "$KCD_TILE_SIZE" \
-        --source_scales "$KCD_TILE_SOURCE_SCALES" \
-        --stride_frac "$KCD_TILE_STRIDE_FRAC" \
-        --min_gt_area_frac "$KCD_TILE_MIN_GT_AREA_FRAC" \
-        --min_keep_fraction "$KCD_TILE_MIN_KEEP_FRACTION" \
-        --oversize_factor "$KCD_TILE_OVERSIZE_FACTOR" \
-        --keep_negative "$KCD_TILE_KEEP_NEGATIVE" \
-        --category_names "$KCD_TILE_CATEGORY_NAMES" \
-        --output_ext .jpg \
-        --jpeg_quality "$KCD_TILE_JPEG_QUALITY"
+
+    local args=(
+        -m kwcoco_detector_kit tile
+        "$src" "$dst"
+        --mode "$KCD_TILE_MODE"
+        --tile_size "$KCD_TILE_SIZE"
+        --source_scales "$KCD_TILE_SOURCE_SCALES"
+        --stride_frac "$KCD_TILE_STRIDE_FRAC"
+        --min_gt_area_frac "$KCD_TILE_MIN_GT_AREA_FRAC"
+        --min_keep_fraction "$KCD_TILE_MIN_KEEP_FRACTION"
+        --oversize_factor "$KCD_TILE_OVERSIZE_FACTOR"
+        --keep_negative "$KCD_TILE_KEEP_NEGATIVE"
+        --category_names "$KCD_TILE_CATEGORY_NAMES"
+        --output_ext .jpg
+        --jpeg_quality "${KCD_TILE_JPEG_QUALITY:-90}"
+    )
+    set -x
+    "$PYTHON_BIN" "${args[@]}"
+    set +x
+
+    [ -f "$dst" ] || {
+        echo "ERROR: [$name] tiling reported success but $dst is missing" >&2
+        return 1
+    }
     echo "[$name] wrote $dst"
 }
 

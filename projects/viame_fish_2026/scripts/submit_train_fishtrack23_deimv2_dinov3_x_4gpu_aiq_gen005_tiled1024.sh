@@ -115,7 +115,30 @@ export KCD_TRAIN_POLICY="${KCD_TRAIN_POLICY:-fixed}"
 export KCD_LR="${KCD_LR:-5e-4}"
 export KCD_BACKBONE_LR="${KCD_BACKBONE_LR:-1e-5}"
 export KCD_USE_AMP=true
-export KCD_AMP_DTYPE="${KCD_AMP_DTYPE:-float16}"
+# bfloat16, reversing the kit default on this run specifically.
+#
+# I reverted the default to fp16 on the grounds that DEIMv2 is an fp16 recipe
+# and nothing showed its ~65504 ceiling was the problem. That was right on the
+# evidence then. It is not right now:
+#
+#   gen001  fp16  frames  aug@e4  NaN e4 s7500, stable loss 36.5 beforehand
+#   gen002  fp16  frames  aug@e1  NaN e1 s7700, stable loss 31.5
+#   gen005  fp16  tiles   aug@e2  NaN e3 s2874, stable loss 34.4   (job 496)
+#   gen003  bf16  frames  aug@e2  22 augmented epochs, no excursion
+#
+# Three fp16 NaNs, all sudden-onset inside an augmented epoch at stable loss;
+# zero for bf16, which is also the only run to have completed a schedule. And
+# my supporting argument was weak -- I cited gen003's lower VALI, but its
+# held-out TEST score (0.7285) is still the best number this project has.
+#
+# Tiling plausibly raises the rate: tiles already carry edge-truncated boxes
+# (min_keep_fraction 0.20) and RandomIoUCrop/RandomZoomOut then crop a crop.
+#
+# Read from the environment at runtime by det_engine.py, so this needs no
+# image rebuild. If bf16 ALSO goes NaN, the next lever is the augmentation
+# stack rather than the dtype -- dropping RandomIoUCrop and RandomZoomOut,
+# which are largely redundant when every sample is already a crop.
+export KCD_AMP_DTYPE="${KCD_AMP_DTYPE:-bfloat16}"
 
 # ============================================================
 # Eval: windowed, matching how the model now trains.

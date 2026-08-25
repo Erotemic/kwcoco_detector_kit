@@ -380,3 +380,89 @@ runs:
         change and the start of cosine decay at epoch 12, then recovered to its
         peak by epoch 21. The final NoAug epoch 23 fell to 0.526; best_stg2
         captured epoch 21 regardless.
+
+  - id: fishtrack23_deimv2_dinov3_x_4gpu_aiq_gen004_long
+    status: killed
+    purpose: >-
+      48-epoch fp16 run to test schedule length. Killed at epoch 21 after it
+      became clear the run could not accumulate progress.
+    entrypoint: scripts/submit_train_fishtrack23_deimv2_dinov3_x_4gpu_aiq_gen004_long.sh
+    slurm_jobs: [492]
+    hyperparameters: {per_gpu_batch: 16, num_epochs: 48, flat_epoch: 24,
+                      lr: 5e-4, backbone_lr: 1e-5, amp_dtype: float16,
+                      aug_policy_epochs: [2, 25, 47]}
+    epochs_completed: 21    # of 48
+    results: {best_epoch: 1, box_mAP_50_95: 0.5342}
+    notes:
+      - >-
+        NEVER BEAT ITS OWN EPOCH-1 SCORE in 21 epochs. best_stg2.pth was
+        written once, at epoch 1, and never advanced.
+      - >-
+        ROOT CAUSE -- det_solver.py:213 reloads the full training state after
+        every non-improving eval, and it reloaded best_stg1.pth, which is only
+        WRITTEN while `epoch < stop_epoch`. With the kit's stop_epoch=1 that
+        file is frozen at EPOCH 0 forever, so each reload reset the model,
+        optimizer, GradScaler, EMA and LR warmup back to epoch 0. It fired at
+        epochs 2, 7, 13 and 19; AP sawtoothed back to ~0.52 each time.
+        Fixed in DEIMv2 fork d89309f by preferring best_stg2.pth.
+      - >-
+        gen003 survived the same mechanism only because its cosine phase
+        improved monotonically so the branch seldom fired. Its epoch-14 and
+        epoch-23 dips, previously attributed to the augmentation stage change
+        and the final NoAug epoch, were this.
+      - >-
+        SECOND DEFECT -- flat_epoch was hardcoded to num_epochs//2, so 48
+        epochs bought 24 epochs of constant LR, the regime where the model
+        oscillates and trips the reload. KCD_FLAT_EPOCH now decouples them
+        (45eda73).
+
+  - id: fishtrack23_deimv2_dinov3_x_4gpu_aiq_gen005_tiled1024
+    status: failed
+    purpose: >-
+      First native-resolution run. 1024px windows cut from full-res frames and
+      fed 1:1 to the model, eliminating the 0.533x horizontal squash and
+      1.6-1.78x aspect distortion every previous run trained under.
+    entrypoint: scripts/submit_train_fishtrack23_deimv2_dinov3_x_4gpu_aiq_gen005_tiled1024.sh
+    slurm_jobs: [494, 496]   # 494 tiling, 496 train
+    tiling:
+      window: 1024            # RF-DETR's VIAME baseline uses 720
+      stride_frac: 0.75       # 768 px stride, 25% overlap
+      source_scales: [1.0]
+      train_tiles: 495514     # 1.97/frame, NOT the 5.87 predicted
+      train_annotations: 780566
+      empty_tiles: 111835     # 22.6%
+      disk_gb: 59
+    hyperparameters: {per_gpu_batch: 16, num_epochs: 24, flat_epoch: 8,
+                      lr: 5e-4, backbone_lr: 1e-5, amp_dtype: float16,
+                      aug_policy_epochs: [2, 12, 23], tiled_eval: true}
+    epochs_completed: 3     # of 24
+    results:
+      best_epoch: 1
+      box_mAP_50_95: 0.5304   # TILE-level vali -- NOT comparable to earlier runs
+    notes:
+      - >-
+        THE NaN GUARD DID ITS JOB. Aborted at epoch 3 step 2874 with a named
+        error instead of training 21 more epochs to AP 0.000. Cost ~5.7 h
+        rather than a weekend.
+      - >-
+        THE best_stg2 RELOAD FIX IS CONFIRMED LIVE: "Refresh EMA at epoch 2
+        with decay 0.9998 (restored best_stg2.pth)". First run in this project
+        to restore the actual best model rather than epoch 0.
+      - >-
+        SCHEDULE SIZING WAS ACCURATE: epoch 0 wall 1:32:50 against a 93 min
+        estimate; cycle 1:43:50 against 103 min.
+      - >-
+        THIRD fp16 NaN, same signature every time -- sudden onset at stable
+        loss, inside an augmented epoch. gen001 e4 s7500 (loss 36.5), gen002
+        e1 s7700 (31.5), gen005 e3 s2874 (34.4). bf16 has never produced one
+        and is the only configuration to complete a schedule (gen003, 22
+        augmented epochs). gen005 relaunches on bf16.
+      - >-
+        Tiling plausibly raises the rate: tiles already carry edge-truncated
+        boxes (min_keep_fraction 0.20) and RandomIoUCrop/RandomZoomOut then
+        crop a crop. If bf16 also fails, the augmentation stack is the next
+        lever, not the dtype.
+      - >-
+        AP dropped 0.530 -> 0.461 at epoch 2, the first augmented epoch. Worth
+        watching on the relaunch; it may be normal for the regime change, or a
+        precursor to the excursion.

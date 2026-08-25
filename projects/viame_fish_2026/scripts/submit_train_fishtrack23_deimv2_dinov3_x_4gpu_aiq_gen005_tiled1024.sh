@@ -33,16 +33,30 @@
 # the baseline. And because the window equals the model input, every tile is
 # fed 1:1 -- no resize, no distortion, anywhere in the pipeline.
 #
-# ## Schedule
+# ## Schedule -- sized from the MEASURED tiling, not the estimate
 #
-#   1.47 M tiles/epoch, 22,969 steps/epoch at batch 64, ~4.6 h/epoch
-#   10 epochs => ~46 h and ~230k optimizer steps
+# I predicted 5.87 tiles/frame from a dense-grid calculation. The tiler emits a
+# tile only where one is needed, so job 494 actually produced:
 #
-# That is more steps than any run to date (gen001 136k, gen003 94k) despite
-# far fewer epochs, because each epoch is 5.87x the samples. Epoch count is
-# low, so the flat phase is short: KCD_FLAT_EPOCH=3 leaves 7 cosine epochs,
-# keeping the ratio that worked for gen003 rather than the one that failed for
-# gen004.
+#   495,514 train tiles = 1.97/frame   780,566 annotations (1.58/tile)
+#   111,835 empty (22.6%)              59 GB on disk
+#
+# Every number moved in our favour: a third of the predicted tiles, a quarter
+# of the predicted empties (so keep_negative is a non-issue), and 59 GB rather
+# than 95. But it also means an epoch is far cheaper than planned, and the
+# original 10 epochs would have been only ~77k optimizer steps -- FEWER than
+# gen003's 94k, the opposite of what this run needs.
+#
+#   7,742 steps/epoch at batch 64
+#   93 min train + ~9 min vali eval + save  =>  ~103 min/epoch
+#   24 epochs => ~41 h and ~186k steps (2.0x gen003, 1.4x gen001)
+#
+# 24 rather than 28: 28 lands at 48.2 h, which leaves no margin once per-epoch
+# eval is counted. 24 keeps ~7 h of slack inside the walltime.
+#
+# flat_epoch 8 of 24 holds the 1:2 flat:cosine ratio that gen003's gains came
+# from, rather than gen004/492's 1:1, which spent 21 epochs oscillating at
+# constant LR and never beat its own epoch-1 score.
 #
 # ## Eval
 #
@@ -60,8 +74,8 @@
 #
 #   bash projects/viame_fish_2026/scripts/submit_build_tiles.sh
 #
-# Roughly 1.47 M tiles and ~95 GB on the NVMe. The train script refuses to
-# start without them.
+# Measured: 495,514 train tiles / 59 GB (job 494), plus vali. The train script
+# refuses to start without both.
 #
 # Submit (from the kit root, on aiq-gpu, AFTER tiling and an image rebuild):
 #   bash projects/viame_fish_2026/scripts/submit_train_fishtrack23_deimv2_dinov3_x_4gpu_aiq_gen005_tiled1024.sh
@@ -90,10 +104,12 @@ export KCD_RESUME_CKPT="${KCD_RESUME_CKPT:-fresh}"
 export KCD_VARIANT=deimv2_dinov3_x
 export KCD_CATEGORY_NAMES=fish
 export KCD_NUM_GPUS="${KCD_NUM_GPUS:-4}"
-export KCD_PER_GPU_BATCH="${KCD_PER_GPU_BATCH:-16}"     # 1024px tile == 1024px
-export KCD_VAL_BATCH_MULT="${KCD_VAL_BATCH_MULT:-1}"    # resized frame, so the
-export KCD_NUM_EPOCHS="${KCD_NUM_EPOCHS:-10}"           # measured 37.8/96 GB
-export KCD_FLAT_EPOCH="${KCD_FLAT_EPOCH:-3}"            # still holds
+# A 1024px tile is the same tensor as a 1024px-resized frame, so gen003's
+# measured 37.8 GB of 96 per GPU still holds at batch 16.
+export KCD_PER_GPU_BATCH="${KCD_PER_GPU_BATCH:-16}"
+export KCD_VAL_BATCH_MULT="${KCD_VAL_BATCH_MULT:-1}"
+export KCD_NUM_EPOCHS="${KCD_NUM_EPOCHS:-24}"           # policy -> [2, 12, 23]
+export KCD_FLAT_EPOCH="${KCD_FLAT_EPOCH:-8}"            # 16 cosine epochs
 export KCD_INPUT_HW="${KCD_INPUT_HW:-[1024, 1024]}"
 export KCD_TRAIN_POLICY="${KCD_TRAIN_POLICY:-fixed}"
 export KCD_LR="${KCD_LR:-5e-4}"
@@ -113,7 +129,7 @@ export KCD_EVAL_DEVICE="${KCD_EVAL_DEVICE:-cuda}"
 # ============================================================
 # Slurm on aiq
 # ============================================================
-export KCD_TIME_LIMIT="${KCD_TIME_LIMIT:-60:00:00}"     # ~46 h expected
+export KCD_TIME_LIMIT="${KCD_TIME_LIMIT:-56:00:00}"     # ~41 h expected
 export KCD_NO_SLURM="${KCD_NO_SLURM:-0}"
 export KCD_DOCKER_GPU_MODE="${KCD_DOCKER_GPU_MODE:-gpus}"
 export KCD_IMAGE="${KCD_IMAGE:-kwcoco-detector-kit:ogdino-cu132-aiq}"
@@ -135,7 +151,7 @@ echo "  test:      $KCD_TEST_KWCOCO  (whole frames + tiled eval)"
 echo "  batch:     $KCD_PER_GPU_BATCH/gpu x $KCD_NUM_GPUS = $(( KCD_PER_GPU_BATCH * KCD_NUM_GPUS ))"
 echo "  epochs:    $KCD_NUM_EPOCHS  (flat $KCD_FLAT_EPOCH, cosine $(( KCD_NUM_EPOCHS - KCD_FLAT_EPOCH )))"
 echo "  eval:      tiled, window $KCD_TILED_EVAL_WINDOW overlap $KCD_TILED_EVAL_OVERLAP"
-echo "  expect:    ~4.6 h/epoch, ~46 h total"
+echo "  expect:    ~1.7 h/epoch, ~41 h total (~186k steps)"
 echo
 
 exec bash "$SCRIPT_DIR/_submit_train.sh"

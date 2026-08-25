@@ -33,3 +33,5 @@ Keep code references precise (`file.py:line` plus commit SHAs).
   deadlock](2026-08-17_deim_gen001_deadlock_at_epoch13.md)
 - [2026-08-23 — the stop_epoch collision, and the first completed
   schedule](2026-08-23_stop_epoch_collision_and_gen003.md)
+- [2026-08-25 — data audit, and the state of the RF-DETR
+  comparison](2026-08-25_data_audit_and_the_rfdetr_comparison.md)

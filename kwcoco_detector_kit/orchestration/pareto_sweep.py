@@ -470,8 +470,18 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
                # The trainer has honoured this since the selection subsystem
                # landed; the sweep simply never passed it, so per-epoch staging
                # was unreachable from a normal run.
+               # RunJournal(workdir) reads workdir/journal/train.jsonl and
+               # workdir/staging/*.pth, while det_solver derives its staging
+               # dir as <journal_dir>.parent/'staging'. So this must be the
+               # JOURNAL dir, not the staging dir.
+               #
+               # Passing workdir/"staging" here looked like it worked: staging
+               # resolved to staging.parent/'staging' == the same directory, so
+               # the .pth files landed correctly and only the journal was
+               # misplaced to staging/train.jsonl -- where the reranker never
+               # looks. Every epoch would have been staged and none discovered.
                "selection_journal_dpath": (
-                   str(workdir / "staging")
+                   str(workdir / "journal")
                    if bool(getattr(config, "selection_journal", False))
                    else None
                ),

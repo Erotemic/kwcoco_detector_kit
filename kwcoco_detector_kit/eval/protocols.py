@@ -257,7 +257,14 @@ def definition_of(protocol: EvalProtocol, dataset: DatasetBinding) -> Dict[str, 
 TRUE_TILED_V1 = EvalProtocol(
     name="true_tiled",
     version=1,
-    regime=SlidingWindow(window=Param("train_input_hw"), overlap=0.25, nms_iou=0.5),
+    # The sliding window is a SOURCE-pixel size, not the model input. For a
+    # tile-trained model they differ: gen005/gen006 cut 1229px source tiles and
+    # feed them to a 1024px model, so evaluating with a 1024px source window
+    # would measure the model at a different object scale than it trained at.
+    # Defaults to train_input_hw when the caller does not supply it, which is
+    # correct for whole-frame-trained models and preserves existing protocol
+    # ids (the id hashes the RESOLVED value, not the parameter name).
+    regime=SlidingWindow(window=Param("source_window_hw"), overlap=0.25, nms_iou=0.5),
     class_filter=ClassFilter(class_agnostic=True, exclude_distractors=True),
     score_thresh=0.001,
 )

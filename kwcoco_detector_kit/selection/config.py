@@ -202,6 +202,7 @@ def resolve_plan(
     config: SelectionConfig,
     *,
     train_input_hw: Tuple[int, int],
+    source_window_hw: Optional[Tuple[int, int]] = None,
     dataset_fpaths: Mapping[str, str],     # role -> kwcoco path
     dataset_ids: Mapping[str, str],        # role -> content id
     num_epochs: int,
@@ -209,13 +210,21 @@ def resolve_plan(
     support_floor: int = RARE_CLASS_SUPPORT_FLOOR,
     log=print,
 ) -> ResolvedPlan:
-    """Bind the declarative config to one concrete run."""
+    """Bind the declarative config to one concrete run.
+
+    ``source_window_hw`` is the sliding-window size in SOURCE pixels for the
+    true_tiled protocol. Falls back to ``train_input_hw``, which is right for
+    whole-frame-trained models; tile-trained runs must pass their actual tile
+    size or the model is measured at a different object scale than it saw.
+    """
     class_support = class_support or {}
+    window_hw = tuple(int(v) for v in (source_window_hw or train_input_hw))
 
     def _binding(entry: Mapping[str, str]) -> Binding:
         proto = resolve_protocol(
             get_protocol(str(entry["protocol"])),
             train_input_hw=tuple(int(v) for v in train_input_hw),
+            source_window_hw=window_hw,
         )
         role = str(entry["dataset"])
         if role not in dataset_fpaths or role not in dataset_ids:

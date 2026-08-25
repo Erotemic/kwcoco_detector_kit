@@ -52,6 +52,11 @@ import yaml
 
 INCLUDE_KEY = "__include__"
 
+#: The single upstream (flat_epoch, epoches) pair known to be a transcription
+#: slip -- deimv2_hgnetv2_n_coco.yml:65,68. Anything else out of range is a NEW
+#: upstream problem and must fail validation loudly rather than be repaired.
+_KNOWN_BAD_FLAT_EPOCH = (7800, 160)
+
 
 def load_upstream_config(fpath: str) -> Dict[str, Any]:
     """Include-aware YAML load, mirroring DEIMv2's ``load_config`` semantics.
@@ -135,10 +140,14 @@ def _repair_flat_epoch(flat_epoch: int, total: int, e1: int) -> int:
     back to ``e1`` rather than propagating it, because faithfully carrying it
     would silently give every HGNetv2 run -- the sea-lion project's variant --
     a constant learning rate for its entire schedule.
+
+    Deliberately narrow: this fires ONLY on the exact known-bad pair, so a
+    future upstream mistake surfaces as a loud validation failure instead of
+    being silently absorbed by a general "clamp anything out of range" rule.
     """
-    if 0 < flat_epoch <= total:
-        return flat_epoch
-    return e1
+    if (flat_epoch, total) == _KNOWN_BAD_FLAT_EPOCH:
+        return e1
+    return flat_epoch
 
 
 def extract_recipe(upstream_cfg_fpath: str) -> DEIMv2Recipe:

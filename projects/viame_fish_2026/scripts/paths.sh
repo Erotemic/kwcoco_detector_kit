@@ -259,6 +259,36 @@ export KCD_TILE_DPATH="${KCD_TILE_DPATH:-$VF_TILE_DPATH}"
 export KCD_TILE_TRAIN_KWCOCO="${KCD_TILE_TRAIN_KWCOCO:-$VF_TILE_TRAIN_KWCOCO}"
 export KCD_TILE_VALI_KWCOCO="${KCD_TILE_VALI_KWCOCO:-$VF_TILE_VALI_KWCOCO}"
 
+# The ACTUAL on-disk tile size. tile.py cuts
+# `round(tile_size * oversize_factor)` px windows and derives its stride from
+# that enlarged value, so with tile_size 1024 and oversize 1.2 the emitted
+# tiles are 1229x1229, not 1024x1024. The oversize knob exists for a
+# trainer-side load-time crop that upstream calls "future" and has not
+# implemented, so those tiles are simply resized down to the model input.
+#
+# Tiled EVAL must slide a window of this size, not of the model input, or the
+# model is measured at a different object scale than it trained at (1229->1024
+# is 0.833; a 1024 window would be 1.0).
+#
+# Read from the tile bundle's own metadata when it exists, so a re-tile with
+# different parameters cannot leave this stale. Falls back to the arithmetic.
+kcd_ondisk_tile_size() {
+    local meta="$KCD_TILE_TRAIN_KWCOCO"
+    if [ -s "$meta" ]; then
+        python3 -c "
+import json,sys
+d=json.load(open('$meta'))
+im=(d.get('images') or [{}])[0]
+w=im.get('width')
+print(int(w) if w else '')
+" 2>/dev/null && return 0
+    fi
+    return 0
+}
+export KCD_TILE_SIZE_ONDISK="${KCD_TILE_SIZE_ONDISK:-$(kcd_ondisk_tile_size)}"
+: "${KCD_TILE_SIZE_ONDISK:=$(python3 -c "print(int(round($KCD_TILE_SIZE*$KCD_TILE_OVERSIZE_FACTOR)))" 2>/dev/null || echo "$KCD_TILE_SIZE")}"
+export KCD_TILE_SIZE_ONDISK
+
 # Fraction of Train/ sequences held out as validation. Whole sequences
 # only -- a frame-level split puts adjacent frames of one fish track on
 # both sides of the boundary, which is how the RF-DETR run ended up

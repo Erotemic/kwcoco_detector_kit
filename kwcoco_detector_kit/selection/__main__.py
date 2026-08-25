@@ -45,6 +45,13 @@ class SelectionWorkerConfig(kwconf.Config):
     selection_config = kwconf.Value(None, help=(
         "optional JSON/YAML SelectionConfig overriding the derived default"))
     train_input_hw = kwconf.Value("[640, 640]", help="train input (H, W)")
+    source_window_hw = kwconf.Value(
+        None,
+        help="true_tiled sliding-window size in SOURCE pixels, e.g. '[1229, "
+             "1229]'. Defaults to train_input_hw. Tile-trained runs must set "
+             "this to the tile cache's actual tile size -- evaluating a model "
+             "trained on 1229px source tiles with a 1024px window measures it "
+             "at a different object scale than it trained at.")
     num_epochs = kwconf.Value(None, required=True, parser=int)
     device = kwconf.Value("cuda", help="scoring device")
     poll_s = kwconf.Value(30.0, parser=float, help="journal poll interval")
@@ -102,6 +109,12 @@ def run_selection_worker(config) -> int:
         input_hw = json.loads(input_hw)
     input_hw = tuple(int(v) for v in input_hw)
 
+    window_hw = config.source_window_hw
+    if isinstance(window_hw, str):
+        window_hw = window_hw.strip()
+        window_hw = json.loads(window_hw) if window_hw else None
+    window_hw = tuple(int(v) for v in window_hw) if window_hw else None
+
     if config.selection_config:
         import yaml
         raw = yaml.safe_load(Path(config.selection_config).read_text())
@@ -138,6 +151,7 @@ def run_selection_worker(config) -> int:
     plan = resolve_plan(
         sel_config,
         train_input_hw=input_hw,
+        source_window_hw=window_hw,
         dataset_fpaths=dataset_fpaths,
         dataset_ids=dataset_ids,
         num_epochs=int(config.num_epochs),

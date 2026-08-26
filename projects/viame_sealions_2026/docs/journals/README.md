@@ -52,3 +52,5 @@ already in the code or research_plan — link to it.
   agrees, last.pth ≡ epoch-0.pth](2026-05-29_per_checkpoint_rescoring_results.md)
 - [2026-08-23 — a latent aug-policy collision, caught on the fish
   project](2026-08-23_aug_policy_collision_inbound_from_fish.md)
+- [2026-08-26 — recipe extraction and DINO normalization, inbound from
+  fish](2026-08-26_recipe_and_normalization_inbound.md)

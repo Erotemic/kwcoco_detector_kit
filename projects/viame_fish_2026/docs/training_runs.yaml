@@ -472,6 +472,81 @@ runs:
         watching on the relaunch; it may be normal for the regime change, or a
         precursor to the excursion.
 
+  - id: fishtrack23_deimv2_dinov3_x_4gpu_aiq_gen006_final
+    status: running          # epoch 8 of 14 as of 2026-08-26 10:43 EDT
+    purpose: >-
+      First run configured from DEIMv2's ACTUAL DINOv3-X recipe rather than
+      from constants the kit had accumulated. Also the first with normalized
+      DINO input, a reachable matcher change, terminating mixup/copyblend, and
+      a stage boundary that is not pinned to epoch 1.
+    entrypoint: scripts/submit_train_fishtrack23_deimv2_dinov3_x_4gpu_aiq_gen006_final.sh
+    slurm_jobs: [498]
+    started_at: 2026-08-25T16:52:00-04:00
+    data: tiles_1024 (495,514 train / 69,284 vali tiles, 1229px source -> 1024 model)
+    hyperparameters:
+      per_gpu_batch: 8        # global 32 -- upstream's LR/batch pairing
+      num_epochs: 14
+      lr: 5e-4
+      backbone_lr: 1e-5
+      weight_decay: 1.25e-4   # variant-specific; was flattened to 1e-4
+      amp_dtype: bfloat16
+      gradscaler_enabled: false
+      normalized_input: true  # ImageNet mean/std, DINOv3 only
+      flat_epoch: 7
+      no_aug_epoch: 2
+      aug_policy_epochs: [1, 7, 12]
+      mixup_epochs: [1, 7]        # previously never emitted
+      copyblend_epochs: [1, 12]   # previously never emitted
+      stop_epoch: 12              # previously pinned to 1
+      matcher_change_epoch: 11    # previously inherited 45, unreachable
+      tiled_eval: true
+      tiled_eval_window: 1229     # the tile cache's on-disk size, not the model input
+      selection_journal: true     # every epoch staged
+    budget:
+      optimizer_updates: ~217k    # upstream COCO: ~214k
+      sample_views: ~6.9M         # upstream COCO: ~6.9M
+      measured_cycle: 2h11m
+      projected_total: ~31h
+    results:
+      # TILE-LEVEL vali. NOT comparable to gen001/gen003's whole-image numbers.
+      epoch_ap: {0: 0.5260, 1: 0.5310, 2: 0.5320, 3: 0.5320, 4: 0.5329,
+                 5: 0.5310, 6: 0.5300, 7: 0.5260}
+      best_so_far: {epoch: 4, ap: 0.5329}
+    notes:
+      - >-
+        ZERO NaN aborts through 8 epochs, 7 of them augmented. All three fp16
+        runs (gen001 e4, gen002 e1, gen005 e3) aborted inside an augmented
+        epoch at stable loss; bf16 has not.
+      - >-
+        ZERO checkpoint reloads. gen004 took four (epochs 2, 7, 13, 19) because
+        stop_epoch=1 froze best_stg1.pth at epoch 0, and never beat its own
+        epoch-1 score in 21 epochs. With stop_epoch=12 the branch cannot fire
+        before epoch 12 and best_stg1 accumulates the real best of 0-11.
+      - >-
+        Epoch 7 is the designed phase change -- flat LR ends, Mosaic and MixUp
+        terminate. Loss fell 4.42 in one epoch (six times any previous step)
+        because the training distribution got easier; vali never had Mosaic, so
+        AP dipped to 0.5260. First fish run to reach such a transition at all.
+      - >-
+        OPEN QUESTION: gen003 needed 9 epochs after its transition to peak
+        (0.5410 at e21). gen006 has 6 (e8-e13). Its tail is the same FRACTION
+        of the schedule but shorter in absolute epochs. Mitigating: gen003's
+        post-transition dip was a best_stg1 reload, which gen006 cannot hit
+        before e12, and gen006 entered the transition from a lower base.
+        Epochs 9-11 decide it.
+      - >-
+        Per-epoch staging is live and verified: 8 checkpoints in staging/ with
+        8 matching epoch_staged events in journal/train.jsonl. This wiring had
+        never run before -- pareto_sweep never passed selection_journal_dpath,
+        and when it did it initially passed the STAGING dir, which put the
+        journal where the reranker never looks while the .pth files landed
+        correctly.
+      - >-
+        Every scientifically relevant setting is hard-pinned rather than
+        defaulted, and stale exports (KCD_FLAT_EPOCH, KCD_INIT_CHECKPOINT,
+        KCD_TRAIN_FROM_SCRATCH, KCD_FORCE_EVAL) are actively cleared. Several
+        had been overridden by hand during debugging.
+
 # ===========================================================================
 # HOLDOUT DISCIPLINE
 # ===========================================================================

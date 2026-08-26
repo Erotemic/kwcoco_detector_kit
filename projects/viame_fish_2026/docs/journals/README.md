@@ -35,3 +35,5 @@ Keep code references precise (`file.py:line` plus commit SHAs).
   schedule](2026-08-23_stop_epoch_collision_and_gen003.md)
 - [2026-08-25 — data audit, and the state of the RF-DETR
   comparison](2026-08-25_data_audit_and_the_rfdetr_comparison.md)
+- [2026-08-26 — the kit was scaling a schedule that does not
+  exist](2026-08-26_recipe_extraction_and_gen006.md)

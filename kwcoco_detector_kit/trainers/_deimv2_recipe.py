@@ -254,6 +254,33 @@ def scale_recipe(recipe: DEIMv2Recipe, num_epochs: int) -> DEIMv2Recipe:
     ).validate()
 
 
+#: Upstream's own "never run this" encoding, used verbatim by
+#: deimv2_hgnetv2_{atto,femto,pico}_coco.yml. Reused rather than invented so a
+#: reader who greps for it lands on the same convention.
+DISABLED_WINDOW = (40000, 15000)
+
+
+def disable_compositing(recipe: DEIMv2Recipe) -> DEIMv2Recipe:
+    """Turn off mixup and copyblend, keeping the rest of the schedule.
+
+    Mixup and copyblend paste content from one image into another. On COCO,
+    where every image is an independent scene, that manufactures useful
+    novelty. On a corpus of TILES cut from video frames it manufactures
+    something else: a crop of a reef with a second reef's fish composited into
+    it, at a scale and lighting the sensor never produced. The model is asked
+    to detect objects in scenes that cannot occur, and the tiling has already
+    supplied the crop diversity these ops exist to synthesise.
+
+    Uses upstream's disabled sentinel rather than deleting the keys, so the
+    generated config still states the decision explicitly and
+    ``augmentation_is_disabled`` reports it.
+    """
+    from dataclasses import replace
+    return replace(recipe,
+                   mixup_epochs=DISABLED_WINDOW,
+                   copyblend_epochs=DISABLED_WINDOW)
+
+
 def augmentation_is_disabled(window) -> bool:
     """Upstream encodes 'never run this' as a start at/after the end.
 

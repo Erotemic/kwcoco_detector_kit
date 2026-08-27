@@ -475,6 +475,14 @@ export KCD_TRAIN_KWCOCO="${KCD_TRAIN_KWCOCO:-$VF_TRAIN_KWCOCO}"
 export KCD_VALI_KWCOCO="${KCD_VALI_KWCOCO:-$VF_VALI_KWCOCO}"
 export KCD_TEST_KWCOCO="${KCD_TEST_KWCOCO:-$VF_TEST_KWCOCO}"
 
+# The UNTILED train bundle, kept addressable even when KCD_TRAIN_KWCOCO has
+# been pointed at the tiled one. Sequence-aware sampling needs both: the tiler
+# stamps tile_source_gid on every tile but does NOT copy video_id, so the only
+# place sequence identity exists is the source. Without this, balancing can
+# group tiles by source FRAME (which the measurement shows is already almost
+# uniform -- gini 0.013) and would do essentially nothing.
+export KCD_TILE_SOURCE_KWCOCO="${KCD_TILE_SOURCE_KWCOCO:-$VF_TRAIN_KWCOCO}"
+
 # The corpus and everything generated from it live on the NVMe, which is
 # outside $KCD_DATA_ROOT, so it has to be bind-mounted into the container
 # explicitly. The shared _sbatch_train.sh already mounts $KCD_DATA_DPATH at an

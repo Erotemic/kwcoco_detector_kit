@@ -39,6 +39,7 @@ from kwcoco_detector_kit.trainers._interface import _pin_checkpoint
 from kwcoco_detector_kit.trainers._registry import register_trainer
 from kwcoco_detector_kit._env import raise_nofile_limit
 from kwcoco_detector_kit.trainers._deimv2_recipe import (
+    disable_compositing,
     extract_recipe, scale_recipe)
 
 
@@ -432,15 +433,49 @@ def _flat_epoch(num_epochs: int, recipe_default: int) -> int:
     return max(1, min(value, max(1, num_epochs - 1)))
 
 
+#: Geometric/compositing ops that assume each sample is an INDEPENDENT SCENE.
+#:
+#: Mosaic stitches four images into one; RandomZoomOut pads a frame out so its
+#: contents shrink; RandomIoUCrop takes a random sub-crop. On COCO all three
+#: add scale and context diversity that the dataset lacks. On a corpus of tiles
+#: cut from video frames the data is ALREADY crops at a fixed scale chosen to
+#: match the model input, so these ops mostly re-crop a crop and shrink objects
+#: that are small to begin with -- fish occupy a few dozen pixels at 1229px
+#: source scale, and RandomZoomOut can push them below what the model can
+#: resolve at all.
+_SCENE_COMPOSITING_OPS = ("Mosaic", "RandomZoomOut", "RandomIoUCrop")
+
+#: Augmentation profiles. ``full`` is upstream's COCO recipe, unchanged and
+#: still the default -- HGNetv2/sea-lion runs and anything training on whole
+#: images must keep it. ``tiled_light`` drops the scene-compositing ops for
+#: corpora that are already tiles; photometric distortion and horizontal flip
+#: stay, because neither assumes scene independence.
+AUG_PROFILES = {
+    "full": (),
+    "tiled_light": _SCENE_COMPOSITING_OPS,
+}
+
+
 def _train_transforms_block(input_hw: Tuple[int, int], num_epochs: int = None,
                             stop_epoch: Optional[int] = None,
                             aug_policy_epochs=None,
-                            family: str = "dinov3") -> Dict[str, Any]:
+                            family: str = "dinov3",
+                            aug_profile: str = "full") -> Dict[str, Any]:
     H, W = int(input_hw[0]), int(input_hw[1])
     mosaic_out = H // 2
+    if aug_profile not in AUG_PROFILES:
+        raise ValueError(
+            f"unknown aug_profile {aug_profile!r}; "
+            f"expected one of {sorted(AUG_PROFILES)}")
+    dropped = set(AUG_PROFILES[aug_profile])
+
+    def _keep(ops):
+        return [o for o in ops
+                if not (isinstance(o, dict) and o.get("type") in dropped)]
+
     return {
         "type": "Compose",
-        "ops": [
+        "ops": _keep([
             {
                 "type": "Mosaic",
                 "output_size": int(mosaic_out),
@@ -469,7 +504,7 @@ def _train_transforms_block(input_hw: Tuple[int, int], num_epochs: int = None,
             *([{"type": "Normalize", "mean": list(DINO_NORMALIZE_MEAN),
                 "std": list(DINO_NORMALIZE_STD)}] if family == "dinov3" else []),
             {"type": "ConvertBoxes", "fmt": "cxcywh", "normalize": True},
-        ],
+        ]),
         "policy": {
             "name": "stop_epoch",
             # Scaled to the actual schedule length. Falls back to upstream's
@@ -479,9 +514,17 @@ def _train_transforms_block(input_hw: Tuple[int, int], num_epochs: int = None,
             # _deimv2_recipe.scale_recipe -- never reconstructed here. See that
             # module for why the kit no longer carries its own constants.
             "epoch": [int(v) for v in aug_policy_epochs],
-            "ops": ["Mosaic", "RandomPhotometricDistort", "RandomZoomOut", "RandomIoUCrop"],
+            # The policy lists the ops the stop_epoch state machine TURNS OFF
+            # at its boundaries. An op named here but absent from `ops` above
+            # would be a boundary with nothing behind it, so the same profile
+            # filters both.
+            "ops": [o for o in ("Mosaic", "RandomPhotometricDistort",
+                                "RandomZoomOut", "RandomIoUCrop")
+                    if o not in dropped],
         },
-        "mosaic_prob": 0.5,
+        # Mosaic is gone under a tile profile, so its probability is dead
+        # weight; emit 0.0 rather than a number that reads as if it applies.
+        "mosaic_prob": 0.0 if "Mosaic" in dropped else 0.5,
     }
 
 
@@ -522,6 +565,7 @@ def _build_train_yml(
     workdir: Path,
     upstream_cfg_fpath: str,
     recipe: "DEIMv2Recipe",
+    aug_profile: str = "full",
     train_mscoco_fpath: str,
     vali_mscoco_fpath: str,
     family: str,
@@ -601,7 +645,7 @@ def _build_train_yml(
                     "return_masks": False,
                     "transforms": _train_transforms_block(
                         input_hw, num_epochs, recipe.stop_epoch,
-                        recipe.aug_policy_epochs, family),
+                        recipe.aug_policy_epochs, family, aug_profile),
                 }
                 if train_wds_shards_dpath
                 else {
@@ -610,7 +654,7 @@ def _build_train_yml(
                     "return_masks": False,
                     "transforms": _train_transforms_block(
                         input_hw, num_epochs, recipe.stop_epoch,
-                        recipe.aug_policy_epochs, family),
+                        recipe.aug_policy_epochs, family, aug_profile),
                 }
             ),
             # PyTorch DataLoader rejects shuffle=True on IterableDataset
@@ -750,7 +794,8 @@ def _resolve_upstream_cfg_fpath(variant_name: str) -> str:
     return str(rel)
 
 
-def _dump_policy_json(workdir: Path, *, candidate_id: str, variant: str,
+def _dump_policy_json(workdir: Path, *, aug_profile: str = "full",
+                      candidate_id: str, variant: str,
                      input_hw, policy_name: str, policy: _PolicyResolution,
                      batch: int, val_batch: int, num_epochs: int,
                      lr: float, backbone_lr: float, use_amp: bool,
@@ -781,6 +826,9 @@ def _dump_policy_json(workdir: Path, *, candidate_id: str, variant: str,
         "recipe_copyblend_epochs": [int(v) for v in recipe.copyblend_epochs],
         "recipe_matcher_change_epoch": int(recipe.matcher_change_epoch),
         "recipe_weight_decay": float(recipe.weight_decay),
+        # Named explicitly as well as implied by the sentinel windows above,
+        # so a run's profile is greppable without decoding (40000, 15000).
+        "aug_profile": str(aug_profile),
         "train_batch": int(batch),
         "val_batch": int(val_batch),
         "num_epochs": int(num_epochs),
@@ -1173,10 +1221,24 @@ class DEIMv2Trainer:
         # module exists to prevent, one level up.
         recipe = scale_recipe(extract_recipe(str(upstream_cfg)), int(num_epochs))
 
+        # The augmentation profile is one decision applied in two places: the
+        # transform list (scene-compositing ops) and the collate schedule
+        # (mixup/copyblend). Resolving it here keeps them from disagreeing --
+        # a config that drops Mosaic but still mixes up batches is not a
+        # lighter recipe, it is a differently-broken one.
+        aug_profile = str((extra or {}).get("aug_profile") or "full")
+        if aug_profile not in AUG_PROFILES:
+            raise ValueError(
+                f"unknown aug_profile {aug_profile!r}; "
+                f"expected one of {sorted(AUG_PROFILES)}")
+        if aug_profile == "tiled_light":
+            recipe = disable_compositing(recipe)
+
         yml = _build_train_yml(
             workdir=workdir,
             upstream_cfg_fpath=upstream_cfg,
             recipe=recipe,
+            aug_profile=aug_profile,
             train_mscoco_fpath=str(train_ann_fpath),
             vali_mscoco_fpath=str(vali_ann_fpath),
             family=family,
@@ -1255,6 +1317,7 @@ class DEIMv2Trainer:
         )
         _dump_policy_json(
             workdir,
+            aug_profile=aug_profile,
             candidate_id=str(candidate_id),
             variant=canonical,
             input_hw=input_hw,

@@ -39,3 +39,5 @@ Keep code references precise (`file.py:line` plus commit SHAs).
   exist](2026-08-26_recipe_extraction_and_gen006.md)
 - [2026-08-27 — gen006 finished: the machinery worked, the model peaked at
   epoch 4](2026-08-27_gen006_completed.md)
+- [2026-08-27 — the corpus is 81 effective sequences, not 495,514
+  samples](2026-08-27_sequence_imbalance_and_gen007.md)

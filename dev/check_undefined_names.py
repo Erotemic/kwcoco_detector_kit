@@ -222,7 +222,19 @@ def main(argv):
     roots = argv[1:] or ["kwcoco_detector_kit"]
     total = 0
     for root in roots:
-        for path in sorted(Path(root).rglob("*.py")):
+        # rglob on a FILE yields nothing, so passing explicit paths used to
+        # check zero files and still report "0 finding(s)" -- a green result
+        # that meant the checker had not run. Files are now checked directly.
+        root_path = Path(root)
+        if root_path.is_file():
+            candidates = [root_path]
+        elif root_path.is_dir():
+            candidates = sorted(root_path.rglob("*.py"))
+        else:
+            print(f"{root}: no such file or directory")
+            total += 1
+            continue
+        for path in candidates:
             if "__pycache__" in str(path) or "testdata" in path.parts:
                 continue
             for msg, line in check_file(path) + check_imports(path):

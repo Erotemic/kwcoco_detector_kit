@@ -135,6 +135,34 @@ case "$(printf '%s' "${KCD_TILED_EVAL:-False}" | tr '[:upper:]' '[:lower:]')" in
         ;;
 esac
 
+# Sequence/track-aware sampling. The sidecar is built once, here, from the
+# TILED bundle joined to the SOURCE bundle -- the tiler stamps
+# tile_source_gid but not video_id, so sequence identity only exists in the
+# source. Weights are positional over the exported MSCOCO, so the solver
+# hard-fails on a count mismatch rather than training on a shuffled weighting.
+BALANCE_FLAGS=()
+if [ -n "${KCD_BALANCE_SEQUENCE:-}" ] && \
+   [ "$(printf '%s' "$KCD_BALANCE_SEQUENCE" | tr '[:upper:]' '[:lower:]')" = "true" ]; then
+    : "${KCD_TILE_SOURCE_KWCOCO:?KCD_BALANCE_SEQUENCE=True needs KCD_TILE_SOURCE_KWCOCO (the untiled bundle)}"
+    BALANCE_WEIGHTS_JSON="$KCD_ROOT/sequence_balance_weights.json"
+    echo "  balance:   sequence/track (seq_alpha=${KCD_BALANCE_SEQ_ALPHA:-0.5}, track_alpha=${KCD_BALANCE_TRACK_ALPHA:-0.5})"
+    "$PYTHON_BIN" -m kwcoco_detector_kit.data.sequence_balance weights \
+        --tiles_kwcoco  "$KCD_TRAIN_KWCOCO" \
+        --source_kwcoco "$KCD_TILE_SOURCE_KWCOCO" \
+        --dst "$BALANCE_WEIGHTS_JSON" \
+        --report_json "$KCD_ROOT/sequence_balance_report.json" \
+        --seq_alpha      "${KCD_BALANCE_SEQ_ALPHA:-0.5}" \
+        --track_alpha    "${KCD_BALANCE_TRACK_ALPHA:-0.5}" \
+        --empty_weight   "${KCD_BALANCE_EMPTY_WEIGHT:-1.0}" \
+        --max_oversample "${KCD_BALANCE_MAX_OVERSAMPLE:-8}" \
+        ${KCD_BALANCE_EPOCH_LENGTH:+--epoch_length "$KCD_BALANCE_EPOCH_LENGTH"}
+    BALANCE_FLAGS+=(--balance_weights_fpath "$BALANCE_WEIGHTS_JSON")
+    BALANCE_FLAGS+=(--balance_seed "${KCD_BALANCE_SEED:-0}")
+    if [ -n "${KCD_BALANCE_EPOCH_LENGTH:-}" ]; then
+        BALANCE_FLAGS+=(--balance_epoch_length "$KCD_BALANCE_EPOCH_LENGTH")
+    fi
+fi
+
 DIST_FLAG=(--num_gpus "$KCD_NUM_GPUS")
 [ "$KCD_NUM_GPUS" -gt 1 ] && DIST_FLAG+=(--distributed true)
 
@@ -163,6 +191,8 @@ set -x
     ${KCD_SELECTION_JOURNAL:+--selection_journal="$KCD_SELECTION_JOURNAL"} \
     ${KCD_RESUME_CKPT:+--resume "$KCD_RESUME_CKPT"} \
     ${KCD_EVAL_DEVICE:+--eval_device "$KCD_EVAL_DEVICE"} \
+    ${KCD_AUG_PROFILE:+--aug_profile "$KCD_AUG_PROFILE"} \
+    "${BALANCE_FLAGS[@]}" \
     "${TILED_EVAL_FLAGS[@]}" \
     "${INIT_FLAG[@]}" \
     "${DIST_FLAG[@]}"

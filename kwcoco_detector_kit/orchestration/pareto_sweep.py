@@ -127,6 +127,17 @@ class SweepConfig(kwconf.Config):
         0, parser=int,
         help="Seed for the weighted sampler's (seed, epoch, rank) streams.",
     )
+    aug_profile = kwconf.Value(
+        "full", parser=str,
+        help=(
+            "Augmentation profile. 'full' is upstream's COCO recipe "
+            "(default, unchanged). 'tiled_light' drops the scene-compositing "
+            "ops -- Mosaic, RandomZoomOut, RandomIoUCrop -- and disables "
+            "mixup/copyblend, for corpora that are already tiles cut from "
+            "larger frames. Experiment-defining: set in submit script, NOT "
+            "via env."
+        ),
+    )
     train_wds_skip_empty = kwconf.Value(
         False,
         help=(
@@ -507,7 +518,8 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
                    if config.balance_weights_fpath else None
                ),
                "balance_epoch_length": int(config.balance_epoch_length or 0),
-               "balance_seed": int(config.balance_seed or 0)},
+               "balance_seed": int(config.balance_seed or 0),
+               "aug_profile": str(config.aug_profile or "full")},
     )
     # init_ckpt was already resolved + validated above.
     resume_ckpt = config.resume

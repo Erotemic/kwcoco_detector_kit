@@ -37,3 +37,5 @@ Keep code references precise (`file.py:line` plus commit SHAs).
   comparison](2026-08-25_data_audit_and_the_rfdetr_comparison.md)
 - [2026-08-26 — the kit was scaling a schedule that does not
   exist](2026-08-26_recipe_extraction_and_gen006.md)
+- [2026-08-27 — gen006 finished: the machinery worked, the model peaked at
+  epoch 4](2026-08-27_gen006_completed.md)

@@ -473,7 +473,7 @@ runs:
         precursor to the excursion.
 
   - id: fishtrack23_deimv2_dinov3_x_4gpu_aiq_gen006_final
-    status: running          # epoch 8 of 14 as of 2026-08-26 10:43 EDT
+    status: complete
     purpose: >-
       First run configured from DEIMv2's ACTUAL DINOv3-X recipe rather than
       from constants the kit had accumulated. Also the first with normalized
@@ -482,6 +482,9 @@ runs:
     entrypoint: scripts/submit_train_fishtrack23_deimv2_dinov3_x_4gpu_aiq_gen006_final.sh
     slurm_jobs: [498]
     started_at: 2026-08-25T16:52:00-04:00
+    finished_at: 2026-08-26T23:19:00-04:00
+    epochs_completed: 14     # of 14 -- .train_complete written
+    wall_time: 27.9h train / 30.4h span (56h limit)
     data: tiles_1024 (495,514 train / 69,284 vali tiles, 1229px source -> 1024 model)
     hyperparameters:
       per_gpu_batch: 8        # global 32 -- upstream's LR/batch pairing
@@ -507,11 +510,19 @@ runs:
       sample_views: ~6.9M         # upstream COCO: ~6.9M
       measured_cycle: 2h11m
       projected_total: ~31h
+    artifact: >-
+      runs/deimv2_dinov3_x_1024x1024_fixed/best_stg1.pth (epoch 4), plus 14
+      per-epoch checkpoints under staging/ with journal/train.jsonl
     results:
-      # TILE-LEVEL vali. NOT comparable to gen001/gen003's whole-image numbers.
-      epoch_ap: {0: 0.5260, 1: 0.5310, 2: 0.5320, 3: 0.5320, 4: 0.5329,
-                 5: 0.5310, 6: 0.5300, 7: 0.5260}
-      best_so_far: {epoch: 4, ap: 0.5329}
+      # TILE-LEVEL vali (69,284 tiles). NOT comparable to gen001/gen003's
+      # whole-image numbers -- different denominator, different object scale,
+      # different protocol.
+      epoch_ap: {0: 0.526, 1: 0.531, 2: 0.532, 3: 0.532, 4: 0.5329,
+                 5: 0.531, 6: 0.530, 7: 0.526, 8: 0.527, 9: 0.524,
+                 10: 0.522, 11: 0.522, 12: 0.531, 13: 0.529}
+      best_epoch: 4
+      best_ap: 0.5328529228246736
+      best_stg2_written: false   # correct: no epoch >= stop_epoch beat the global best
     notes:
       - >-
         ZERO NaN aborts through 8 epochs, 7 of them augmented. All three fp16
@@ -528,12 +539,32 @@ runs:
         because the training distribution got easier; vali never had Mosaic, so
         AP dipped to 0.5260. First fish run to reach such a transition at all.
       - >-
-        OPEN QUESTION: gen003 needed 9 epochs after its transition to peak
-        (0.5410 at e21). gen006 has 6 (e8-e13). Its tail is the same FRACTION
-        of the schedule but shorter in absolute epochs. Mitigating: gen003's
-        post-transition dip was a best_stg1 reload, which gen006 cannot hit
-        before e12, and gen006 entered the transition from a lower base.
-        Epochs 9-11 decide it.
+        PEAKED AT EPOCH 4 of 14, then declined monotonically to epoch 11
+        (0.5329 -> 0.522) while training loss fell the whole way
+        (33.20 -> 26.80). Loss down and vali down together is fitting the
+        training distribution at the expense of generalisation, not a model
+        still climbing. The pre-registered "under 0.530 at epoch 11 means the
+        schedule was too short" criterion fired, but the completed curve does
+        NOT support "too short" -- more of this schedule would most likely
+        have produced more decline.
+      - >-
+        EPOCH 12 WAS A RESTORE, NOT A RECOVERY. The 0.522 -> 0.531 jump is
+        det_solver's stage-2 mechanism reloading best_stg1.pth (epoch 4
+        weights) at stop_epoch, then again after epoch 12 failed to beat it.
+        Start-of-epoch loss confirms it: e11 starts at 25.69, e12 at 31.85,
+        e13 at 33.03. So epochs 12 and 13 are each ONE clean NoAug epoch from
+        epoch-4 weights -- hence identical end loss (31.02) and close scores.
+        The informative result is negative: epoch-4 weights plus a clean
+        low-LR NoAug epoch score 0.529-0.531, no better than epoch 4 alone.
+        First fish run to reach a stop_epoch boundary at all.
+      - >-
+        NOT COMPARABLE to gen003's 0.5406. That was whole-image vali; this is
+        tile-level. The staged checkpoints exist so gen001, gen003 and every
+        gen006 epoch can be scored under one frozen protocol (true-tiled,
+        1229px, full vali). Until that runs, gen006 is unmeasured rather than
+        better or worse. Epochs 12-13 are worth scoring despite losing on
+        tile-level AP: they are the only epochs trained in the clean NoAug
+        regime that matches inference geometry.
       - >-
         Per-epoch staging is live and verified: 8 checkpoints in staging/ with
         8 matching epoch_staged events in journal/train.jsonl. This wiring had

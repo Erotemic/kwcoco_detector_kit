@@ -51,7 +51,11 @@ class _MockTrainer:
     def __init__(self, predictor):
         self._predictor = predictor
 
-    def build_predictor(self, workdir, *, device="cpu"):
+    def build_predictor(self, workdir, *, device="cpu", checkpoint=None):
+        # `checkpoint` is accepted and ignored: this double has one predictor.
+        # Accepting it keeps the double honest about the protocol, so a real
+        # trainer that forgot the parameter is not shadowed by a test that
+        # never passes it.
         return self._predictor
 
 

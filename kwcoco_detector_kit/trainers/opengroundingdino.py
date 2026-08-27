@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from kwcoco_detector_kit.trainers._interface import _pin_checkpoint
 from kwcoco_detector_kit.trainers._registry import register_trainer
 from kwcoco_detector_kit._env import raise_nofile_limit
 
@@ -631,9 +632,9 @@ class OpenGroundingDINOTrainer:
     def supports_webdataset_input(self) -> bool:
         return False  # Phase 2: kwcoco only
 
-    def build_predictor(self, workdir, *, device: str = "cpu"):
+    def build_predictor(self, workdir, *, device: str = "cpu", checkpoint=None):
         workdir = Path(workdir)
-        ckpt = self.find_checkpoint(workdir)
+        ckpt = _pin_checkpoint(self, workdir, checkpoint)
         cfg = workdir / "generated_configs" / "ogdino_cfg.py"
         policy = {}
         pol_fpath = workdir / "policy.json"

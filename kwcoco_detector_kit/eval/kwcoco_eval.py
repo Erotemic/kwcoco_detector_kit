@@ -231,6 +231,7 @@ def run_kwcoco_eval(
     eval_nms_workers: int = 0,
     read_workers: int = 4,
     device: str = "cpu",
+    checkpoint=None,
 ) -> Path:
     """Score every image in `test_kwcoco` with the trained model; eval.
 
@@ -238,6 +239,13 @@ def run_kwcoco_eval(
     the predictor's class indices map back to the correct kwcoco category
     names. ``kwcoco eval`` matches true/pred categories by name, so the
     pred bundle is built with the same names as the trainer used.
+
+    ``checkpoint`` pins a specific weights file instead of letting the
+    trainer autoselect. Callers scoring several epochs of one run MUST
+    also give each a distinct ``kcd_root``: the output paths are keyed by
+    ``candidate_id`` alone, so a shared root would have each checkpoint
+    either overwrite the last or -- with ``force=False`` -- silently
+    return the FIRST one's metrics for all of them.
 
     ``score_thresh`` defaults to 0.001 so the COCO AP integral sees the
     full precision-recall curve. Setting this above ~0.01 caps recall
@@ -265,7 +273,8 @@ def run_kwcoco_eval(
         print(f"  reusing existing eval metrics: {metrics_fpath}")
         return metrics_fpath
 
-    predictor = trainer.build_predictor(workdir, device=str(device))
+    predictor = trainer.build_predictor(
+        workdir, device=str(device), checkpoint=checkpoint)
 
     if bool(tiled_eval):
         # Windowed inference: slide native-resolution windows over each full

@@ -35,6 +35,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import yaml
 
 from kwcoco_detector_kit._lineprofile import profile
+from kwcoco_detector_kit.trainers._interface import _pin_checkpoint
 from kwcoco_detector_kit.trainers._registry import register_trainer
 from kwcoco_detector_kit._env import raise_nofile_limit
 from kwcoco_detector_kit.trainers._deimv2_recipe import (
@@ -1419,8 +1420,8 @@ class DEIMv2Trainer:
         # SweepConfig.train_wds_shards_dpath is set.
         return True
 
-    def build_predictor(self, workdir, *, device: str = "cpu"):
+    def build_predictor(self, workdir, *, device: str = "cpu", checkpoint=None):
         workdir = Path(workdir)
-        ckpt = self.find_checkpoint(workdir)
+        ckpt = _pin_checkpoint(self, workdir, checkpoint)
         cfg = workdir / "generated_configs" / "train.yml"
         return DEIMv2Predictor(ckpt, cfg, device=device)

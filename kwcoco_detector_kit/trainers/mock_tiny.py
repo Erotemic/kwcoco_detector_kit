@@ -52,6 +52,7 @@ from typing import List, Optional, Tuple
 import kwconf
 import yaml
 
+from kwcoco_detector_kit.trainers._interface import _pin_checkpoint
 from kwcoco_detector_kit.trainers._registry import register_trainer
 
 
@@ -434,9 +435,9 @@ class MockTinyTrainer:
     def supports_webdataset_input(self) -> bool:
         return False
 
-    def build_predictor(self, workdir, *, device: str = "cpu"):
+    def build_predictor(self, workdir, *, device: str = "cpu", checkpoint=None):
         workdir = Path(workdir)
-        ckpt = self.find_checkpoint(workdir)
+        ckpt = _pin_checkpoint(self, workdir, checkpoint)
         return MockTinyPredictor(ckpt, device=device)
 
 

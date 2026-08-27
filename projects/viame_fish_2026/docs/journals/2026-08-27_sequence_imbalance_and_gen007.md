@@ -137,6 +137,36 @@ primary phase into what remains, keeping every landmark at upstream's ratio
 *within* that phase. It is not hand-tuned — [2, 12, 20] falls out of the same
 4/50, 29/50, 45/50 ratios upstream uses.
 
+### Realized diversity, from actual draws
+
+The α table above is probability *mass*. Drawing ~19% of the corpus without
+replacement has different inclusion probabilities, so the statistic that
+matches what gen007 trains on was measured directly — 5 epochs per setting,
+each drawn tile counted once:
+
+| seq_α | track_α | eff. sequences | eff. tracks | neg % |
+|---|---|---|---|---|
+| 0.00 | 0.00 | 80 ± 0.5 | 2,901 ± 16 | 20.8% |
+| 0.25 | 0.50 | 127 ± 0.8 | 6,715 ± 36 | 21.1% |
+| **0.50** | **0.50** | **195 ± 1.1** | **5,461 ± 43** | **21.1%** |
+| 0.50 | 0.75 | 186 ± 0.8 | 6,163 ± 38 | 21.8% |
+| 0.75 | 0.50 | 268 ± 1.1 | 4,228 ± 25 | 21.2% |
+| 1.00 | 0.50 | 314 ± 0.7 | 3,426 ± 17 | 21.4% |
+
+Two honest adjustments to the mass-based story:
+
+* realized sequence counts are **lower** than mass predicts (195 vs 238) and
+  realized track counts **higher** (5,461 vs 5,306) — both because drawing
+  without replacement caps how much any one sequence can be taken;
+* at `seq_alpha=1.0` tracks no longer fall *below* the uniform baseline
+  (3,426 vs 2,901). Full flattening still gives up ~37% of the track diversity
+  that 0.5 achieves, which remains the reason not to use it, but **the earlier
+  "below baseline" claim holds only for the mass metric.**
+
+Ordering is preserved and epoch-to-epoch variance is tiny. 0.5/0.75 and
+0.75/0.5 edge out 0.5/0.5 by ~3–4% on any combined criterion — inside the
+margin where the choice is arbitrary — so the symmetric setting stands.
+
 ### The draw is without replacement
 
 Measured on this corpus at epoch_length 96,000, world_size 4:
@@ -175,6 +205,43 @@ across sequences, and `empty_weight` stays at 1.0 — no tuning needed. (0.7 →
 - `KCD_TILE_SOURCE_KWCOCO` added to `paths.sh`. Sequence identity exists only
   in the untiled bundle; without it, balancing silently degrades to frame-level
   grouping, which the measurement shows would do nothing.
+
+## The flag that was emitted but never read
+
+`kcd_sample_replacement` reached the generated YAML, the sweep flag parsed it,
+the sidecar recorded it and the launcher banner announced it — and
+`_solver.py` called `sampler_from_weights_file()` without forwarding it, so the
+factory fell back to `replacement=True`. gen007 would have trained with the
+with-replacement sampler and its 19.0% duplicate waste while every log line
+claimed otherwise.
+
+Every existing test passed. The factory worked; the CLI carried the flag; the
+config contained the key. **Nothing checked that anything read it.**
+
+Two layers now do:
+
+* a source-level contract — every `kcd_sample_*` key the trainer emits must
+  appear in `_solver.py`, and `sampler_from_weights_file` must be called with
+  `replacement=`. This generalises: it catches the next write-only key too.
+* a behavioural test — a generated config with `balance_replacement=False`,
+  put through the solver's own lookups, must yield
+  `DistributedWeightedNoReplacementSampler`.
+
+Both were confirmed to **fail** against the pre-fix fork and pass after.
+
+A second, quieter half: the fix was in the working tree but **uncommitted in
+the submodule**, so the tracked pointer still referred to a tree without it.
+`git add -A` in the parent cannot advance a pointer for a dirty submodule with
+no commit. Since the Docker image bakes the submodule at its committed pointer,
+an image built from the previous state would have carried the bug regardless of
+what the local checkout contained. Fork commit `1e6339d`, pointer advanced in
+`cdd7dd6`.
+
+*(Credit to the external review for catching this. Its stated mechanism — that
+the solver source lacks the parameter — was not true of the working tree, where
+the line was present at `_solver.py:102`. The real defect was the uncommitted
+submodule, which is worse: it is invisible to source inspection and would have
+shipped in the image.)*
 
 ## A correction about verification
 

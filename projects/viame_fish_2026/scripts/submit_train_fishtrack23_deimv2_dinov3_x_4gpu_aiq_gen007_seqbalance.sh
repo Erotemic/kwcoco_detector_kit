@@ -63,12 +63,42 @@
 # short precisely because they hold few tracks.
 #
 # 0.5/0.5 nearly triples sequences (81 -> 238) and nearly doubles tracks
-# (2,963 -> 5,306). 0.5/0.75 trades ~7% of the sequence gain for ~12% more
-# track diversity; the two are within the noise of any scalar that combines
-# them, so the symmetric setting is used rather than tuning an asymmetry the
-# data does not clearly support.
+# (2,963 -> 5,306).
 #
-# Negative-tile fraction of an ACTUAL 96,000-tile draw is 21.1%, against a
+# ## REALIZED counts, from actual 96,000-tile without-replacement draws
+#
+# The table above is probability MASS. Drawing ~19% of the corpus without
+# replacement has different inclusion probabilities, so what the run actually
+# trains on is measured directly -- 5 epochs per setting, each drawn tile
+# counted once:
+#
+#   seq_a track_a |   eff_seq      eff_trk     neg%
+#   0.00   0.00   |   80 +- 0.5    2901 +- 16  20.8%
+#   0.25   0.50   |  127 +- 0.8    6715 +- 36  21.1%
+#   0.50   0.50   |  195 +- 1.1    5461 +- 43  21.1%   <- chosen
+#   0.50   0.75   |  186 +- 0.8    6163 +- 38  21.8%
+#   0.75   0.50   |  268 +- 1.1    4228 +- 25  21.2%
+#   1.00   0.50   |  314 +- 0.7    3426 +- 17  21.4%
+#
+# Two honest adjustments to the mass-based story:
+#
+#   * realized sequence counts are LOWER than mass predicts (195 vs 238) and
+#     realized track counts HIGHER (5,461 vs 5,306), both because drawing
+#     without replacement caps how much any one sequence can be taken;
+#   * at seq_alpha=1.0 tracks no longer fall BELOW the uniform baseline
+#     (3,426 vs 2,901). The penalty is relative, not absolute -- full
+#     flattening gives up ~37% of the track diversity that 0.5 achieves,
+#     which is still the reason not to use it, but the earlier "below
+#     baseline" claim only held for the mass metric.
+#
+# The ordering is preserved and epoch-to-epoch variance is tiny (sd ~1
+# sequence). 0.5/0.75 and 0.75/0.5 edge out 0.5/0.5 by ~3-4% on a combined
+# criterion -- inside the margin where the choice is arbitrary -- so the
+# symmetric setting stands rather than tuning an asymmetry this data does not
+# clearly support.
+#
+# Negative-tile fraction of an ACTUAL 96,000-tile draw is 21.1% (mean of 5
+# epochs), against a
 # corpus rate of 20.8%. Reweighting does not disturb the positive/negative
 # balance, so empty_weight stays at 1.0 -- negatives are not distributed
 # pathologically across sequences. (empty_weight 0.7 -> 14.8%, 1.3 -> 24.2%,
@@ -250,7 +280,7 @@ echo "  batch:      $KCD_PER_GPU_BATCH/gpu x $KCD_NUM_GPUS = $(( KCD_PER_GPU_BAT
 echo "  epochs:     $KCD_NUM_EPOCHS x $KCD_BALANCE_EPOCH_LENGTH tiles = $(( KCD_NUM_EPOCHS * KCD_BALANCE_EPOCH_LENGTH / (KCD_PER_GPU_BATCH * KCD_NUM_GPUS) )) updates"
 echo "  lr:         $KCD_LR / $KCD_BACKBONE_LR   amp $KCD_AMP_DTYPE"
 echo "  sampling:   seq_alpha $KCD_BALANCE_SEQ_ALPHA, track_alpha $KCD_BALANCE_TRACK_ALPHA, cap $KCD_BALANCE_MAX_OVERSAMPLE"
-echo "              expect effective sequences 81 -> ~238, tracks 2963 -> ~5306"
+echo "              realized per epoch: sequences 80 -> ~195, tracks 2901 -> ~5461"
 echo "              draw: WITHOUT replacement -- 96k UNIQUE tiles/epoch, 24k/rank,"
 echo "                    zero cross-rank overlap (vs 19.0% wasted with replacement)"
 echo "              negatives: 21.1% of the draw (corpus 20.8%)"

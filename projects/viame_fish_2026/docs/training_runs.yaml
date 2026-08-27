@@ -630,8 +630,10 @@ runs:
       recipe_at_28_epochs: {policy: [2, 12, 20], flat: 12, no_aug: 8,
                             stop: 20, matcher: 18, weight_decay: 1.25e-4}
     expected_effect:
-      effective_sequences: 81 -> 238
-      effective_tracks: 2963 -> 5306
+      effective_sequences: 81 -> 238     # probability mass
+      effective_tracks: 2963 -> 5306     # probability mass
+      realized_effective_sequences: 80 -> 195   # actual 96k no-replacement draw
+      realized_effective_tracks: 2901 -> 5461   # mean of 5 epochs
       max_draws_per_tile_per_epoch: 0.19 -> 1.55
       wasted_draws_per_epoch: 19.0% -> 0%     # measured, world_size 4
       negative_fraction_drawn: 21.1%          # corpus rate 20.8%
@@ -655,6 +657,20 @@ runs:
         Sampling WITHOUT replacement. Measured with replacement at 96k/495k,
         world_size 4: only 77,766 of 96,000 draws were unique -- 19.0% of every
         epoch spent re-showing a tile already seen that epoch.
+      - >-
+        Realized counts differ from probability mass: without replacement caps
+        how much one sequence can be taken, so realized sequences are LOWER
+        (195 vs 238) and realized tracks HIGHER (5,461 vs 5,306). Ordering is
+        preserved; 0.5/0.5 stands. At seq_alpha=1.0 tracks do NOT fall below
+        baseline under the realized draw (3,426 vs 2,901) -- that claim holds
+        only for the mass metric.
+      - >-
+        kcd_sample_replacement was emitted by the trainer but never read by
+        _solver.py, and the fix sat uncommitted IN the submodule so the tracked
+        pointer lacked it. The Docker image bakes the submodule at its pointer,
+        so a built image would have carried the bug. Fork 1e6339d, pointer
+        advanced in cdd7dd6; a source-level contract test now requires every
+        kcd_sample_* key to be read by the solver.
       - >-
         84k updates is a prior, not a law. gen006 peaked at epoch 4 ~= 62k and
         never beat it over the remaining ~155k. If the stride-8 gen006 epoch

@@ -618,25 +618,43 @@ runs:
     hyperparameters:
       per_gpu_batch: 8        # global 32
       num_epochs: 28
+      tail_epochs: 8          # 20 primary (60k) + 8 tail (24k); upstream's own
       epoch_length: 96000     # x28 / 32 = 84,000 updates
+      sampling: without_replacement   # 96k UNIQUE tiles/epoch, 24k/rank
       lr: 2.5e-4              # halved from gen006, 50:1 ratio preserved
       backbone_lr: 5e-6
       amp_dtype: bfloat16
       aug_profile: tiled_light  # no Mosaic/ZoomOut/IoUCrop, no mixup/copyblend
       balance: {seq_alpha: 0.5, track_alpha: 0.5, empty_weight: 1.0,
                 max_oversample: 8, seed: 0}
-      recipe_at_28_epochs: {policy: [2, 14, 24], flat: 14, no_aug: 4,
-                            stop: 24, matcher: 22, weight_decay: 1.25e-4}
+      recipe_at_28_epochs: {policy: [2, 12, 20], flat: 12, no_aug: 8,
+                            stop: 20, matcher: 18, weight_decay: 1.25e-4}
     expected_effect:
-      effective_sequences: 81 -> ~238
-      effective_tracks: ~1454 -> ~4473
+      effective_sequences: 81 -> 238
+      effective_tracks: 2963 -> 5306
       max_draws_per_tile_per_epoch: 0.19 -> 1.55
+      wasted_draws_per_epoch: 19.0% -> 0%     # measured, world_size 4
+      negative_fraction_drawn: 21.1%          # corpus rate 20.8%
     notes:
       - >-
-        alpha=0.5 not 1.0: full flattening COLLAPSES effective tracks from
-        4,473 to 1,729, because it pours mass into short sequences and short
-        sequences are short precisely because they hold few tracks. 0.5 is the
-        only setting that improves sequence AND track diversity together.
+        alpha=0.5 not 1.0: at seq_alpha=1.0 effective tracks land at 2,893,
+        BELOW the 2,963 they started at -- the whole sequence gain is paid for
+        out of track diversity, because flattening pours mass into short
+        sequences and short sequences are short precisely because they hold
+        few tracks.
+      - >-
+        The first alpha sweep was scored with a broken metric that split each
+        tile's weight across the tracks on it, reporting 1,454 effective tracks
+        for a baseline whose true value is 2,963. Corrected: uniform weights
+        now reproduce the unweighted count exactly, which is a test.
+      - >-
+        The tail is ABSOLUTE (8 epochs, upstream's own), not proportional.
+        Scaling shrinks the consolidation phase exactly as the schedule
+        shortens -- gen006's 14-epoch run got a 2-epoch tail.
+      - >-
+        Sampling WITHOUT replacement. Measured with replacement at 96k/495k,
+        world_size 4: only 77,766 of 96,000 draws were unique -- 19.0% of every
+        epoch spent re-showing a tile already seen that epoch.
       - >-
         84k updates is a prior, not a law. gen006 peaked at epoch 4 ~= 62k and
         never beat it over the remaining ~155k. If the stride-8 gen006 epoch

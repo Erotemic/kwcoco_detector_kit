@@ -281,6 +281,58 @@ def disable_compositing(recipe: DEIMv2Recipe) -> DEIMv2Recipe:
                    copyblend_epochs=DISABLED_WINDOW)
 
 
+def retarget_tail(recipe: DEIMv2Recipe, tail_epochs: int) -> DEIMv2Recipe:
+    """Re-place the landmarks so the run ends with ``tail_epochs`` clean epochs.
+
+    Proportional scaling preserves upstream's SHAPE, which is the right default
+    but not always the right schedule. At 58 epochs DINOv3-X ends with 8 epochs
+    past ``stop_epoch`` -- the stage-2 phase where augmentation is off, EMA is
+    restarted from the stage-1 best, and the model consolidates. Scaled to 28
+    epochs that tail becomes 4, and to 14 epochs it becomes 2. The phase that
+    does the consolidating shrinks exactly as the schedule gets shorter, which
+    is backwards: a shorter run has LESS opportunity to consolidate, not more.
+
+    This fixes the tail at an absolute length and fits the primary phase into
+    what remains, keeping every landmark at upstream's own RATIO within that
+    phase rather than at a hand-chosen epoch:
+
+        stop_epoch  = num_epochs - tail_epochs
+        no_aug      = tail_epochs
+        e0, e1      = upstream's e0/e2 and e1/e2 ratios, applied to stop_epoch
+        flat_epoch  = e1            (upstream's convention -- see _repair_flat_epoch)
+        matcher     = upstream's matcher/stop ratio, applied to stop_epoch
+
+    For DINOv3-X at 28 epochs with an 8-epoch tail this yields policy
+    [2, 12, 20], flat 12, stop 20, matcher 18, no_aug 8 -- roughly 60k primary
+    updates at batch 32 x 3000/epoch, which is where gen006 actually peaked,
+    followed by 24k updates of the consolidation phase.
+    """
+    total = max(1, int(recipe.total_epochs))
+    tail = int(tail_epochs)
+    if tail < 1:
+        raise ValueError(f"tail_epochs must be >= 1, got {tail}")
+    if tail >= total:
+        raise ValueError(
+            f"tail_epochs {tail} leaves no primary phase in {total} epochs")
+    stop = total - tail
+    e0_u, e1_u, e2_u = recipe.aug_policy_epochs
+    if e2_u <= 0:
+        raise ValueError(f"cannot retarget a degenerate policy {recipe.aug_policy_epochs}")
+    e0 = min(max(int(round(stop * e0_u / e2_u)), 1), stop)
+    e1 = min(max(int(round(stop * e1_u / e2_u)), e0), stop)
+    matcher = min(max(int(round(stop * recipe.matcher_change_epoch / e2_u)), 0),
+                  total - 1)
+    from dataclasses import replace
+    return replace(
+        recipe,
+        aug_policy_epochs=(e0, e1, stop),
+        flat_epoch=min(max(e1, 1), max(1, total - 1)),
+        no_aug_epoch=min(max(tail, 1), max(1, total - 1)),
+        stop_epoch=stop,
+        matcher_change_epoch=matcher,
+    ).validate()
+
+
 def augmentation_is_disabled(window) -> bool:
     """Upstream encodes 'never run this' as a start at/after the end.
 

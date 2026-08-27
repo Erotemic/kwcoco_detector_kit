@@ -158,6 +158,7 @@ if [ -n "${KCD_BALANCE_SEQUENCE:-}" ] && \
         ${KCD_BALANCE_EPOCH_LENGTH:+--epoch_length "$KCD_BALANCE_EPOCH_LENGTH"}
     BALANCE_FLAGS+=(--balance_weights_fpath "$BALANCE_WEIGHTS_JSON")
     BALANCE_FLAGS+=(--balance_seed "${KCD_BALANCE_SEED:-0}")
+    BALANCE_FLAGS+=(--balance_replacement "${KCD_BALANCE_REPLACEMENT:-True}")
     if [ -n "${KCD_BALANCE_EPOCH_LENGTH:-}" ]; then
         BALANCE_FLAGS+=(--balance_epoch_length "$KCD_BALANCE_EPOCH_LENGTH")
     fi
@@ -192,6 +193,7 @@ set -x
     ${KCD_RESUME_CKPT:+--resume "$KCD_RESUME_CKPT"} \
     ${KCD_EVAL_DEVICE:+--eval_device "$KCD_EVAL_DEVICE"} \
     ${KCD_AUG_PROFILE:+--aug_profile "$KCD_AUG_PROFILE"} \
+    ${KCD_TAIL_EPOCHS:+--tail_epochs "$KCD_TAIL_EPOCHS"} \
     "${BALANCE_FLAGS[@]}" \
     "${TILED_EVAL_FLAGS[@]}" \
     "${INIT_FLAG[@]}" \

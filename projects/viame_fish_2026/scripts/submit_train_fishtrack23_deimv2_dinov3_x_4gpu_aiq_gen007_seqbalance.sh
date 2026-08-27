@@ -42,18 +42,37 @@
 #
 # Also measured, by sweeping alpha and recomputing the effective counts:
 #
-#   seq_a track_a cap | eff_seq  eff_track | max draws/tile/epoch
-#   0.00   0.00  none |      81       1454 |   0.19    (gen006, today)
-#   0.50   0.50     8 |     238       4473 |   1.55    <- chosen
-#   0.75   0.50     8 |     334       3059 |   1.55
-#   1.00   0.50    32 |     394       1729 |   6.20
+#   seq_a track_a cap | eff_seq  eff_track |  neg%  max draws/tile/epoch
+#   0.00   0.00  none |      81       2963 | 20.8%   0.19   (gen006, today)
+#   0.25   0.50     8 |     139       7281 | 20.2%   1.55
+#   0.50   0.50     8 |     238       5306 | 19.8%   1.55   <- chosen
+#   0.50   0.75     8 |     221       5969 | 19.7%   1.55
+#   0.75   0.50     8 |     334       3725 | 19.9%   1.55
+#   1.00   0.50     8 |     365       2893 | 20.2%   1.55
 #
-# Full flattening (seq_alpha=1.0) buys sequence diversity by DESTROYING track
-# diversity -- 4,473 effective tracks down to 1,729 -- because it pours mass
-# into short sequences, and short sequences are short precisely because they
-# contain few tracks. Half-flattening triples effective sequences (81 -> 238)
-# and triples effective tracks (1,454 -> 4,473) at the same time. It is the
-# only row that improves both.
+# The uniform row REPRODUCES the unweighted effective counts (81 and 2,963)
+# exactly. That identity is the check that the metric is right: an earlier
+# version of this table split each tile's weight across the tracks on it,
+# reported 1,454 for the uniform baseline, and so compared every alpha against
+# a reference that did not match the corpus.
+#
+# Full flattening still fails, just less dramatically than the broken table
+# suggested: at seq_alpha=1.0 effective tracks fall to 2,893, BELOW the 2,963
+# they started at -- all the sequence gain is paid for out of track diversity,
+# because flattening pours mass into short sequences and short sequences are
+# short precisely because they hold few tracks.
+#
+# 0.5/0.5 nearly triples sequences (81 -> 238) and nearly doubles tracks
+# (2,963 -> 5,306). 0.5/0.75 trades ~7% of the sequence gain for ~12% more
+# track diversity; the two are within the noise of any scalar that combines
+# them, so the symmetric setting is used rather than tuning an asymmetry the
+# data does not clearly support.
+#
+# Negative-tile fraction of an ACTUAL 96,000-tile draw is 21.1%, against a
+# corpus rate of 20.8%. Reweighting does not disturb the positive/negative
+# balance, so empty_weight stays at 1.0 -- negatives are not distributed
+# pathologically across sequences. (empty_weight 0.7 -> 14.8%, 1.3 -> 24.2%,
+# if it ever needs steering.)
 #
 # max_oversample=8 is what keeps the cure from becoming the disease. Uncapped,
 # seq_alpha=0.5 draws some single tile 7.7 times per epoch -- memorisation of
@@ -62,13 +81,23 @@
 # ## The update budget
 #
 #   epoch_length 96,000 tiles x 28 epochs / batch 32 = 84,000 updates
+#     20 primary epochs  = 60,000 updates   (gen006 peaked at ~62k)
+#      8 tail epochs     = 24,000 updates   (stage-2 / no-aug consolidation)
 #
 # gen006 peaked at epoch 4 of 14 = ~62k updates and never beat it over the
-# remaining ~155k. 84k gives that observed peak room plus margin, at a third
-# of gen006's 217k. Each tile is now seen ~5.4 times across the whole run
-# rather than 14 times, and WHICH tiles are seen is redrawn every epoch, so
-# the schedule's 28 stages also give the LR cosine and the augmentation state
-# machine real resolution instead of gen006's coarse 14.
+# remaining ~155k. The primary phase is sized to that observed peak, and the
+# tail is held at EIGHT epochs -- upstream DINOv3-X's own absolute tail length
+# at 58 epochs.
+#
+# Proportional scaling would have given a 4-epoch tail at 28 epochs and a
+# 2-epoch tail at 14. That is backwards: the phase that consolidates shrinks
+# exactly as the schedule gets shorter, so the runs with the least training
+# also get the least consolidation. KCD_TAIL_EPOCHS fixes it absolutely and
+# fits the primary phase into what remains, keeping every landmark at
+# upstream's own ratio within that phase.
+#
+# Each tile is seen ~5.4 times across the whole run rather than gen006's 14,
+# and WHICH tiles are seen is redrawn every epoch.
 #
 # REFINE THIS IF THE STRIDE-8 CURVE ARRIVES. If gen006's tiled epoch ranking
 # peaks materially later than epoch 4, raise KCD_NUM_EPOCHS accordingly; the
@@ -104,7 +133,8 @@ source "$SCRIPT_DIR/paths.sh"
 # it from the tile cache metadata, and unsetting it leaves the eval window
 # EMPTY rather than forcing a recomputation.
 for _stale in KCD_FLAT_EPOCH KCD_INIT_CHECKPOINT KCD_TRAIN_FROM_SCRATCH \
-              KCD_FORCE_EVAL KCD_BALANCE_EPOCH_LENGTH KCD_AUG_PROFILE; do
+              KCD_FORCE_EVAL KCD_BALANCE_EPOCH_LENGTH KCD_AUG_PROFILE \
+              KCD_TAIL_EPOCHS KCD_BALANCE_REPLACEMENT; do
     if [ -n "${!_stale:-}" ]; then
         echo "  note: clearing inherited $_stale=${!_stale}" >&2
         unset "$_stale"
@@ -146,6 +176,23 @@ export KCD_BALANCE_EMPTY_WEIGHT=1.0     # a negative tile ~ an average positive
 export KCD_BALANCE_MAX_OVERSAMPLE=8
 export KCD_BALANCE_EPOCH_LENGTH=96000   # x28 / batch 32 = 84k updates
 export KCD_BALANCE_SEED=0
+
+# One global draw WITHOUT replacement, partitioned across the 4 ranks.
+# Measured on this corpus at epoch_length 96,000, world_size 4:
+#
+#   with replacement     96,000 drawn -> 77,766 unique = 19.0% WASTED
+#   without replacement  96,000 drawn -> 96,000 unique, 0 cross-rank overlap
+#
+# 19.0%, not the ~9% a uniform draw would waste: reweighting concentrates the
+# mass, and concentrated mass collides more. Nearly a fifth of every epoch was
+# being spent re-showing a tile already seen in that same epoch -- with, on top
+# of that, independent per-rank streams letting two GPUs spend the same
+# synchronised optimizer step on the same tile. Both wastes are exactly what a
+# reduced epoch length exists to avoid.
+export KCD_BALANCE_REPLACEMENT=False
+
+# Absolute stage-2/no-aug tail. 28 - 8 = 20 primary epochs.
+export KCD_TAIL_EPOCHS=8
 
 # Sequence identity lives ONLY in the untiled bundle: the tiler stamps
 # tile_source_gid on each tile but does not copy video_id. paths.sh exports
@@ -203,10 +250,13 @@ echo "  batch:      $KCD_PER_GPU_BATCH/gpu x $KCD_NUM_GPUS = $(( KCD_PER_GPU_BAT
 echo "  epochs:     $KCD_NUM_EPOCHS x $KCD_BALANCE_EPOCH_LENGTH tiles = $(( KCD_NUM_EPOCHS * KCD_BALANCE_EPOCH_LENGTH / (KCD_PER_GPU_BATCH * KCD_NUM_GPUS) )) updates"
 echo "  lr:         $KCD_LR / $KCD_BACKBONE_LR   amp $KCD_AMP_DTYPE"
 echo "  sampling:   seq_alpha $KCD_BALANCE_SEQ_ALPHA, track_alpha $KCD_BALANCE_TRACK_ALPHA, cap $KCD_BALANCE_MAX_OVERSAMPLE"
-echo "              expect effective sequences 81 -> ~238, tracks ~1454 -> ~4473"
+echo "              expect effective sequences 81 -> ~238, tracks 2963 -> ~5306"
+echo "              draw: WITHOUT replacement -- 96k UNIQUE tiles/epoch, 24k/rank,"
+echo "                    zero cross-rank overlap (vs 19.0% wasted with replacement)"
+echo "              negatives: 21.1% of the draw (corpus 20.8%)"
 echo "  aug:        $KCD_AUG_PROFILE (no Mosaic/ZoomOut/IoUCrop, no mixup/copyblend)"
-echo "  schedule:   from the recipe -- expect policy [2, 14, 24], flat 14,"
-echo "              no_aug 4, stop 24, matcher 22, mixup (40000, 15000)"
+echo "  schedule:   policy [2, 12, 20], flat 12, no_aug 8, stop 20, matcher 18"
+echo "              (20 primary + 8 tail epochs; mixup/copyblend disabled)"
 echo "  eval:       tiled, ${KCD_TILED_EVAL_WINDOW}px window, overlap $KCD_TILED_EVAL_OVERLAP"
 echo "  expect:     ~11 h"
 echo

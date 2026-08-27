@@ -21,13 +21,12 @@ from kwcoco_detector_kit.data.sequence_balance import (
     flatten_weights, oversample_profile, summarize_groups)
 
 
+from kwcoco_detector_kit.data.sequence_balance import mass_effective_count
+
+
 def _effective(weights, groups):
-    """Inverse Simpson over group MASS -- the metric the design was chosen on."""
-    mass = {}
-    for w, g in zip(weights, groups):
-        mass[g] = mass.get(g, 0.0) + w
-    total = sum(mass.values())
-    return 1.0 / sum((m / total) ** 2 for m in mass.values())
+    """Single-group-per-item convenience wrapper."""
+    return mass_effective_count(weights, [[g] for g in groups])
 
 
 def _skewed(sizes):
@@ -165,6 +164,49 @@ def test_balancing_raises_effective_sequence_count():
     assert got > base * 1.3, f"{base:.2f} -> {got:.2f}"
 
 
+# ---------------------------------------------------------------------------
+# mass_effective_count -- the metric the alpha choice rests on
+# ---------------------------------------------------------------------------
+
+
+def test_uniform_weights_reproduce_the_unweighted_effective_count():
+    """The identity that makes "81 -> 238" a comparison and not two numbers.
+
+    This is the check that caught the original metric. An earlier version
+    divided each item's weight among the groups on it, which reported 1,454
+    effective tracks for a corpus whose true unweighted count is 2,963 -- so
+    every alpha was scored against a reference that did not match the data.
+    """
+    member = [["t1"], ["t1", "t2"], ["t2", "t3"], [], ["t3"]]
+    flat = [g for groups in member for g in groups]
+    n = len(member)
+    assert mass_effective_count([1.0 / n] * n, member) == pytest.approx(
+        summarize_groups(flat)["effective_count"])
+
+
+def test_an_item_contributes_its_full_weight_to_every_group_it_carries():
+    """Not a share. A fish photographed beside four others is still one fish."""
+    got = mass_effective_count([0.5, 0.5], [["a", "b"], ["a"]])
+    # mass: a = 1.0, b = 0.5 -> shares 2/3, 1/3 -> 1/(4/9+1/9) = 1.8
+    assert got == pytest.approx(1.8)
+
+
+def test_a_flattened_pair_list_is_rejected_rather_than_truncated():
+    """The failure mode that hid in the test helper.
+
+    Zipping 495,514 weights against 780,566 (tile, track) pairs silently drops
+    285,052 of them and scores a different corpus. It only looked correct
+    because the synthetic fixture gave every tile exactly one track.
+    """
+    with pytest.raises(ValueError, match="one entry PER ITEM"):
+        mass_effective_count([0.5, 0.5], [["a"], ["a"], ["b"]])
+
+
+def test_multi_group_items_are_not_silently_dropped():
+    member = [["a", "b", "c"], ["a"]]
+    assert mass_effective_count([0.5, 0.5], member) > 1.0
+
+
 def test_half_flattening_beats_full_flattening_on_track_diversity():
     """The measured reason alpha is 0.5 and not 1.0.
 
@@ -174,13 +216,13 @@ def test_half_flattening_beats_full_flattening_on_track_diversity():
     corpus (81->238 sequences, 1454->4473 tracks).
     """
     idx = _skewed([2000, 1000, 300, 80, 40, 30])
-    flat_tracks = [(s, t) for s, ts in zip(idx["sequences"], idx["tracks"])
-                   for t in ts]
+    member = [[(s, t) for t in ts]
+              for s, ts in zip(idx["sequences"], idx["tracks"])]
 
     def track_eff(alpha):
         w = compute_sequence_weights(idx, seq_alpha=alpha, track_alpha=0.5,
                                      max_oversample=8)
-        return _effective(w, flat_tracks)
+        return mass_effective_count(w, member)
 
     assert track_eff(0.5) > track_eff(1.0)
 

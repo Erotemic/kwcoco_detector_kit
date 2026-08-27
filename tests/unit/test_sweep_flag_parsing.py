@@ -54,3 +54,35 @@ def test_selection_journal_defaults_off_and_enables_with_equals_form():
     """gen006 turns per-epoch staging on the same way."""
     assert bool(_cfg().selection_journal) is False
     assert bool(_cfg("--selection_journal=True").selection_journal) is True
+
+
+def test_gen007_flags_parse_and_reach_the_trainer():
+    """aug_profile, tail_epochs and balance_replacement are experiment-defining.
+
+    A flag that parses but never reaches ``extra`` would leave the run silently
+    on the defaults -- full augmentation, a proportional tail, and sampling with
+    replacement -- while the launcher banner claimed otherwise.
+    """
+    from kwcoco_detector_kit.orchestration.pareto_sweep import SweepConfig
+    cfg = SweepConfig.cli(argv=[
+        "--train_kwcoco", "a.json", "--vali_kwcoco", "b.json",
+        "--test_kwcoco", "c.json",
+        "--aug_profile", "tiled_light",
+        "--tail_epochs", "8",
+        "--balance_replacement", "False",
+    ], strict=False)
+    assert cfg.aug_profile == "tiled_light"
+    assert int(cfg.tail_epochs) == 8
+    assert bool(cfg.balance_replacement) is False
+
+
+def test_gen007_flag_defaults_are_the_historical_behaviour():
+    """Every new knob must default to what the kit did before it existed."""
+    from kwcoco_detector_kit.orchestration.pareto_sweep import SweepConfig
+    cfg = SweepConfig.cli(argv=[
+        "--train_kwcoco", "a.json", "--vali_kwcoco", "b.json",
+        "--test_kwcoco", "c.json",
+    ], strict=False)
+    assert cfg.aug_profile == "full"
+    assert int(cfg.tail_epochs) == 0
+    assert bool(cfg.balance_replacement) is True

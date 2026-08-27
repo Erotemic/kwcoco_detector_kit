@@ -40,6 +40,7 @@ from kwcoco_detector_kit.trainers._registry import register_trainer
 from kwcoco_detector_kit._env import raise_nofile_limit
 from kwcoco_detector_kit.trainers._deimv2_recipe import (
     disable_compositing,
+    retarget_tail,
     extract_recipe, scale_recipe)
 
 
@@ -1234,6 +1235,13 @@ class DEIMv2Trainer:
         if aug_profile == "tiled_light":
             recipe = disable_compositing(recipe)
 
+        # An absolute stage-2/no-aug tail. Proportional scaling shrinks the
+        # consolidation phase exactly as the schedule shortens, which is
+        # backwards -- see _deimv2_recipe.retarget_tail.
+        tail_epochs = int((extra or {}).get("tail_epochs", 0) or 0)
+        if tail_epochs:
+            recipe = retarget_tail(recipe, tail_epochs)
+
         yml = _build_train_yml(
             workdir=workdir,
             upstream_cfg_fpath=upstream_cfg,
@@ -1293,6 +1301,10 @@ class DEIMv2Trainer:
             if epoch_length:
                 yml["kcd_sample_epoch_length"] = epoch_length
             yml["kcd_sample_seed"] = int((extra or {}).get("balance_seed", 0) or 0)
+            # Without replacement, one global draw is partitioned across ranks:
+            # no tile twice in an epoch, and no two GPUs on the same tile.
+            yml["kcd_sample_replacement"] = bool(
+                (extra or {}).get("balance_replacement", True))
 
         cfg_fpath.write_text(yaml.safe_dump(yml, sort_keys=False))
         # Resolved-effective-config side-by-side sidecar — Phase 1 emits a

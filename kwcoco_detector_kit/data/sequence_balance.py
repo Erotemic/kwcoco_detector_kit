@@ -75,6 +75,7 @@ from typing import Any, Dict, Hashable, List, Optional, Sequence
 __all__ = [
     "EMPTY_TRACK",
     "summarize_groups",
+    "mass_effective_count",
     "flatten_weights",
     "combine_weights",
     "cap_oversample",
@@ -145,6 +146,43 @@ def summarize_groups(groups: Sequence[Hashable], *, top_k: int = 15) -> Dict[str
         "share_of_top_10pct": (
             sum(sizes[-max(1, k // 10):]) / total if k else 0.0),
     }
+
+
+def mass_effective_count(weights: Sequence[float],
+                         member_groups: Sequence[Sequence[Hashable]]) -> float:
+    """Effective group count under a WEIGHTING, for groups an item can share.
+
+    ``member_groups[i]`` lists every group item ``i`` belongs to -- a tile
+    carries one sequence but may carry several tracks. Each group accumulates
+    the item's FULL weight, not a share of it, so that uniform weights
+    reproduce :func:`summarize_groups`' unweighted effective count exactly.
+    That identity is the whole point: it is what makes "81 -> 238" a
+    comparison rather than two unrelated numbers.
+
+    Splitting the weight across a tile's tracks (``w_i / len(tracks_i)``)
+    seems fairer and is not: it makes a fish that co-occurs with four others
+    count one fifth as much as a fish photographed alone, so the baseline no
+    longer matches the measured corpus (it reported 1,454 against a true
+    2,963) and every alpha is compared against a moving reference.
+
+    Do NOT compute this by zipping weights against a FLATTENED list of
+    (item, group) pairs: that list is longer than the weight vector -- 780,566
+    against 495,514 here -- so zip silently truncates it to the first 495,514
+    and scores a different corpus than the one asked about.
+    """
+    if len(weights) != len(member_groups):
+        raise ValueError(
+            f"{len(weights)} weights against {len(member_groups)} items; "
+            "member_groups must be one entry PER ITEM, each listing that "
+            "item's groups -- not a flattened (item, group) pair list")
+    mass: Dict[Hashable, float] = {}
+    for w, groups in zip(weights, member_groups):
+        for g in groups:
+            mass[g] = mass.get(g, 0.0) + float(w)
+    total = sum(mass.values())
+    if total <= 0:
+        raise ValueError("no positive mass")
+    return 1.0 / sum((m / total) ** 2 for m in mass.values())
 
 
 def flatten_weights(groups: Sequence[Hashable], alpha: float) -> List[float]:

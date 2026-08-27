@@ -59,6 +59,7 @@ __all__ = [
     "write_balance_weights",
     "load_balance_weights",
     "DistributedWeightedRandomSampler",
+    "DistributedWeightedNoReplacementSampler",
     "sampler_from_weights_file",
 ]
 
@@ -275,14 +276,113 @@ class DistributedWeightedRandomSampler:
         return self.num_samples
 
 
+class DistributedWeightedNoReplacementSampler:
+    """One global weighted draw WITHOUT replacement, partitioned across ranks.
+
+    :class:`DistributedWeightedRandomSampler` draws with replacement, and each
+    rank draws independently. Both are wasteful once the epoch is much smaller
+    than the corpus, which is the entire point of a reduced epoch length:
+
+      * with replacement, drawing 96,000 from 495,514 uniformly puts ~9.1% of
+        the draws on tiles already drawn in the same epoch -- and reweighting
+        concentrates the mass, so it gets worse, not better;
+      * independent per-rank streams let two GPUs spend the same optimizer
+        step on the same tile, which is the same waste again with a synchronised
+        gradient behind it.
+
+    Here one draw is made from the FULL weight vector with the same seed on
+    every rank, so all ranks compute an identical ordering, and rank ``r`` then
+    takes ``order[r::world_size]``. Every index appears at most once per epoch
+    and no two ranks ever see the same tile in the same epoch.
+
+    The draw uses the Gumbel top-k trick (equivalently Efraimidis-Spirakis
+    A-Res): adding Gumbel(0,1) noise to ``log(w)`` and taking the top ``k``
+    yields exactly a weighted sample without replacement, in one vectorised
+    pass rather than ``k`` sequential renormalisations. Zero-weight indices get
+    ``log(0) = -inf`` and are never drawn, which is the correct reading of
+    ``empty_weight=0``.
+
+    ``set_epoch`` reseeds, so each epoch is a fresh draw and a resumed run
+    replays the same epochs.
+    """
+
+    def __init__(
+        self,
+        weights: Sequence[float],
+        *,
+        num_samples_total: Optional[int] = None,
+        seed: int = 0,
+        rank: Optional[int] = None,
+        world_size: Optional[int] = None,
+    ):
+        import torch
+        if rank is None or world_size is None:
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                rank = torch.distributed.get_rank()
+                world_size = torch.distributed.get_world_size()
+            else:
+                rank, world_size = 0, 1
+        self.rank = int(rank)
+        self.world_size = max(1, int(world_size))
+        self.seed = int(seed)
+        self.epoch = 0
+        self._weights = torch.as_tensor(list(weights), dtype=torch.double)
+        n = self._weights.numel()
+        if n == 0:
+            raise ValueError("empty weight vector")
+        if (self._weights < 0).any() or self._weights.sum() <= 0:
+            raise ValueError("weights must be non-negative with positive sum")
+        n_positive = int((self._weights > 0).sum())
+        total = int(num_samples_total or n)
+        if total > n_positive:
+            # Without replacement there is nothing left to draw. Clamping keeps
+            # the epoch honest -- silently topping up with repeats would make
+            # this the with-replacement sampler wearing a different name.
+            print(f"[balanced_sampler] epoch length {total} exceeds the "
+                  f"{n_positive} indices with positive weight; drawing "
+                  f"{n_positive}.")
+            total = n_positive
+        self.num_samples_total = total
+        # Ranks split one global draw, so the per-rank count is a floor, not a
+        # ceil: ceil would make some rank claim indices the draw never made.
+        self.num_samples = total // self.world_size
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def _global_order(self):
+        import torch
+        g = torch.Generator()
+        # Deliberately NOT mixed with rank: every rank must compute the SAME
+        # global draw, or the partition below would overlap.
+        g.manual_seed(self.seed * 1_000_003 + self.epoch * 1_009)
+        u = torch.rand(self._weights.numel(), generator=g, dtype=torch.double)
+        # Gumbel(0,1) = -log(-log(U)); keys = log(w) + gumbel.
+        keys = torch.log(self._weights) - torch.log(-torch.log(u))
+        return torch.topk(keys, self.num_samples_total, sorted=True).indices
+
+    def __iter__(self):
+        order = self._global_order()
+        return iter(order[self.rank::self.world_size][:self.num_samples].tolist())
+
+    def __len__(self) -> int:
+        return self.num_samples
+
+
 def sampler_from_weights_file(
     weights_fpath,
     *,
     dataset_len: int,
     epoch_length: Optional[int] = None,
     seed: int = 0,
-) -> DistributedWeightedRandomSampler:
+    replacement: bool = True,
+):
     """Build the sampler from a sidecar written at launch time.
+
+    ``replacement=False`` makes ONE global draw without replacement and
+    partitions it across ranks, so no tile repeats within an epoch and no two
+    ranks train on the same tile in the same epoch. That is the right mode
+    whenever the epoch is much smaller than the corpus.
 
     ``dataset_len`` must equal the weight count — a mismatch means the
     weights were computed from a different file than the dataset the
@@ -297,7 +397,9 @@ def sampler_from_weights_file(
             f"({dataset_len} images) — the weights were computed from a "
             "different annotation file"
         )
-    return DistributedWeightedRandomSampler(
+    cls = (DistributedWeightedRandomSampler if replacement
+           else DistributedWeightedNoReplacementSampler)
+    return cls(
         weights,
         num_samples_total=(int(epoch_length) if epoch_length else None),
         seed=int(seed),

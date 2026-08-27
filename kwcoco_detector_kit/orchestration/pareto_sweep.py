@@ -127,6 +127,25 @@ class SweepConfig(kwconf.Config):
         0, parser=int,
         help="Seed for the weighted sampler's (seed, epoch, rank) streams.",
     )
+    balance_replacement = kwconf.Value(
+        True,
+        help=(
+            "Draw the epoch WITH replacement (default, historical). False "
+            "makes one global weighted draw without replacement, partitioned "
+            "across ranks -- no tile repeats within an epoch and no two ranks "
+            "train on the same tile. Right whenever the epoch is much smaller "
+            "than the corpus."
+        ),
+    )
+    tail_epochs = kwconf.Value(
+        0, parser=int,
+        help=(
+            "Absolute number of final epochs past stop_epoch (DEIMv2's "
+            "stage-2 / no-aug consolidation phase). 0 keeps upstream's "
+            "proportionally-scaled tail, which shrinks as the schedule "
+            "shortens. Experiment-defining: set in submit script, NOT via env."
+        ),
+    )
     aug_profile = kwconf.Value(
         "full", parser=str,
         help=(
@@ -519,7 +538,9 @@ def _run_train(trainer, *, config, cell, workdir: Path, candidate_id: str) -> Pa
                ),
                "balance_epoch_length": int(config.balance_epoch_length or 0),
                "balance_seed": int(config.balance_seed or 0),
-               "aug_profile": str(config.aug_profile or "full")},
+               "aug_profile": str(config.aug_profile or "full"),
+               "balance_replacement": bool(config.balance_replacement),
+               "tail_epochs": int(config.tail_epochs or 0)},
     )
     # init_ckpt was already resolved + validated above.
     resume_ckpt = config.resume

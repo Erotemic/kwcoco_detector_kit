@@ -109,8 +109,12 @@ echo "  gpus:     ${GPU_FLAGS[*]:-<none (CPU)>}   shm: ${SHM_GB}g"
 echo "  env vars: ${#ENV_FLAGS[@]} forwarded (2 per KCD_* value)"
 echo
 
+# Hosts where the invoking user is not in the `docker` group need `sudo docker`.
+# Elevating only this call keeps paths.sh, $HOME and the run's own environment
+# resolving as the real user -- running the whole submit under sudo would
+# resolve every VF_*/KCD_* default against root's home instead.
 set -x
-docker run --rm \
+${KCD_DOCKER_CMD:-docker} run --rm \
     --label "kcd.run_name=$KCD_RUN_NAME" \
     "${GPU_FLAGS[@]}" \
     --ipc=host \

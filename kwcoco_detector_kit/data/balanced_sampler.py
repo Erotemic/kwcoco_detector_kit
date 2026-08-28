@@ -351,15 +351,34 @@ class DistributedWeightedNoReplacementSampler:
         self.epoch = int(epoch)
 
     def _global_order(self):
+        """The epoch's indices: selected by weight, then ordered at random.
+
+        Two separate steps, and conflating them is a real bug. ``topk`` returns
+        the selected set in DESCENDING key order, which is descending weight
+        order, so feeding it straight to the loader front-loads every epoch
+        with the rarest sequences and ends it with the most common. Measured on
+        the fish weights at 96,000 of 495,514: mean sample weight fell
+        monotonically across the epoch's quartiles (4.81e-6 -> 3.46e-6) and the
+        mean source-sequence length rose from 3,071 to 3,897 tiles. The
+        selection was right and the presentation order was a weight schedule
+        nobody asked for -- batch statistics and BN/EMA would drift across
+        every epoch in lockstep with it.
+
+        Shuffling changes only the ORDER. The selected set, and therefore all
+        of the diversity statistics, are untouched.
+        """
         import torch
         g = torch.Generator()
         # Deliberately NOT mixed with rank: every rank must compute the SAME
-        # global draw, or the partition below would overlap.
+        # global draw, or the rank partition below would overlap.
         g.manual_seed(self.seed * 1_000_003 + self.epoch * 1_009)
         u = torch.rand(self._weights.numel(), generator=g, dtype=torch.double)
         # Gumbel(0,1) = -log(-log(U)); keys = log(w) + gumbel.
         keys = torch.log(self._weights) - torch.log(-torch.log(u))
-        return torch.topk(keys, self.num_samples_total, sorted=True).indices
+        # sorted=False: the order is discarded by the shuffle below anyway.
+        chosen = torch.topk(keys, self.num_samples_total, sorted=False).indices
+        perm = torch.randperm(chosen.numel(), generator=g)
+        return chosen[perm]
 
     def __iter__(self):
         order = self._global_order()

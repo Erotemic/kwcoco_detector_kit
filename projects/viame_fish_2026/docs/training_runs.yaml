@@ -617,9 +617,9 @@ runs:
         tracks. Frames are already uniform, so frame_alpha stays 0.
     hyperparameters:
       per_gpu_batch: 8        # global 32
-      num_epochs: 28
-      tail_epochs: 8          # 20 primary (60k) + 8 tail (24k); upstream's own
-      epoch_length: 96000     # x28 / 32 = 84,000 updates
+      num_epochs: 34
+      tail_epochs: 8          # 26 primary (78k) + 8 tail (24k); upstream's own
+      epoch_length: 96000     # x34 / 32 = 102,000 updates
       sampling: without_replacement   # 96k UNIQUE tiles/epoch, 24k/rank
       lr: 2.5e-4              # halved from gen006, 50:1 ratio preserved
       backbone_lr: 5e-6
@@ -627,8 +627,8 @@ runs:
       aug_profile: tiled_light  # no Mosaic/ZoomOut/IoUCrop, no mixup/copyblend
       balance: {seq_alpha: 0.5, track_alpha: 0.5, empty_weight: 1.0,
                 max_oversample: 8, seed: 0}
-      recipe_at_28_epochs: {policy: [2, 12, 20], flat: 12, no_aug: 8,
-                            stop: 20, matcher: 18, weight_decay: 1.25e-4}
+      recipe_at_34_epochs: {policy: [2, 15, 26], flat: 15, no_aug: 8,
+                            stop: 26, matcher: 23, weight_decay: 1.25e-4}
     expected_effect:
       effective_sequences: 81 -> 238     # probability mass
       effective_tracks: 2963 -> 5306     # probability mass
@@ -672,9 +672,19 @@ runs:
         advanced in cdd7dd6; a source-level contract test now requires every
         kcd_sample_* key to be read by the solver.
       - >-
-        84k updates is a prior, not a law. gen006 peaked at epoch 4 ~= 62k and
-        never beat it over the remaining ~155k. If the stride-8 gen006 epoch
-        ranking peaks materially later, raise num_epochs.
+        OFF-BY-ONE CORRECTED. DEIMv2 labels epochs from zero, so gen006's
+        "epoch 4" of a 0..13 range had completed FIVE epochs: 5 x 15,485 =
+        77,424 updates at the peak, not 62k. An earlier plan sized the primary
+        phase to 60k and would have stopped BEFORE the known peak. Now 78k.
+        Overshooting is nearly free (every epoch staged, stage-2 reloads the
+        best stage-1 checkpoint); undershooting is not recoverable.
+      - >-
+        Selection order is not presentation order. topk returns the drawn set
+        in descending weight order, which front-loaded every epoch with the
+        rarest sequences: measured quartile mean weight fell 4.81e-6 -> 3.46e-6
+        and source-sequence length rose 3,071 -> 3,897. The selected set is now
+        shuffled deterministically before the rank partition; quartiles are
+        flat within 1% and the set is unchanged.
       - >-
         Nothing is discarded. Weighted draw with replacement, redrawn each
         epoch; every tile keeps a strictly positive weight.

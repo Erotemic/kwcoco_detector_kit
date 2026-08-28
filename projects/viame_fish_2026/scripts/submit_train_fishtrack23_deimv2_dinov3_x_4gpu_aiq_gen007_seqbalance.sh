@@ -110,14 +110,29 @@
 #
 # ## The update budget
 #
-#   epoch_length 96,000 tiles x 28 epochs / batch 32 = 84,000 updates
-#     20 primary epochs  = 60,000 updates   (gen006 peaked at ~62k)
+#   epoch_length 96,000 tiles x 34 epochs / batch 32 = 102,000 updates
+#     26 primary epochs  = 78,000 updates   (gen006 peaked at ~77k)
 #      8 tail epochs     = 24,000 updates   (stage-2 / no-aug consolidation)
 #
-# gen006 peaked at epoch 4 of 14 = ~62k updates and never beat it over the
-# remaining ~155k. The primary phase is sized to that observed peak, and the
-# tail is held at EIGHT epochs -- upstream DINOv3-X's own absolute tail length
-# at 58 epochs.
+# ## The peak was at 77k updates, not 62k
+#
+# DEIMv2 labels epochs from ZERO. gen006's best checkpoint is labelled epoch 4
+# of a 0..13 range, so it had completed FIVE epochs, not four:
+#
+#     495,514 tiles / batch 32          = 15,485 updates per epoch
+#     5 completed epochs x 15,485       = 77,424 updates at the peak
+#
+# An earlier version of this script counted four epochs and sized the primary
+# phase to 60k -- which would have STOPPED PRIMARY TRAINING BEFORE the point
+# gen006 actually peaked. The primary phase is now 78k, just past it.
+#
+# Overshooting is close to free here and undershooting is not: every epoch is
+# staged, and DEIMv2 reloads the best stage-1 checkpoint when it enters stage 2,
+# so extra primary epochs cannot lose an earlier better checkpoint. They can
+# only cost wall time.
+#
+# The tail is held at EIGHT epochs -- upstream DINOv3-X's own absolute tail
+# length at 58 epochs.
 #
 # Proportional scaling would have given a 4-epoch tail at 28 epochs and a
 # 2-epoch tail at 14. That is backwards: the phase that consolidates shrinks
@@ -130,8 +145,9 @@
 # and WHICH tiles are seen is redrawn every epoch.
 #
 # REFINE THIS IF THE STRIDE-8 CURVE ARRIVES. If gen006's tiled epoch ranking
-# peaks materially later than epoch 4, raise KCD_NUM_EPOCHS accordingly; the
-# 84k here encodes "peaks at 4" as the current best estimate, not a law.
+# peaks materially later than label 4, raise KCD_NUM_EPOCHS accordingly; the
+# 102k here encodes "peaks after 5 epochs" as the current best estimate, not a
+# law. Remember the zero-indexing when reading that curve.
 #
 # ## Lighter augmentation
 #
@@ -152,7 +168,7 @@
 # ## NOT LAUNCHED AUTOMATICALLY
 #
 # This script is reviewed before it is run. Nothing in it is irreversible, but
-# it occupies all four GPUs for ~11 h.
+# it occupies all four GPUs for ~13 h.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -162,9 +178,15 @@ source "$SCRIPT_DIR/paths.sh"
 # KCD_TILE_SIZE_ONDISK is deliberately excluded: paths.sh has already derived
 # it from the tile cache metadata, and unsetting it leaves the eval window
 # EMPTY rather than forcing a recomputation.
+# KCD_ROOT is included deliberately. _launch_train.sh takes it as
+# ${KCD_ROOT:-$KCD_RUNS_DPATH/$KCD_RUN_NAME}, so a value left over from a
+# previous run in the same shell silently redirects this run's entire output
+# tree -- checkpoints, staging, journal -- into that older run's directory,
+# where it can collide with or be mistaken for it. There is no situation in
+# which gen007 should write anywhere but its own KCD_RUN_NAME.
 for _stale in KCD_FLAT_EPOCH KCD_INIT_CHECKPOINT KCD_TRAIN_FROM_SCRATCH \
               KCD_FORCE_EVAL KCD_BALANCE_EPOCH_LENGTH KCD_AUG_PROFILE \
-              KCD_TAIL_EPOCHS KCD_BALANCE_REPLACEMENT; do
+              KCD_TAIL_EPOCHS KCD_BALANCE_REPLACEMENT KCD_ROOT; do
     if [ -n "${!_stale:-}" ]; then
         echo "  note: clearing inherited $_stale=${!_stale}" >&2
         unset "$_stale"
@@ -183,7 +205,7 @@ export KCD_CATEGORY_NAMES=fish
 export KCD_NUM_GPUS=4
 export KCD_PER_GPU_BATCH=8              # global 32, upstream's LR pairing
 export KCD_VAL_BATCH_MULT=1
-export KCD_NUM_EPOCHS=28
+export KCD_NUM_EPOCHS=34
 export KCD_INPUT_HW="[1024, 1024]"
 export KCD_TRAIN_POLICY=fixed
 export KCD_LR=2.5e-4                    # halved from gen006
@@ -204,7 +226,7 @@ export KCD_BALANCE_SEQ_ALPHA=0.5
 export KCD_BALANCE_TRACK_ALPHA=0.5
 export KCD_BALANCE_EMPTY_WEIGHT=1.0     # a negative tile ~ an average positive
 export KCD_BALANCE_MAX_OVERSAMPLE=8
-export KCD_BALANCE_EPOCH_LENGTH=96000   # x28 / batch 32 = 84k updates
+export KCD_BALANCE_EPOCH_LENGTH=96000   # x34 / batch 32 = 102k updates
 export KCD_BALANCE_SEED=0
 
 # One global draw WITHOUT replacement, partitioned across the 4 ranks.
@@ -221,7 +243,7 @@ export KCD_BALANCE_SEED=0
 # reduced epoch length exists to avoid.
 export KCD_BALANCE_REPLACEMENT=False
 
-# Absolute stage-2/no-aug tail. 28 - 8 = 20 primary epochs.
+# Absolute stage-2/no-aug tail. 34 - 8 = 26 primary epochs = 78k updates.
 export KCD_TAIL_EPOCHS=8
 
 # Sequence identity lives ONLY in the untiled bundle: the tiler stamps
@@ -264,13 +286,33 @@ export KCD_DO_BENCH=False
 export KCD_TIME_LIMIT="${KCD_TIME_LIMIT:-24:00:00}"
 export KCD_NO_SLURM="${KCD_NO_SLURM:-1}"   # no slurm on aiq-gpu; run directly
 export KCD_DOCKER_GPU_MODE="${KCD_DOCKER_GPU_MODE:-gpus}"
-export KCD_IMAGE="${KCD_IMAGE:-kwcoco-detector-kit:ogdino-cu132-aiq}"
+# PINNED, not ${KCD_IMAGE:-...}. The image is the reproducibility unit: it
+# bakes the DEIMv2 submodule at its committed pointer, and that pointer is what
+# carries the solver fix which makes KCD_BALANCE_REPLACEMENT=False take effect
+# at all. An inherited KCD_IMAGE from an earlier experiment would run this
+# config against an older fork and train with the with-replacement sampler
+# while every log line here claimed otherwise. Override by editing this line,
+# so the change is a reviewed diff rather than an ambient variable.
+export KCD_IMAGE=kwcoco-detector-kit:ogdino-cu132-aiq
 export KCD_TRAIN_NUM_WORKERS="${KCD_TRAIN_NUM_WORKERS:-8}"
 export KCD_VAL_NUM_WORKERS="${KCD_VAL_NUM_WORKERS:-4}"
 export KCD_NCCL_BLOCKING_WAIT="${KCD_NCCL_BLOCKING_WAIT:-0}"
 
 RUN_NAME="$(basename "${BASH_SOURCE[0]}" .sh)"
 export KCD_RUN_NAME="${RUN_NAME#submit_train_}"
+
+# The schedule is DERIVED by _deimv2_recipe.retarget_tail, not set here. Assert
+# the arithmetic this script's comments are written around, so a change to the
+# derivation surfaces before 13 h of GPU rather than after.
+_expected_primary=$(( (KCD_NUM_EPOCHS - KCD_TAIL_EPOCHS) * KCD_BALANCE_EPOCH_LENGTH
+                      / (KCD_PER_GPU_BATCH * KCD_NUM_GPUS) ))
+if [ "$_expected_primary" -lt 70000 ] || [ "$_expected_primary" -gt 86000 ]; then
+    echo "ERROR: primary phase is $_expected_primary updates; expected ~78k." >&2
+    echo "  gen006 peaked at ~77k (5 completed epochs x 15,485). Sizing the" >&2
+    echo "  primary phase below that stops before the known peak." >&2
+    exit 1
+fi
+unset _expected_primary
 
 echo "gen007 -- sequence/track-balanced sampling"
 echo "  init:       COCO pretrained, fresh"
@@ -285,10 +327,10 @@ echo "              draw: WITHOUT replacement -- 96k UNIQUE tiles/epoch, 24k/ran
 echo "                    zero cross-rank overlap (vs 19.0% wasted with replacement)"
 echo "              negatives: 21.1% of the draw (corpus 20.8%)"
 echo "  aug:        $KCD_AUG_PROFILE (no Mosaic/ZoomOut/IoUCrop, no mixup/copyblend)"
-echo "  schedule:   policy [2, 12, 20], flat 12, no_aug 8, stop 20, matcher 18"
-echo "              (20 primary + 8 tail epochs; mixup/copyblend disabled)"
+echo "  schedule:   policy [2, 15, 26], flat 15, no_aug 8, stop 26, matcher 23"
+echo "              (26 primary = 78k updates + 8 tail = 24k; mixup/copyblend off)"
 echo "  eval:       tiled, ${KCD_TILED_EVAL_WINDOW}px window, overlap $KCD_TILED_EVAL_OVERLAP"
-echo "  expect:     ~11 h"
+echo "  expect:     ~13 h"
 echo
 
 exec bash "$SCRIPT_DIR/_submit_train.sh"

@@ -98,8 +98,8 @@ dominant ones less while the full corpus stays reachable.
 
 - **sampling** seq_α 0.5, track_α 0.5, empty_weight 1.0, cap 8, seed 0,
   **without replacement**
-- **epoch** 96,000 tiles × 28 epochs / batch 32 = **84,000 updates**,
-  split **20 primary (60k) + 8 tail (24k)**
+- **epoch** 96,000 tiles × 34 epochs / batch 32 = **102,000 updates**,
+  split **26 primary (78k) + 8 tail (24k)**
 - **augmentation** `tiled_light` — drops Mosaic, RandomZoomOut, RandomIoUCrop;
   disables mixup/copyblend. All five assume each sample is an independent
   scene; these samples are 1229px crops of video frames, so the crop diversity
@@ -107,18 +107,36 @@ dominant ones less while the full corpus stays reachable.
   sensor cannot produce. Photometric distortion and horizontal flip stay.
 - **lr** 2.5e-4 / 5e-6 — both halved from gen006, keeping upstream's 50:1
   head/backbone ratio, which is the part DINOv3-X was actually tuned with.
-- **schedule** policy [2, 12, 20], flat 12, no_aug 8, stop 20, matcher 18,
+- **schedule** policy [2, 15, 26], flat 15, no_aug 8, stop 26, matcher 23,
   wd 1.25e-4, mixup/copyblend at the disabled sentinel (40000, 15000).
-- expected ~11 h on 4 GPUs, versus gen006's 27.9 h.
+- expected ~13 h on 4 GPUs, versus gen006's 27.9 h.
 
-### Why 84k updates
+### Why 102k updates — and a corrected off-by-one
 
-gen006 peaked at epoch 4 ≈ 62k updates and never beat it across the remaining
-~155k. 84k gives that observed peak room plus margin at a third of gen006's
-217k. Each tile is now seen ~5.4 times across the whole run instead of 14, and
-*which* tiles are seen is redrawn every epoch. The 28 stages also give the LR
-cosine and the augmentation state machine real resolution instead of gen006's
-coarse 14.
+**DEIMv2 labels epochs from zero.** gen006's best checkpoint is labelled epoch
+4 in a 0–13 range, so it had completed **five** epochs:
+
+    495,514 tiles / batch 32     = 15,485 updates per epoch
+    5 completed epochs × 15,485  = 77,424 updates at the peak
+
+An earlier version of this plan read that label as four epochs, put the peak at
+~62k, and sized gen007's primary phase to 60k — which would have **stopped
+primary training before the point gen006 actually peaked**, guaranteeing a
+worse run for a reason that had nothing to do with the data.
+
+Corrected: 26 primary epochs = 78k updates, just past the observed peak, plus
+the 8-epoch tail = 102k total. Overshooting is nearly free — every epoch is
+staged and DEIMv2 reloads the best stage-1 checkpoint on entering stage 2, so
+extra primary epochs cannot lose an earlier better checkpoint, only wall time.
+Undershooting is not recoverable.
+
+Each tile is still seen only ~6.6 times across the whole run against gen006's
+14, and *which* tiles are seen is redrawn every epoch. The 34 stages also give
+the LR cosine and the augmentation state machine real resolution instead of
+gen006's coarse 14.
+
+*(Credit to the external review for the off-by-one. It is the kind of error
+that survives review precisely because 62k and 77k are both plausible.)*
 
 **This is a prior, not a law.** If the stride-8 gen006 epoch ranking shows the
 tiled peak materially later than epoch 4, raise `KCD_NUM_EPOCHS`.
@@ -186,6 +204,34 @@ step on the same tile.
 (equivalently Efraimidis–Spirakis) with the same seed on every rank, then rank
 `r` takes `order[r::world_size]`. Verified on the real weights: 96,000 unique,
 24,000 per rank, **zero cross-rank overlap**, 0.4 s for all four ranks.
+
+### Selection order is not presentation order
+
+`topk` returns the selected set in **descending weight order**, and that order
+went straight to the loader. Every epoch was therefore front-loaded with the
+rarest sequences and ended with the most common — a weight schedule nobody
+asked for, which batch statistics and EMA would track across the whole epoch.
+Measured on the real weights at 96,000 of 495,514:
+
+| quartile of epoch | mean sample weight | mean source-sequence length |
+|---|---|---|
+| 1st | 4.81e-6 | 3,071 |
+| 2nd | 4.37e-6 | 3,293 |
+| 3rd | 3.89e-6 | 3,625 |
+| 4th | 3.46e-6 | 3,897 |
+
+Monotone in both columns. After shuffling the selected set (deterministically,
+identically on every rank, *before* the rank partition):
+
+| quartile | mean weight | mean seq length |
+|---|---|---|
+| 1st | 4.128e-6 | 3,466 |
+| 2nd | 4.116e-6 | 3,507 |
+| 3rd | 4.157e-6 | 3,450 |
+| 4th | 4.121e-6 | 3,464 |
+
+Flat within 1%, and still 96,000 unique. **Only the order changed** — the
+selected set, and every diversity statistic above, are untouched.
 
 ### Negatives survive the reweighting
 

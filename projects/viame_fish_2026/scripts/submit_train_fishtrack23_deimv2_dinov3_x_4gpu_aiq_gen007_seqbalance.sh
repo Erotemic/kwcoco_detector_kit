@@ -174,6 +174,34 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/paths.sh"
 
+# ============================================================
+# Splits -- PINNED to the tiled bundles, before anything reads them
+# ============================================================
+# paths.sh defaults KCD_TRAIN_KWCOCO/KCD_VALI_KWCOCO to the UNTILED bundles.
+# Training on those would run at 1920x1080 whole-frame scale, not the 1229px
+# tile scale this recipe, the eval window and the sequence weights are all
+# built around -- and the weights would be positionally meaningless, since they
+# are computed per TILE and the dataset would have 251,143 frames rather than
+# 495,514 tiles.
+#
+# Assigned here rather than relied upon: with a stale KCD_TRAIN_KWCOCO exported
+# in the calling shell the run would silently proceed on whatever that pointed
+# at. The dataset a 13 h run trains on is not something to leave to ambient
+# state.
+#
+# Validation is the tiled vali bundle too. DEIMv2's in-loop validation is what
+# writes best_stg1.pth and drives the stage-2 reload, so scoring it on whole
+# frames would select checkpoints at a scale the model never trains at. The
+# separate true-tiled full-resolution scoring happens afterwards, on the staged
+# epochs.
+kcd_require_path "tiled train bundle" "$KCD_TILE_TRAIN_KWCOCO" || {
+    echo "  Build it first: bash $SCRIPT_DIR/submit_build_tiles.sh" >&2; exit 1; }
+kcd_require_path "tiled vali bundle" "$KCD_TILE_VALI_KWCOCO" || exit 1
+export KCD_TRAIN_KWCOCO="$KCD_TILE_TRAIN_KWCOCO"
+export KCD_VALI_KWCOCO="$KCD_TILE_VALI_KWCOCO"
+export KCD_TEST_KWCOCO="$VF_TEST_KWCOCO"        # required by the CLI contract;
+                                                # do_eval=False keeps it unread
+
 # Inherited experiment-defining variables are cleared, exactly as gen006 does.
 # KCD_TILE_SIZE_ONDISK is deliberately excluded: paths.sh has already derived
 # it from the tile cache metadata, and unsetting it leaves the eval window

@@ -289,6 +289,43 @@ the line was present at `_solver.py:102`. The real defect was the uncommitted
 submodule, which is worse: it is invisible to source inspection and would have
 shipped in the image.)*
 
+## The launcher trained on the wrong split
+
+gen007 shipped without gen006's block that reassigns the splits:
+
+```bash
+export KCD_TRAIN_KWCOCO="$KCD_TILE_TRAIN_KWCOCO"
+export KCD_VALI_KWCOCO="$KCD_TILE_VALI_KWCOCO"
+```
+
+`paths.sh` defaults both to the **untiled** bundles. Without the reassignment
+gen007 would have trained at 1920×1080 whole-frame scale instead of the 1229px
+tile scale that the recipe, the eval window and the sampler weights are all
+built around — and the weights would have been positionally meaningless
+besides, being one-per-tile over a 495,514-tile corpus while the dataset held
+251,143 frames.
+
+In a clean shell it aborted on its own `KCD_TILE_SOURCE_KWCOCO ==
+KCD_TRAIN_KWCOCO` guard, which is fail-closed and the right behaviour — but
+that guard was written to catch a *misconfiguration*, and it was catching an
+omission the script should never have contained. With a stale
+`KCD_TRAIN_KWCOCO` exported in the calling shell it would have run, on the
+wrong data, silently.
+
+Validation is pinned to the tiled bundle too, not just training: DEIMv2's
+in-loop validation writes `best_stg1.pth` and drives the stage-2 reload, so
+scoring it on whole frames would select checkpoints at a scale the model never
+trains at.
+
+`test_launcher_pins_tiled_splits.py` now requires any launcher that sets
+`KCD_BALANCE_SEQUENCE=True` to pin both splits from their `KCD_TILE_*`
+counterparts, *before* anything reads them, and to keep the source-vs-train
+guard. Confirmed to fail with the block removed and pass with it restored.
+
+A clean-shell dry run now reaches `READY_TO_LAUNCH` with
+`train: .../tiles_1024/train/tiles.kwcoco.json` and
+`sequences: .../bundle/train.kwcoco.json`.
+
 ## The Docker gate, and what it caught
 
 The gate ran and **failed** on the first attempt — not on anything in gen007,

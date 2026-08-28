@@ -289,6 +289,46 @@ the line was present at `_solver.py:102`. The real defect was the uncommitted
 submodule, which is worse: it is invisible to source inspection and would have
 shipped in the image.)*
 
+## The Docker gate, and what it caught
+
+The gate ran and **failed** on the first attempt — not on anything in gen007,
+but on dependency drift that had been latent for a while:
+
+    RuntimeError: The "kwcoco.channel_spec" module was deprecated in kwcoco
+    0.8.4, will cause an error in kwcoco 0.9.0 ... use delayed_image.channel_spec
+
+`kwcoco>=0.8` is unpinned, kwcoco 0.9.0 removed `ChannelSpec`,
+`FusedChannelSpec` and `SensorChanSpec` from the `kwcoco` namespace, and the
+vendored `tpl/kwcoco_dataloader` still used all three — 13 references across 4
+modules. Any fresh image build would have failed identically.
+
+This was invisible locally: `kwcoco_dataloader` is not installed in a plain
+checkout, so all 8 `test_kwcoco_sampler.py` tests **skip**. They only run
+inside the image, where the submodule is installed. A test suite that is green
+because its subject is absent is worth knowing about.
+
+Fixed by migrating the submodule to `delayed_image` (its actual implementation
+all along, so no behaviour change and it works on kwcoco either side of 0.9)
+rather than pinning `kwcoco<0.9`. Pinning was tried first and rejected — it
+would have frozen a core dependency to dodge a one-line-per-site import fix.
+Submodule commit `447fc78`.
+
+Result: the image builds clean against **unpinned kwcoco 0.9.0**, the full
+in-image suite passes, and the baked provenance labels match local HEAD for
+both forks:
+
+    kcd.deimv2_sha            1e6339dcf351   (solver honours kcd_sample_replacement)
+    kcd.kwcoco_dataloader_sha 447fc78f41a2   (delayed_image migration)
+
+Verified inside the built image: `kwcoco 0.9.0`, `kwcoco_dataloader` imports,
+the no-replacement sampler draws 40 unique of 40, and `_solver.py:102` carries
+the `replacement=` forward.
+
+Also needed on this host: `docker-buildx` was absent (Docker 29 ships no
+builder by default) and the Dockerfile requires BuildKit — it is
+`# syntax=docker/dockerfile:1.7` with `RUN --mount=type=cache` throughout, so
+the legacy builder is not a substitute. Installed via the distro package.
+
 ## A correction about verification
 
 `dev/check_undefined_names.py` called `Path(root).rglob("*.py")`, which yields

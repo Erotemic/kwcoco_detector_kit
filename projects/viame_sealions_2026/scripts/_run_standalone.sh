@@ -19,8 +19,19 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Load the CALLING project's paths.sh, not this directory's. This script is
+# shared the same way _sbatch_train.sh is (see viame_fish_2026's
+# _submit_train.sh), and every path below -- the mounts, the workdir and the
+# launch script -- already resolves through $KCD_REPO_ROOT. Sourcing this
+# directory's paths.sh regardless would hand a fish run the sea-lion bundles.
+# Mirrors _sbatch_train.sh:25-28. Falls back to SCRIPT_DIR so a sea-lion
+# wrapper that does not set KCD_REPO_ROOT keeps working unchanged.
 # shellcheck source=./paths.sh
-source "$SCRIPT_DIR/paths.sh"
+if [ -n "${KCD_REPO_ROOT:-}" ] && [ -f "$KCD_REPO_ROOT/scripts/paths.sh" ]; then
+    source "$KCD_REPO_ROOT/scripts/paths.sh"
+else
+    source "$SCRIPT_DIR/paths.sh"
+fi
 
 : "${KCD_RUN_NAME:?_run_standalone.sh: KCD_RUN_NAME must be set}"
 # Default to the locally-built auto-profile image (build_auto.sh tags

@@ -47,6 +47,27 @@ export KCD_LAUNCH_SCRIPT="${KCD_LAUNCH_SCRIPT:-_launch_train.sh}"
 kcd_require_init_checkpoint "$KCD_VARIANT" || exit 1
 kcd_require_train_inputs || exit 1
 
+# No-slurm hosts run the job directly via `docker run` in the foreground.
+# aiq-gpu has no slurm at all -- no sbatch binary, slurmd/slurmctld inactive --
+# so without this branch every submit_train_*.sh here dies on `sbatch: command
+# not found` AFTER passing all its preflight checks. The sea-lion project's
+# _submit_train.sh has had this branch; the fish one did not.
+#
+# _run_standalone.sh is shared exactly like _sbatch_train.sh, and honours the
+# KCD_REPO_ROOT exported above, so it loads THIS project's paths.sh.
+KCD_SHARED_STANDALONE="${KCD_SHARED_STANDALONE:-$KCD_KIT_DPATH/projects/viame_sealions_2026/scripts/_run_standalone.sh}"
+if [ "${KCD_NO_SLURM:-0}" = "1" ]; then
+    kcd_require_path "shared _run_standalone.sh" "$KCD_SHARED_STANDALONE" || exit 1
+    exec bash "$KCD_SHARED_STANDALONE"
+fi
+
+if ! command -v sbatch >/dev/null 2>&1; then
+    echo "ERROR: sbatch not found and KCD_NO_SLURM is not 1." >&2
+    echo "  This host has no slurm. Re-run with KCD_NO_SLURM=1 to launch" >&2
+    echo "  directly via docker, or set it in the submit_*.sh wrapper." >&2
+    exit 1
+fi
+
 LOG_DPATH="${LOG_DPATH:-$KCD_SLURM_LOG_DPATH}"
 FOLLOW="${FOLLOW:-auto}"
 mkdir -p "$LOG_DPATH"

@@ -210,10 +210,31 @@ def main() -> int:
         return 1
 
     summary = out_root / f"summary_w{window}_o{overlap}_bf16_s{stride}.json"
+    # MERGE rather than overwrite. Scoring one more run later -- gen006 after
+    # gen001/gen003/gen007, say -- would otherwise silently drop every row it
+    # did not recompute, and the next reader would think those runs were never
+    # measured. Rows for the runs scored in THIS pass replace their previous
+    # entries; everything else is carried forward. Safe because the filename
+    # already pins window, overlap and stride, so a merge can only ever join
+    # rows measured under the same protocol.
+    merged = rows
+    if summary.exists():
+        try:
+            prior = json.loads(summary.read_text()).get("rows", [])
+        except (json.JSONDecodeError, OSError) as ex:
+            print(f"  WARN: could not read {summary} ({ex}); overwriting",
+                  file=sys.stderr)
+            prior = []
+        scored_now = {r["run"] for r in rows}
+        carried = [r for r in prior if r["run"] not in scored_now]
+        if carried:
+            print(f"  carrying forward {len(carried)} row(s) from "
+                  f"{len({r['run'] for r in carried})} previously-scored run(s)")
+        merged = carried + rows
     summary.write_text(json.dumps(
         {"window": window, "overlap": overlap, "split": target,
          "stride": stride, "stage": stage, "full_split": vali,
-         "amp": os.environ.get("KCD_AMP_DTYPE", "bfloat16"), "rows": rows},
+         "amp": os.environ.get("KCD_AMP_DTYPE", "bfloat16"), "rows": merged},
         indent=2) + "\n")
 
     print()

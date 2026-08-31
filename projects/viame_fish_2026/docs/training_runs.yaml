@@ -599,7 +599,19 @@ runs:
 #
 # Rule: decide on vali, score test once, on the model already chosen.
   - id: fishtrack23_deimv2_dinov3_x_4gpu_aiq_gen007_seqbalance
-    status: planned          # written and tested; NOT launched
+    status: complete
+    epochs_completed: 34     # of 34 -- .train_complete written
+    wall_time: 18h44m train / ~5h phase-3 scoring
+    results:                 # true-tiled 1229px, chosen on vali, test for record
+      vali_AP50: 0.7311      # epoch 6
+      test_AP50: 0.6763      # epoch 6
+      in_loop_best: {epoch: 27, coco_eval_bbox: 0.5238}   # tile-level surrogate
+      note: >-
+        FAILED its pre-registered criterion (>= B + 0.01 = 0.7789) by 0.048,
+        and regressed against gen006 by 0.0215 vali / 0.0195 test. Every
+        mechanism worked as designed and measured -- effective sequences
+        81 -> 195, tracks 2901 -> 5461, duplicate draws 19.0% -> 0, zero NaN
+        across 34 epochs. Mechanical success, outcome failure.
     purpose: >-
       Treat the corpus as 439 video sequences rather than 495,514 independent
       samples. gen006 ran the recipe correctly and still peaked at epoch 4 of
@@ -688,6 +700,42 @@ runs:
       - >-
         Nothing is discarded. Weighted draw with replacement, redrawn each
         epoch; every tile keeps a strictly positive weight.
+
+# ===========================================================================
+# ONE PROTOCOL, FOUR GENERATIONS  (2026-08-31)
+# true-tiled 1229px, overlap 0.25, keep_full, bf16. Checkpoints chosen on VALI
+# (stride 8); test scored afterwards, for the record, deciding nothing.
+# See docs/journals/2026-08-31_tiling_hypothesis_falsified.md
+# ===========================================================================
+frozen_protocol_results:
+  protocol: true-tiled 1229px source window, overlap 0.25, keep_full, NMS 0.5, bf16
+  vali_stride: 8
+  test_split: full (33,434 images)
+  rows:
+    - {run: gen003_bf16_fresh, trained_on: whole_frames, ckpt: autoselect, vali_AP50: 0.7689, test_AP50: 0.7012}
+    - {run: gen001,            trained_on: whole_frames, ckpt: autoselect, vali_AP50: 0.7658, test_AP50: 0.6981}
+    - {run: gen006_final,      trained_on: tiles_1229,   ckpt: epoch_0003, vali_AP50: 0.7526, test_AP50: 0.6958}
+    - {run: gen007_seqbalance, trained_on: tiles_1229,   ckpt: epoch_0006, vali_AP50: 0.7311, test_AP50: 0.6763}
+  findings:
+    - >-
+      TILE-SCALE TRAINING DID NOT HELP. Both whole-frame runs beat both
+      tile-trained runs on BOTH splits, monotonically. This is the opposite of
+      the premise gen005/gen006/gen007 were built on.
+    - >-
+      Vali rank order and test rank order are IDENTICAL, and the vali->test gap
+      is near-constant (-0.055 to -0.068). The frozen vali protocol is a sound
+      selection proxy; every decision made on it would have been made the same
+      way on test.
+    - >-
+      Selecting under deployment geometry beat DEIMv2's in-loop tile-level
+      selection on both tiled runs (gen007 epoch 6 vs its epoch 27; gen006
+      epoch 3 vs its epoch 4). Keep the staging + true-tiled selection.
+    - >-
+      OPEN, NOT ESTABLISHED: gen001's older WHOLE-IMAGE eval reported vali
+      0.8060 / test 0.7272 against true-tiled 0.7658 / 0.6981 -- tiled
+      inference ~4 points LOWER on the same model. The two came from different
+      eval entry points and may differ in score_thresh / max_dets / distractor
+      handling. Verify with one model through one code path before acting.
 
 holdout_discipline:
   split: test

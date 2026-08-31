@@ -41,3 +41,5 @@ Keep code references precise (`file.py:line` plus commit SHAs).
   epoch 4](2026-08-27_gen006_completed.md)
 - [2026-08-27 — the corpus is 81 effective sequences, not 495,514
   samples](2026-08-27_sequence_imbalance_and_gen007.md)
+- [2026-08-31 — the tiling hypothesis, falsified on both
+  splits](2026-08-31_tiling_hypothesis_falsified.md)

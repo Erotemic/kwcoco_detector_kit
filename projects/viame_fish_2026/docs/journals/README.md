@@ -43,3 +43,5 @@ Keep code references precise (`file.py:line` plus commit SHAs).
   samples](2026-08-27_sequence_imbalance_and_gen007.md)
 - [2026-08-31 — the tiling hypothesis, falsified on both
   splits](2026-08-31_tiling_hypothesis_falsified.md)
+- [2026-08-31 — running jobs on aiq-gpu, and five ways a check said
+  "fine"](2026-08-31_operations_and_silent_verification.md)

@@ -1,5 +1,24 @@
 # viame_fish_2026
 
+> **Read before proposing a training experiment.** Tiling has lost twice, on
+> both splits, under one protocol
+> ([2026-08-31](docs/journals/2026-08-31_tiling_hypothesis_falsified.md)):
+>
+> | run | trained on | vali AP@0.5 | test AP@0.5 |
+> |---|---|---|---|
+> | **gen003** | whole frames | **0.7689** | **0.7012** |
+> | gen001 | whole frames | 0.7658 | 0.6981 |
+> | gen006 | 1229px tiles | 0.7526 | 0.6958 |
+> | gen007 | tiles + seq/track balance | 0.7311 | 0.6763 |
+>
+> gen007's mechanisms all worked and were measured working — effective
+> sequences 81 → 195, tracks 2,901 → 5,461, duplicate draws 19.0% → 0, zero NaN
+> across 34 epochs. It still came last. **A diversity metric improving is not
+> evidence that generalisation will improve.**
+>
+> gen003's recipe is still the thing to beat. A proposal that keeps tiling
+> needs to say why this evidence does not apply to it.
+
 Systematic host-side runbook for NOAA FishTrack23 VIAME detector training.
 Project source lives here; large data, VIAME binaries, generated chips, logs,
 checkpoints, and model packages live outside the git checkout.

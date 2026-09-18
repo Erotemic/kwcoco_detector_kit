@@ -9,3 +9,6 @@
 	path = tpl/kwcoco_dataloader
 	url = https://gitlab.kitware.com/computer-vision/kwcoco_dataloader.git
 	branch = dev/0.1.3
+[submodule "tpl/rf-detr"]
+	path = tpl/rf-detr
+	url = https://github.com/roboflow/rf-detr.git

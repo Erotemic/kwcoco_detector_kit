@@ -55,6 +55,7 @@ Quadrant tiles additionally carry::
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -99,6 +100,14 @@ class TileConfig(kwconf.Config):
             "optional deterministic materialization cache. When set, tile "
             "manifests point directly at validated hash-addressed assets so "
             "identical windows are reused across immutable training rounds"
+        ),
+    )
+    source_dataset_fingerprint = kwconf.Value(
+        None,
+        help=(
+            "optional stable identity of the logical source dataset. Use this "
+            "when src is a regenerated selection manifest; the immediate src "
+            "manifest hash is still recorded separately for stale checks"
         ),
     )
     progress = kwconf.Value(True, help="show ubelt.ProgIter progress")
@@ -153,6 +162,14 @@ class TileConfig(kwconf.Config):
         ),
     )
     keep_negative = kwconf.Value(True, help="multiscale: also emit negative tiles for hard-neg mining")
+    negative_keep_fraction = kwconf.Value(
+        1.0,
+        help=(
+            "multiscale: deterministic fraction of legal negative windows to "
+            "materialize. Applied before image encoding; 1.0 keeps all and "
+            "0.0 keeps none"
+        ),
+    )
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -186,6 +203,18 @@ def _resize_with_long_side(image, max_dim: int):
     except NotImplementedError:
         resized = kwimage.imresize(image, dsize=(new_w, new_h), interpolation="linear")
     return resized, scale
+
+
+def _keep_negative_window(*, fraction, seed, source_gid, scale_name, x0, y0):
+    """Deterministically sample a negative before paying its encode/write cost."""
+    fraction = float(fraction)
+    if fraction <= 0:
+        return False
+    if fraction >= 1:
+        return True
+    key = f"{int(seed)}:{source_gid}:{scale_name}:{int(x0)}:{int(y0)}".encode()
+    value = int.from_bytes(hashlib.sha256(key).digest()[:8], "big")
+    return value < int(fraction * (1 << 64))
 
 
 def _resize_image_to_scale(image, scale: float):
@@ -247,7 +276,12 @@ class _TileWriter:
         self.src_dset = src_dset
         self.dst_fpath = dst_fpath
         self.asset_dpath = asset_dpath
-        self.dataset_fingerprint = sha256_file(src_fpath)
+        self.source_manifest_sha256 = sha256_file(src_fpath)
+        self.dataset_fingerprint = (
+            str(config.source_dataset_fingerprint)
+            if config.source_dataset_fingerprint
+            else self.source_manifest_sha256
+        )
         self._source_digests = {}
         cache_dpath = getattr(config, "cache_dpath", None)
         if cache_dpath:
@@ -540,6 +574,8 @@ def _run_full_only(config, src_dset, dst_fpath, asset_dpath, target_cat_names, s
 
     full_dim = int(config.full_dim)
     out = _init_out(config, target_cat_names, "full_only")
+    out["info"][0]["source_manifest_sha256"] = writer.source_manifest_sha256
+    out["info"][0]["source_dataset_fingerprint"] = writer.dataset_fingerprint
     next_gid = 1
     next_ann_id = 1
 
@@ -613,6 +649,8 @@ def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_names, sr
     import ubelt as ub
 
     out = _init_out(config, target_cat_names, "quadrant")
+    out["info"][0]["source_manifest_sha256"] = writer.source_manifest_sha256
+    out["info"][0]["source_dataset_fingerprint"] = writer.dataset_fingerprint
     next_gid = 1
     next_ann_id = 1
     full_dim = int(config.full_dim)
@@ -760,8 +798,13 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
     min_gt_area_abs = float(config.min_gt_area_frac) * (base_tile_size * base_tile_size)
     min_keep = float(config.min_keep_fraction)
     safety_margin = max(0, int(config.negative_safety_margin))
+    negative_keep_fraction = float(config.negative_keep_fraction)
+    if not 0 <= negative_keep_fraction <= 1:
+        raise ValueError("negative_keep_fraction must be between 0 and 1")
 
     out = _init_out(config, target_cat_names, "multiscale")
+    out["info"][0]["source_manifest_sha256"] = writer.source_manifest_sha256
+    out["info"][0]["source_dataset_fingerprint"] = writer.dataset_fingerprint
     next_gid = 1
     next_ann_id = 1
     n_pos = 0
@@ -866,9 +909,18 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
                     else:
                         role = "negative"
 
-                    if role == "negative" and not bool(config.keep_negative):
-                        n_neg_dropped += 1
-                        continue
+                    if role == "negative":
+                        keep_this_negative = bool(config.keep_negative) and _keep_negative_window(
+                            fraction=negative_keep_fraction,
+                            seed=config.seed,
+                            source_gid=gid,
+                            scale_name=scale_name,
+                            x0=x0,
+                            y0=y0,
+                        )
+                        if not keep_this_negative:
+                            n_neg_dropped += 1
+                            continue
 
                     src_x0 = int(round(x0 / max(actual_scale, 1e-6)))
                     src_y0 = int(round(y0 / max(actual_scale, 1e-6)))
@@ -960,13 +1012,14 @@ def _init_out(config, target_cat_names, mode_label):
             "src": str(config.src),
             "config": {k: getattr(config, k) for k in [
                 "mode", "category_names", "output_ext", "jpeg_quality",
-                "cache_dpath",
+                "cache_dpath", "source_dataset_fingerprint",
                 "oversize_factor", "min_keep_fraction",
                 "full_dim", "keep_full",
                 "tile_grid", "tile_overlap", "tile_output_dim",
                 "tile_size", "source_scales", "stride_frac",
                 "min_gt_area_frac", "min_source_scale_long_side",
                 "negative_safety_margin", "keep_negative",
+                "negative_keep_fraction", "seed",
             ]},
         }],
         "categories": [

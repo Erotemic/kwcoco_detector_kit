@@ -263,6 +263,45 @@ def test_multiscale_preserves_segmentation_and_recomputes_geometry(tmp_path):
     assert np.isclose(ann["area"], 320)
 
 
+def test_negative_keep_fraction_is_deterministic_and_prewrite(synthetic_kwcoco, tmp_path):
+    common = {
+        "mode": "multiscale",
+        "category_names": "widget",
+        "progress": False,
+        "tile_size": 64,
+        "source_scales": "1.0",
+        "stride_frac": 0.5,
+        "min_gt_area_frac": 0.0001,
+        "keep_negative": True,
+        "negative_keep_fraction": 0.35,
+        "seed": 991,
+    }
+    first = _tile_run(synthetic_kwcoco, tmp_path / "sample1.kwcoco.zip", **common)
+    second = _tile_run(synthetic_kwcoco, tmp_path / "sample2.kwcoco.zip", **common)
+    first_neg = [
+        (img["tile_source_gid"], img["tile_scale_name"], img["tile_extent_xyxy_in_source"])
+        for img in first.images().objs if img["tile_role"] == "negative"
+    ]
+    second_neg = [
+        (img["tile_source_gid"], img["tile_scale_name"], img["tile_extent_xyxy_in_source"])
+        for img in second.images().objs if img["tile_role"] == "negative"
+    ]
+    assert first_neg == second_neg
+    counts = first.dataset["info"][0]["tile_role_counts"]
+    assert first.dataset["info"][0]["source_manifest_sha256"]
+    assert first.dataset["info"][0]["source_dataset_fingerprint"]
+    assert counts["negative"] == len(first_neg)
+    assert counts["dropped_negative"] > 0
+    assert counts["negative"] > 0
+
+    none = _tile_run(
+        synthetic_kwcoco,
+        tmp_path / "sample_none.kwcoco.zip",
+        **{**common, "negative_keep_fraction": 0.0},
+    )
+    assert not [img for img in none.images().objs if img["tile_role"] == "negative"]
+
+
 def test_materialization_cache_is_reused_across_manifests(synthetic_kwcoco, tmp_path):
     cache_dpath = tmp_path / "tile_cache"
     kwargs = {
@@ -283,6 +322,37 @@ def test_materialization_cache_is_reused_across_manifests(synthetic_kwcoco, tmp_
     ]
     assert all(path.is_absolute() and path.is_file() for path in cached_paths)
     assert mtimes == {path: path.stat().st_mtime_ns for path in cached_paths}
+
+
+def test_stable_source_dataset_fingerprint_reuses_regenerated_selection(tmp_path):
+    import kwcoco
+
+    source1 = kwcoco.CocoDataset.demo("shapes2", image_size=(128, 128))
+    source1.reroot(absolute=True)
+    source1.fpath = tmp_path / "selection1.kwcoco.zip"
+    source1.dump()
+    source2 = source1.copy()
+    source2.dataset.setdefault("info", []).append({"regenerated": True})
+    source2.fpath = tmp_path / "selection2.kwcoco.zip"
+    source2.dump()
+    common = {
+        "mode": "multiscale",
+        "category_names": "star",
+        "progress": False,
+        "tile_size": 64,
+        "source_scales": "1.0",
+        "cache_dpath": str(tmp_path / "cache"),
+        "source_dataset_fingerprint": "canonical-dataset-v1",
+    }
+    first = _tile_run(source1.fpath, tmp_path / "tiles1.kwcoco.zip", **common)
+    second = _tile_run(source2.fpath, tmp_path / "tiles2.kwcoco.zip", **common)
+    assert {
+        img["tile_materialization_id"] for img in first.images().objs
+    } == {
+        img["tile_materialization_id"] for img in second.images().objs
+    }
+    assert first.dataset["info"][0]["source_manifest_sha256"] != second.dataset["info"][0]["source_manifest_sha256"]
+    assert first.dataset["info"][0]["source_dataset_fingerprint"] == "canonical-dataset-v1"
 
 
 # ---------------------------------------------------------------------------

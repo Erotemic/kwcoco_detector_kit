@@ -46,6 +46,25 @@ def stable_shard_for_key(key: str, num_shards: int) -> int:
     return int(hashlib.sha256(str(key).encode()).hexdigest(), 16) % int(num_shards)
 
 
+def iter_candidate_shard_assignments(rows, num_shards, locality_chunk_size=256):
+    """Assign bounded source/scale chunks while preserving traversal locality."""
+    chunk_size = max(1, int(locality_chunk_size))
+    prior_group = None
+    group_offset = 0
+    for row in rows:
+        group = _semantic_source_scale(row)
+        if group != prior_group:
+            prior_group = group
+            group_offset = 0
+        chunk_index = group_offset // chunk_size
+        group_offset += 1
+        key = json.dumps(
+            [group[0], group[1], chunk_index],
+            sort_keys=True, separators=(",", ":"),
+        )
+        yield row, stable_shard_for_key(key, num_shards)
+
+
 def _semantic_source_scale(item):
     """Semantic stratification keys; filenames are deliberately irrelevant."""
     if "tile_source_gid" not in item:
@@ -97,12 +116,19 @@ def merge_shard_ledgers(ledger_paths, expected_ids):
         doc = json.loads(Path(path).read_text())
         if not doc.get("scan_complete"):
             raise RuntimeError(f"incomplete mining shard: {path}")
-        ids = {row["tile_id"] for row in doc["records"]}
+        if "records_path" in doc:
+            shard_records = [
+                json.loads(line)
+                for line in Path(doc["records_path"]).read_text().splitlines()
+            ]
+        else:
+            shard_records = doc["records"]
+        ids = {row["tile_id"] for row in shard_records}
         overlap = seen & ids
         if overlap:
             raise RuntimeError(f"shard ledgers overlap: {sorted(overlap)[:3]}")
         seen |= ids
-        records.extend(doc["records"])
+        records.extend(shard_records)
     expected = set(expected_ids)
     if seen != expected:
         raise RuntimeError(
@@ -159,6 +185,10 @@ class MineConfig(kwconf.Config):
     batch_size = kwconf.Value(16, help="predictor batch size; scalar backends fall back safely")
     shard_index = kwconf.Value(0, help="deterministic mining shard index")
     num_shards = kwconf.Value(1, help="number of disjoint deterministic shards")
+    locality_chunk_size = kwconf.Value(
+        256,
+        help="maximum source/scale-local candidate chunk assigned as one shard unit",
+    )
     ledger = kwconf.Value(None, help="optional atomic JSON score ledger (defaults beside dst)")
     allow_failures = kwconf.Value(False, help="permit scan_successful=false output")
 
@@ -186,68 +216,346 @@ def _atomic_json(data, path):
     os.replace(tmp, path)
 
 
-def _run_virtual(config, predictor, dst_fpath):
-    """Mine a virtual index with durable per-batch progress and exact resume."""
-    from kwcoco_detector_kit.data.candidates import (
-        iter_candidate_records, load_candidate_index, materialize_candidates,
-        realize_candidate_arrays,
-    )
-    from kwcoco_detector_kit.predictors._interface import predict_batch
+class _ScoreDistribution:
+    """Bounded deterministic score summary suitable for million-row scans."""
 
-    index = load_candidate_index(config.candidate_index)
-    max_candidates = int(config.max_candidates or 0)
+    bins = [0.0, 0.05, 0.10, 0.20, 0.30, 0.50, 0.80, 1.01]
+
+    def __init__(self, sample_size=4096):
+        self.sample_size = int(sample_size)
+        self.count = 0
+        self.total = 0.0
+        self.minimum = None
+        self.maximum = None
+        self.hist = [0] * (len(self.bins) - 1)
+        self._sample_heap = []
+
+    def add(self, identity, score):
+        import heapq
+
+        score = float(score)
+        self.count += 1
+        self.total += score
+        self.minimum = score if self.minimum is None else min(self.minimum, score)
+        self.maximum = score if self.maximum is None else max(self.maximum, score)
+        for idx, (low, high) in enumerate(zip(self.bins, self.bins[1:])):
+            if low <= score < high:
+                self.hist[idx] += 1
+                break
+        priority = int(hashlib.sha256(str(identity).encode()).hexdigest(), 16)
+        item = (-priority, str(identity), score)
+        if len(self._sample_heap) < self.sample_size:
+            heapq.heappush(self._sample_heap, item)
+        elif item > self._sample_heap[0]:
+            heapq.heapreplace(self._sample_heap, item)
+
+    def as_dict(self):
+        values = sorted(item[2] for item in self._sample_heap)
+
+        def quantile(q):
+            if not values:
+                return None
+            position = q * (len(values) - 1)
+            lower = int(position)
+            upper = min(lower + 1, len(values) - 1)
+            frac = position - lower
+            return values[lower] * (1 - frac) + values[upper] * frac
+
+        return {
+            "n_scored": self.count,
+            "score_min": self.minimum,
+            "score_max": self.maximum,
+            "score_mean": None if not self.count else self.total / self.count,
+            "score_bins": self.bins,
+            "score_hist": self.hist,
+            "score_quantiles": {
+                key: quantile(q) for key, q in [
+                    ("p00", 0.0), ("p25", 0.25), ("p50", 0.5),
+                    ("p75", 0.75), ("p90", 0.9), ("p95", 0.95),
+                    ("p99", 0.99), ("p100", 1.0),
+                ]
+            },
+            "quantile_sample_size": len(values),
+            "quantiles_exact": self.count <= self.sample_size,
+        }
+
+
+def _write_mine_stats(dst, distribution, *, n_hard, score_thresh,
+                      max_hard_per_round, num_failures=0):
+    stats = {
+        **distribution.as_dict(),
+        "n_hard": int(n_hard),
+        "num_failures": int(num_failures),
+        "score_thresh": float(score_thresh),
+        "max_hard_per_round": int(max_hard_per_round),
+    }
+    sidecar = Path(dst).with_suffix(".mine_stats.json")
+    _atomic_json(stats, sidecar)
+    return sidecar
+
+
+def _workdir_model_identity(workdir):
+    """Digest model/config inputs while excluding transient mining outputs."""
+    from kwcoco_detector_kit.data.tile_cache import canonical_digest, sha256_file
+
+    root = Path(workdir)
+    suffixes = {".pt", ".pth", ".ckpt", ".json", ".yaml", ".yml"}
+    files = []
+    for path in sorted(root.rglob("*")) if root.is_dir() else []:
+        if path.is_file() and path.suffix.lower() in suffixes:
+            files.append({"path": str(path.relative_to(root)), "sha256": sha256_file(path)})
+    return canonical_digest(files)
+
+
+def _budgeted_candidate_rows(index, max_candidates, seed):
+    """Return a factory for deterministic streaming/bounded candidate traversal."""
+    from kwcoco_detector_kit.data.candidates import iter_candidate_records
+
     if max_candidates and max_candidates < index["num_candidates"]:
         import heapq
         heap = []
-        seed = int(config.candidate_seed)
         for row in iter_candidate_records(index):
             priority = int(hashlib.sha256(
-                f"{seed}:{row['tile_id']}".encode()
+                f"{int(seed)}:{row['tile_id']}".encode()
             ).hexdigest(), 16)
             item = (-priority, row["tile_id"], row)
             if len(heap) < max_candidates:
                 heapq.heappush(heap, item)
             elif item > heap[0]:
                 heapq.heapreplace(heap, item)
-        selected_rows = [item[2] for item in heap]
-        selected_rows.sort(key=lambda row: (
+        selected = [item[2] for item in heap]
+        selected.sort(key=lambda row: (
             row["tile_source_gid"], tuple(row["tile_actual_scale_xy"]),
             row["tile_scaled_extent_xyxy"], row["tile_id"],
         ))
-        row_iter = iter(selected_rows)
-    else:
-        row_iter = iter_candidate_records(index)
+        return lambda: iter(selected)
+    return lambda: iter_candidate_records(index)
+
+
+def finalize_virtual_mining(candidate_index, ledger_paths, dst, *, cache_dpath,
+                            jpeg_quality=90, score_thresh=0.3,
+                            max_hard_per_round=5000, allow_failures=False):
+    """Validate all score shards, choose global top-K, then materialize."""
+    import heapq
+    import kwcoco
+
+    from kwcoco_detector_kit.data.candidates import (
+        iter_candidate_records, load_candidate_index, materialize_candidates,
+    )
+
+    index = load_candidate_index(candidate_index)
+    docs = [json.loads(Path(path).read_text()) for path in ledger_paths]
+    if not docs:
+        raise ValueError("no mining shard ledgers supplied")
+    fingerprints = {doc.get("mining_run_fingerprint") for doc in docs}
+    if len(fingerprints) != 1 or None in fingerprints:
+        raise RuntimeError("mining shard fingerprint mismatch")
+    run_spec = docs[0]["run_spec"]
+    from kwcoco_detector_kit.data.tile_cache import canonical_digest
+    fingerprint = next(iter(fingerprints))
+    if any(doc.get("run_spec") != run_spec for doc in docs):
+        raise RuntimeError("mining shard run-spec mismatch")
+    if canonical_digest(run_spec) != fingerprint:
+        raise RuntimeError("mining shard fingerprint does not match run spec")
+    if float(score_thresh) != float(run_spec["score_thresh"]):
+        raise RuntimeError("finalizer score threshold differs from fingerprinted run")
+    if int(max_hard_per_round) != int(run_spec["max_hard_per_round"]):
+        raise RuntimeError("finalizer top-K differs from fingerprinted run")
+    num_shards = int(run_spec["num_shards"])
+    locality_chunk_size = int(run_spec["locality_chunk_size"])
+    if len(docs) != num_shards or {doc["shard_index"] for doc in docs} != set(range(num_shards)):
+        raise RuntimeError("missing or duplicate mining shard ledger")
+    if any(not doc.get("scan_complete") for doc in docs):
+        raise RuntimeError("incomplete mining shard")
+
+    row_factory = _budgeted_candidate_rows(
+        index, int(run_spec["max_candidates"]), int(run_spec["candidate_seed"]),
+    )
+    expected_hashers = [hashlib.sha256() for _ in range(num_shards)]
+    expected_counts = [0] * num_shards
+    for row, rank in iter_candidate_shard_assignments(
+        row_factory(), num_shards, locality_chunk_size,
+    ):
+        expected_hashers[rank].update((row["tile_id"] + "\n").encode())
+        expected_counts[rank] += 1
+    for doc in docs:
+        rank = doc["shard_index"]
+        if doc["num_expected"] != expected_counts[rank] or doc["expected_identity_digest"] != expected_hashers[rank].hexdigest():
+            raise RuntimeError(f"shard {rank} expected-set mismatch")
+
+    class _ReverseLex(str):
+        """Make the lexicographically largest ID the worst equal-score item."""
+
+        def __lt__(self, other):
+            return str.__gt__(self, other)
+
+    heap = []
+    max_keep = max(0, int(max_hard_per_round))
+    seen = set()
+    failures = 0
+    distribution = _ScoreDistribution()
+    for doc in docs:
+        rank = doc["shard_index"]
+        progress_path = Path(doc["records_path"])
+        count = 0
+        observed_hasher = hashlib.sha256()
+        with open(progress_path, encoding="utf8") as progress:
+            records = (json.loads(line) for line in progress)
+            for record in records:
+                tile_id = record["tile_id"]
+                if tile_id in seen:
+                    raise RuntimeError(f"duplicate terminal candidate identity: {tile_id}")
+                seen.add(tile_id)
+                count += 1
+                observed_hasher.update((tile_id + "\n").encode())
+                if record["status"] != "ok":
+                    failures += 1
+                    continue
+                score = float(record["max_score"])
+                distribution.add(tile_id, score)
+                if score < float(score_thresh):
+                    continue
+                item = (score, _ReverseLex(tile_id), tile_id)
+                if not max_keep:
+                    continue
+                if len(heap) < max_keep:
+                    heapq.heappush(heap, item)
+                elif item > heap[0]:
+                    heapq.heapreplace(heap, item)
+        if count != doc["num_expected"]:
+            raise RuntimeError(f"shard {rank} terminal-result count mismatch")
+        if observed_hasher.hexdigest() != doc["expected_identity_digest"]:
+            raise RuntimeError(f"shard {rank} terminal identity mismatch")
+    if len(seen) != sum(expected_counts):
+        raise RuntimeError("global terminal coverage mismatch")
+    if failures and not allow_failures:
+        raise RuntimeError(f"global mining scan contains {failures} failures")
+
+    ranked = sorted(
+        [(score, tile_id) for score, _reverse_id, tile_id in heap],
+        key=lambda item: (-item[0], item[1]),
+    )
+    score_by_id = {tile_id: score for score, tile_id in ranked}
+    selected = [row for row in iter_candidate_records(index) if row["tile_id"] in score_by_id]
+    out = materialize_candidates(
+        index, selected, cache_dpath=cache_dpath, jpeg_quality=jpeg_quality,
+    ) if selected else kwcoco.CocoDataset()
+    out.fpath = str(Path(dst).resolve())
+    for image in out.images().objs:
+        image["max_pred_score"] = score_by_id[image["tile_id"]]
+        image["mined_for_round"] = int(os.environ.get("KCD_ROUND", "0"))
+    Path(out.fpath).parent.mkdir(parents=True, exist_ok=True)
+    out.dump()
+    _atomic_json({
+        "schema_version": 1,
+        "mining_run_fingerprint": fingerprint,
+        "num_scored": len(seen), "num_failures": failures,
+        "score_thresh": float(score_thresh),
+        "max_hard_per_round": int(max_hard_per_round),
+        "selected": [{"tile_id": tile_id, "max_score": score} for score, tile_id in ranked],
+    }, Path(dst).with_suffix(".selected_candidates.json"))
+    _write_mine_stats(
+        dst, distribution, n_hard=len(ranked), score_thresh=score_thresh,
+        max_hard_per_round=max_hard_per_round, num_failures=failures,
+    )
+    return Path(out.fpath)
+
+
+def _run_virtual(config, predictor, dst_fpath):
+    """Mine a virtual index with durable per-batch progress and exact resume."""
+    from kwcoco_detector_kit.data.candidates import (
+        iter_candidate_records, iter_realized_candidate_batches,
+        load_candidate_index, materialize_candidates,
+    )
+    from kwcoco_detector_kit.predictors._interface import predict_batch
+
+    index = load_candidate_index(config.candidate_index)
+    max_candidates = int(config.max_candidates or 0)
+    row_factory = _budgeted_candidate_rows(index, max_candidates, config.candidate_seed)
     shard_index, num_shards = int(config.shard_index), int(config.num_shards)
+    locality_chunk_size = int(config.locality_chunk_size)
     ledger_path = Path(config.ledger) if config.ledger else dst_fpath.with_suffix(".mine_ledger.json")
     progress_path = ledger_path.with_suffix(ledger_path.suffix + ".progress.jsonl")
-    records_by_id = {}
+    expected_hasher = hashlib.sha256()
+    global_hasher = hashlib.sha256()
+    global_count = 0
+    expected_count = 0
+    for row, rank in iter_candidate_shard_assignments(
+        row_factory(), num_shards, locality_chunk_size,
+    ):
+        global_hasher.update((row["tile_id"] + "\n").encode())
+        global_count += 1
+        if rank == shard_index:
+            expected_hasher.update((row["tile_id"] + "\n").encode())
+            expected_count += 1
+    expected_digest = expected_hasher.hexdigest()
+    from kwcoco_detector_kit.data.tile_cache import canonical_digest
+    run_spec = {
+        "candidate_index_digest": index["candidate_content_digest"],
+        "selected_universe_digest": global_hasher.hexdigest(),
+        "selected_universe_count": global_count,
+        "num_shards": num_shards,
+        "shard_assignment_schema": "sha256-source-scale-spatial-chunk-mod-v1",
+        "locality_chunk_size": locality_chunk_size,
+        "max_candidates": max_candidates,
+        "candidate_seed": int(config.candidate_seed),
+        "candidate_strategy": str(config.candidate_strategy),
+        "trainer": str(config.trainer),
+        "model_workdir_identity": _workdir_model_identity(config.workdir),
+        "device": str(config.device),
+        "batch_size": int(config.batch_size),
+        "score_thresh": float(config.score_thresh),
+        "max_hard_per_round": int(config.max_hard_per_round),
+        "candidate_policy_fingerprint": index["policy_fingerprint"],
+    }
+    mining_run_fingerprint = canonical_digest(run_spec)
+    progress_meta_path = progress_path.with_suffix(progress_path.suffix + ".meta.json")
+    if progress_path.exists():
+        if not progress_meta_path.is_file():
+            raise RuntimeError("existing mining progress lacks run fingerprint metadata")
+        prior_meta = json.loads(progress_meta_path.read_text())
+        if prior_meta.get("mining_run_fingerprint") != mining_run_fingerprint:
+            raise RuntimeError("existing mining progress fingerprint mismatch")
+    else:
+        _atomic_json({
+            "schema_version": 1,
+            "mining_run_fingerprint": mining_run_fingerprint,
+            "run_spec": run_spec,
+        }, progress_meta_path)
+
+    completed_ids = set()
+    num_failures = 0
     if progress_path.is_file():
-        for line in progress_path.read_text().splitlines():
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                break  # killed during the final append; safely redo that bounded row
-            if record.get("tile_id"):
-                records_by_id[record["tile_id"]] = record
+        with open(progress_path, "r+", encoding="utf8") as progress:
+            valid_end = progress.tell()
+            while line := progress.readline():
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    # A killed append can leave only the final line torn.
+                    # Discard it in place without retaining prior JSONL rows.
+                    progress.seek(valid_end)
+                    progress.truncate()
+                    break
+                valid_end = progress.tell()
+                if record.get("tile_id"):
+                    completed_ids.add(record["tile_id"])
+                    num_failures += record.get("status") != "ok"
     progress_path.parent.mkdir(parents=True, exist_ok=True)
     batch_size = max(1, int(config.batch_size))
-    expected_hasher = hashlib.sha256()
-    expected_count = 0
 
-    def _score_batch(batch, progress):
+    def _score_batch(batch, arrays, read_error, progress):
+        nonlocal num_failures
         if not batch:
             return
         batch_records = []
-        try:
-            arrays_by_id = realize_candidate_arrays(index, batch)
-            arrays = [arrays_by_id[row["tile_id"]] for row in batch]
-            sizes = [(arr.shape[1], arr.shape[0]) for arr in arrays]
-        except Exception as ex:
+        if read_error is not None:
             batch_records = [{
                 "tile_id": row["tile_id"], "status": "read_error",
-                "error": f"{type(ex).__name__}: {ex}",
+                "error": f"{type(read_error).__name__}: {read_error}",
             } for row in batch]
         if not batch_records:
+            sizes = [(arr.shape[1], arr.shape[0]) for arr in arrays]
             try:
                 results = predict_batch(predictor, arrays, sizes)
                 if len(results) != len(batch):
@@ -269,7 +577,8 @@ def _run_virtual(config, predictor, dst_fpath):
                 } for row in batch]
         for record in batch_records:
             progress.write(json.dumps(record, sort_keys=True) + "\n")
-            records_by_id[record["tile_id"]] = record
+            completed_ids.add(record["tile_id"])
+            num_failures += record["status"] != "ok"
         progress.flush()
         os.fsync(progress.fileno())
         delay = float(os.environ.get("KCD_MINE_TEST_BATCH_DELAY", "0"))
@@ -277,58 +586,43 @@ def _run_virtual(config, predictor, dst_fpath):
             time.sleep(delay)
 
     with open(progress_path, "a", encoding="utf8") as progress:
-        batch = []
-        for row in row_iter:
-            if stable_shard_for_key(row["tile_id"], num_shards) != shard_index:
-                continue
-            expected_hasher.update((row["tile_id"] + "\n").encode())
-            expected_count += 1
-            if row["tile_id"] not in records_by_id:
-                batch.append(row)
-                if len(batch) >= batch_size:
-                    _score_batch(batch, progress)
-                    batch = []
-        _score_batch(batch, progress)
+        assigned_rows = (
+            row
+            for row, rank in iter_candidate_shard_assignments(
+                row_factory(), num_shards, locality_chunk_size,
+            )
+            if rank == shard_index and row["tile_id"] not in completed_ids
+        )
+        for batch, arrays, read_error in iter_realized_candidate_batches(
+            index, assigned_rows, batch_size,
+        ):
+            _score_batch(batch, arrays, read_error, progress)
 
-    expected_digest = expected_hasher.hexdigest()
-    records = list(records_by_id.values())
-    failures = [row for row in records if row["status"] != "ok"]
     ledger = {
         "schema_version": 2, "shard_index": shard_index, "num_shards": num_shards,
+        "mining_run_fingerprint": mining_run_fingerprint, "run_spec": run_spec,
         "expected_identity_digest": expected_digest,
-        "num_expected": expected_count, "num_records": len(records),
-        "num_failures": len(failures), "scan_complete": len(records) == expected_count,
-        "scan_successful": not failures, "records": records,
+        "num_expected": expected_count, "num_records": len(completed_ids),
+        "num_failures": num_failures,
+        "scan_complete": len(completed_ids) == expected_count,
+        "scan_successful": not num_failures,
+        "records_path": str(progress_path.resolve()),
     }
     _atomic_json(ledger, ledger_path)
-    if failures and not bool(config.allow_failures):
-        raise RuntimeError(f"mining scan completed with {len(failures)} failures; see {ledger_path}")
+    if num_failures and not bool(config.allow_failures):
+        raise RuntimeError(
+            f"mining scan completed with {num_failures} failures; see {ledger_path}"
+        )
 
-    good = [row for row in records if row["status"] == "ok"]
-    good.sort(key=lambda row: (-row["max_score"], row["tile_id"]))
-    selected_scores = {
-        row["tile_id"]: row["max_score"]
-        for row in good if row["max_score"] >= float(config.score_thresh)
-    }
-    selected_scores = dict(list(selected_scores.items())[:int(config.max_hard_per_round)])
-    selected = [
-        row for row in iter_candidate_records(index)
-        if row["tile_id"] in selected_scores
-        and stable_shard_for_key(row["tile_id"], num_shards) == shard_index
-    ]
-    if selected and not config.cache_dpath:
-        raise ValueError("cache_dpath is required to admit virtual candidates")
-    out = materialize_candidates(
-        index, selected, cache_dpath=config.cache_dpath,
-        jpeg_quality=int(config.jpeg_quality),
-    ) if selected else __import__("kwcoco").CocoDataset()
-    out.fpath = str(dst_fpath)
-    for image in out.images().objs:
-        image["max_pred_score"] = selected_scores[image["tile_id"]]
-        image["mined_for_round"] = int(os.environ.get("KCD_ROUND", "0"))
-    dst_fpath.parent.mkdir(parents=True, exist_ok=True)
-    out.dump()
-    return dst_fpath
+    if num_shards == 1:
+        return finalize_virtual_mining(
+            config.candidate_index, [ledger_path], dst_fpath,
+            cache_dpath=config.cache_dpath, jpeg_quality=int(config.jpeg_quality),
+            score_thresh=float(config.score_thresh),
+            max_hard_per_round=int(config.max_hard_per_round),
+            allow_failures=bool(config.allow_failures),
+        )
+    return ledger_path
 
 
 def run(config):
@@ -539,24 +833,15 @@ def run(config):
     out_dset.dump()
     print(f"  wrote {n_kept} hard-neg tile images to {dst_fpath}")
 
-    # Sidecar score histogram — useful for picking next-round threshold.
+    # Shared bounded score summary for threshold/round decisions.
     if scored:
-        bins = [0.0, 0.05, 0.10, 0.20, 0.30, 0.50, 0.80, 1.01]
-        hist = [0] * (len(bins) - 1)
-        for s, _ in scored:
-            for i in range(len(bins) - 1):
-                if bins[i] <= s < bins[i + 1]:
-                    hist[i] += 1
-                    break
-        sidecar = dst_fpath.with_suffix(".mine_stats.json")
-        sidecar.write_text(json.dumps({
-            "n_scored": len(scored),
-            "n_hard": len(hard),
-            "score_thresh": thresh,
-            "max_hard_per_round": max_keep,
-            "score_bins": bins,
-            "score_hist": hist,
-        }, indent=2))
+        distribution = _ScoreDistribution()
+        for score, gid in scored:
+            distribution.add(_stable_key(gid), score)
+        sidecar = _write_mine_stats(
+            dst_fpath, distribution, n_hard=len(hard), score_thresh=thresh,
+            max_hard_per_round=max_keep, num_failures=len(failures),
+        )
         print(f"  wrote score histogram to {sidecar}")
 
 

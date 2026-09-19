@@ -11,6 +11,7 @@ the miner's perspective — we verify:
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 import sys
@@ -157,6 +158,127 @@ def test_shard_merge_proves_exact_coverage(tmp_path):
         merge_shard_ledgers(paths, ids)
 
 
+def _synthetic_virtual_ledgers(tmp_path, num_shards=4):
+    from kwcoco_detector_kit.data.candidates import (
+        CandidateConfig, enumerate_candidates, iter_candidate_records,
+    )
+    from kwcoco_detector_kit.data.mine import iter_candidate_shard_assignments
+    from kwcoco_detector_kit.data.tile_cache import canonical_digest
+
+    source = _build_neg_bundle(tmp_path / "source", n=3)
+    index_path = tmp_path / "candidate-index"
+    enumerate_candidates(CandidateConfig.cli(argv=False, data={
+        "src": str(source), "dst": str(index_path), "category_names": "widget",
+        "tile_size": 32, "source_scales": "1.0", "stride_frac": 1.0,
+        "min_source_scale_long_side": 1, "rows_per_shard": 3,
+    }))
+    rows = list(iter_candidate_records(index_path))
+    score_by_id = {
+        row["tile_id"]: (idx + 1) / (len(rows) + 1)
+        for idx, row in enumerate(rows)
+    }
+    run_spec = {
+        "num_shards": num_shards, "max_candidates": 0, "candidate_seed": 0,
+        "locality_chunk_size": 3,
+        "score_thresh": 0.0, "max_hard_per_round": 5,
+    }
+    fingerprint = canonical_digest(run_spec)
+    ledgers = []
+    assignments = list(iter_candidate_shard_assignments(rows, num_shards, 3))
+    for rank in range(num_shards):
+        shard_rows = [row for row, assigned_rank in assignments if assigned_rank == rank]
+        hasher = hashlib.sha256()
+        records = []
+        for row in shard_rows:
+            hasher.update((row["tile_id"] + "\n").encode())
+            records.append({
+                "tile_id": row["tile_id"], "status": "ok",
+                "max_score": score_by_id[row["tile_id"]],
+            })
+        progress = tmp_path / f"rank{rank}.progress.jsonl"
+        progress.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in records))
+        ledger = tmp_path / f"rank{rank}.ledger.json"
+        ledger.write_text(json.dumps({
+            "schema_version": 2, "shard_index": rank,
+            "mining_run_fingerprint": fingerprint, "run_spec": run_spec,
+            "expected_identity_digest": hasher.hexdigest(),
+            "num_expected": len(records), "num_records": len(records),
+            "num_failures": 0, "scan_complete": True,
+            "scan_successful": True, "records_path": str(progress),
+            # Deliberately bogus shard-local selection: finalization must ignore it.
+            "selected": records[:1],
+        }))
+        ledgers.append(ledger)
+    return index_path, rows, score_by_id, ledgers
+
+
+def test_virtual_global_finalizer_exact_topk_and_deterministic(tmp_path):
+    from kwcoco_detector_kit.data.mine import finalize_virtual_mining
+
+    index, rows, score_by_id, ledgers = _synthetic_virtual_ledgers(tmp_path)
+    expected = [
+        tile_id for tile_id, _score in sorted(
+            score_by_id.items(), key=lambda item: (-item[1], item[0]),
+        )[:5]
+    ]
+    selected_runs = []
+    for run_idx in range(2):
+        dst = tmp_path / f"hard-{run_idx}.kwcoco.zip"
+        finalize_virtual_mining(
+            index, ledgers, dst, cache_dpath=tmp_path / "cache",
+            score_thresh=0.0, max_hard_per_round=5,
+        )
+        sidecar = json.loads(dst.with_suffix(".selected_candidates.json").read_text())
+        selected_runs.append([row["tile_id"] for row in sidecar["selected"]])
+        assert sidecar["num_scored"] == len(rows)
+        assert kwcoco.CocoDataset.coerce(dst).n_images == 5
+        stats = json.loads(dst.with_suffix(".mine_stats.json").read_text())
+        assert stats["n_scored"] == len(rows)
+        assert stats["n_hard"] == 5
+        assert stats["score_hist"]
+        assert stats["score_quantiles"]["p50"] is not None
+    assert selected_runs == [expected, expected]
+
+
+def test_virtual_global_finalizer_rejects_missing_duplicate_and_failure(tmp_path):
+    from kwcoco_detector_kit.data.mine import finalize_virtual_mining
+
+    index, _rows, _scores, ledgers = _synthetic_virtual_ledgers(tmp_path)
+    kwargs = {
+        "cache_dpath": tmp_path / "cache", "score_thresh": 0.0,
+        "max_hard_per_round": 5,
+    }
+    with pytest.raises(RuntimeError, match="missing or duplicate mining shard"):
+        finalize_virtual_mining(index, ledgers[:-1], tmp_path / "missing.kwcoco.zip", **kwargs)
+
+    missing_doc = next(doc for doc in [json.loads(p.read_text()) for p in ledgers] if doc["num_expected"])
+    missing_progress = Path(missing_doc["records_path"])
+    original_missing = missing_progress.read_text()
+    missing_progress.write_text("\n".join(original_missing.splitlines()[:-1]) + "\n")
+    with pytest.raises(RuntimeError, match="terminal-result count mismatch"):
+        finalize_virtual_mining(index, ledgers, tmp_path / "missing-id.kwcoco.zip", **kwargs)
+    missing_progress.write_text(original_missing)
+
+    docs = [json.loads(path.read_text()) for path in ledgers]
+    populated = [doc for doc in docs if doc["num_expected"]]
+    first_record = json.loads(Path(populated[0]["records_path"]).read_text().splitlines()[0])
+    other = next(doc for doc in populated[1:] if doc["shard_index"] != populated[0]["shard_index"])
+    other_progress = Path(other["records_path"])
+    original = other_progress.read_text()
+    other_progress.write_text(original + json.dumps(first_record) + "\n")
+    with pytest.raises(RuntimeError, match="duplicate terminal candidate identity"):
+        finalize_virtual_mining(index, ledgers, tmp_path / "duplicate.kwcoco.zip", **kwargs)
+    other_progress.write_text(original)
+
+    failure_doc = populated[0]
+    failure_progress = Path(failure_doc["records_path"])
+    records = [json.loads(line) for line in failure_progress.read_text().splitlines()]
+    records[0] = {"tile_id": records[0]["tile_id"], "status": "predict_error"}
+    failure_progress.write_text("".join(json.dumps(r) + "\n" for r in records))
+    with pytest.raises(RuntimeError, match="contains 1 failures"):
+        finalize_virtual_mining(index, ledgers, tmp_path / "failure.kwcoco.zip", **kwargs)
+
+
 @pytest.mark.requires_torch
 def test_virtual_mining_subprocess_interruption_resume(synthetic_kwcoco, tmp_workdir, tmp_path):
     from kwcoco_detector_kit.data.candidates import CandidateConfig, enumerate_candidates
@@ -210,7 +332,8 @@ def test_virtual_mining_subprocess_interruption_resume(synthetic_kwcoco, tmp_wor
     doc = json.loads(ledger.read_text())
     assert doc["scan_complete"] and doc["scan_successful"]
     assert doc["num_records"] == doc["num_expected"]
-    assert len({row["tile_id"] for row in doc["records"]}) == doc["num_expected"]
+    records = [json.loads(line) for line in Path(doc["records_path"]).read_text().splitlines()]
+    assert len({row["tile_id"] for row in records}) == doc["num_expected"]
     first_ids = [img["tile_id"] for img in kwcoco.CocoDataset.coerce(dst).images().objs]
     subprocess.run([sys.executable, str(helper), str(config_path)], check=True, timeout=60)
     second_ids = [img["tile_id"] for img in kwcoco.CocoDataset.coerce(dst).images().objs]

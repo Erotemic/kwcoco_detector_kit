@@ -217,19 +217,27 @@ def _keep_negative_window(*, fraction, seed, source_gid, scale_name, x0, y0):
     return value < int(fraction * (1 << 64))
 
 
-def _resize_image_to_scale(image, scale: float):
-    """Resize image by ``scale``; returns ``(resized, (sx, sy))``."""
+def _resize_image_to_dsize(image, dsize):
+    """Shared eager/virtual area-resize primitive."""
     import kwimage
 
+    new_w, new_h = map(int, dsize)
     h, w = image.shape[:2]
-    new_w = max(1, int(round(w * scale)))
-    new_h = max(1, int(round(h * scale)))
     if new_w == w and new_h == h:
-        return image, (1.0, 1.0)
+        return image
     try:
         resized = kwimage.imresize(image, dsize=(new_w, new_h), interpolation="area")
     except NotImplementedError:
         resized = kwimage.imresize(image, dsize=(new_w, new_h), interpolation="linear")
+    return resized
+
+
+def _resize_image_to_scale(image, scale: float):
+    """Resize image by ``scale``; returns ``(resized, (sx, sy))``."""
+    h, w = image.shape[:2]
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+    resized = _resize_image_to_dsize(image, (new_w, new_h))
     return resized, (new_w / float(w), new_h / float(h))
 
 
@@ -528,11 +536,10 @@ def _annotation_from_geometry(ann, geom, *, image_id, category_id, ann_id, src_d
 _TILE_WRITER_VERSION = 3
 
 
-def _read_image_rgb(coco_img):
-    """Read a kwcoco coco_image as a (H, W, 3) uint8 ndarray; gracefully fallback."""
+def _normalize_image_rgb(arr):
+    """Normalize a finalized image to contiguous uint8 RGB."""
     import numpy as np
 
-    arr = coco_img.imdelay().finalize()
     if arr.ndim == 2:
         arr = np.repeat(arr[..., None], 3, axis=-1)
     if arr.shape[2] == 4:
@@ -546,6 +553,11 @@ def _read_image_rgb(coco_img):
         import kwimage
         arr = kwimage.ensure_uint255(arr)
     return np.ascontiguousarray(arr)
+
+
+def _read_image_rgb(coco_img):
+    """Read a kwcoco coco_image as a (H, W, 3) uint8 ndarray; gracefully fallback."""
+    return _normalize_image_rgb(coco_img.imdelay().finalize())
 
 
 def _dump_kwcoco(out: dict, dst_fpath: Path):

@@ -288,6 +288,23 @@ def test_realized_resize_uses_distinct_xy_scales(tmp_path):
     assert np.isclose(sx, round(129 * .333) / 129)
     assert np.isclose(sy, round(127 * .333) / 127)
 
+    import kwimage
+    source_to_scaled = kwimage.Affine.scale((sx, sy))
+    expected_poly = kwimage.Polygon(
+        exterior=[[60, 10], [68, 10], [68, 50], [60, 50], [60, 10]],
+    ).warp(source_to_scaled)
+    ann = out.annots(gid=image["id"]).objs[0]
+    got_poly = kwimage.MultiPolygon.coerce(ann["segmentation"]).data[0]
+    got_vertices = sorted(map(tuple, got_poly.exterior.data[:-1]))
+    expected_vertices = sorted(map(tuple, expected_poly.exterior.data[:-1]))
+    assert np.allclose(got_vertices, expected_vertices)
+    assert np.allclose(ann["bbox"], expected_poly.box().to_xywh().data)
+
+    scaled_crop = kwimage.Boxes([[0, 0, 128, 128]], "ltrb")
+    expected_source_extent = scaled_crop.warp(source_to_scaled.inv()).to_ltrb().data[0]
+    expected_source_extent = [int(round(v)) for v in expected_source_extent]
+    assert image["tile_extent_xyxy_in_source"] == expected_source_extent
+
 
 def test_negative_keep_fraction_is_deterministic_and_prewrite(synthetic_kwcoco, tmp_path):
     common = {

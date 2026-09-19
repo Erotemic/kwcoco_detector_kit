@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from collections import defaultdict
+from itertools import groupby, islice
 from pathlib import Path
 
 import kwconf
@@ -312,44 +312,87 @@ def enumerate_candidates(config):
     return dst
 
 
-def realize_candidate_arrays(index, records):
-    """Realize candidates, grouping delayed-image scale work by source/scale."""
+def _candidate_locality_key(row):
+    return row["tile_source_gid"], tuple(row["tile_actual_scale_xy"])
+
+
+def _realize_scaled_source(dset, gid, scale_xy):
+    """Decode and resize one source/scale realization."""
+    from kwcoco_detector_kit.data.tile import (
+        _normalize_image_rgb, _read_image_rgb, _resize_image_to_dsize,
+    )
+
+    image = dset.imgs[gid]
+    dsize = (
+        max(1, int(round(int(image["width"]) * scale_xy[0]))),
+        max(1, int(round(int(image["height"]) * scale_xy[1]))),
+    )
+    source = _read_image_rgb(dset.coco_image(gid))
+    scaled = _resize_image_to_dsize(source, dsize)
+    return _normalize_image_rgb(scaled)
+
+
+def iter_realized_candidate_batches(index, records, batch_size, realization_hook=None):
+    """Yield bounded crop batches while realizing each source/scale only once.
+
+    ``records`` must be in deterministic source/scale locality order.  A failed
+    source realization yields bounded batches with ``arrays=None`` and the
+    exception so callers can durably record terminal read failures.
+    """
     import kwcoco
-    import kwimage
     import numpy as np
 
     dset = kwcoco.CocoDataset.coerce(index["source_kwcoco"])
-    grouped = defaultdict(list)
-    for row in records:
-        grouped[(row["tile_source_gid"], tuple(row["tile_actual_scale_xy"]))].append(row)
+    batch_size = max(1, int(batch_size))
+    for (gid, scale_xy), group in groupby(records, key=_candidate_locality_key):
+        if realization_hook is not None:
+            realization_hook(gid, scale_xy)
+        try:
+            scaled = _realize_scaled_source(dset, gid, scale_xy)
+            error = None
+        except Exception as ex:
+            scaled = None
+            error = ex
+        group = iter(group)
+        while True:
+            batch = list(islice(group, batch_size))
+            if not batch:
+                break
+            if error is not None:
+                yield batch, None, error
+                continue
+            arrays = []
+            for row in batch:
+                x0, y0, x1, y1 = map(int, row["tile_scaled_extent_xyxy"])
+                crop = scaled[max(0, y0):min(y1, scaled.shape[0]),
+                              max(0, x0):min(x1, scaled.shape[1])]
+                output = np.zeros(
+                    (row["output_height"], row["output_width"], 3),
+                    dtype=scaled.dtype,
+                )
+                output[:crop.shape[0], :crop.shape[1]] = crop
+                arrays.append(output)
+            yield batch, arrays, None
+
+
+def realize_candidate_arrays(index, records):
+    """Small-workflow helper returning all realized arrays by candidate ID."""
     result = {}
-    for (gid, scale_xy), group in grouped.items():
-        image = dset.imgs[gid]
-        dsize = (
-            max(1, int(round(int(image["width"]) * scale_xy[0]))),
-            max(1, int(round(int(image["height"]) * scale_xy[1]))),
-        )
-        transform = kwimage.Affine.scale(scale_xy)
-        scaled = dset.coco_image(gid).imdelay().warp(
-            transform, dsize=dsize, interpolation="area"
-        ).finalize()
-        if scaled.ndim == 2:
-            scaled = np.repeat(scaled[..., None], 3, axis=2)
-        if scaled.shape[2] == 4:
-            scaled = scaled[..., :3]
-        for row in group:
-            x0, y0, x1, y1 = map(int, row["tile_scaled_extent_xyxy"])
-            crop = scaled[max(0, y0):min(y1, scaled.shape[0]),
-                          max(0, x0):min(x1, scaled.shape[1])]
-            output = np.zeros((row["output_height"], row["output_width"], 3), dtype=scaled.dtype)
-            output[:crop.shape[0], :crop.shape[1]] = crop
+    for batch, arrays, error in iter_realized_candidate_batches(
+        index, records, batch_size=64,
+    ):
+        if error is not None:
+            raise error
+        for row, output in zip(batch, arrays):
             result[row["tile_id"]] = output
     return result
 
 
-def materialize_candidates(index_path, records, *, cache_dpath, jpeg_quality=90):
-    """Materialize selected virtual candidates into a cache-backed kwcoco."""
+def materialize_candidates(index_path, records, *, cache_dpath, jpeg_quality=90,
+                           batch_size=16):
+    """Stream selected candidates into the existing cache with bounded crops."""
     import cv2
+    import itertools
     import kwcoco
     import numpy as np
 
@@ -359,33 +402,46 @@ def materialize_candidates(index_path, records, *, cache_dpath, jpeg_quality=90)
     from kwcoco_detector_kit.data.tile import _TILE_WRITER_VERSION
 
     index = load_candidate_index(index_path) if not isinstance(index_path, dict) else index_path
-    if records and isinstance(records[0], str):
-        wanted = set(records)
-        records = [row for row in iter_candidate_records(index) if row["tile_id"] in wanted]
-    arrays = realize_candidate_arrays(index, records)
+    records = iter(records)
+    first = next(records, None)
+    if first is None:
+        records = iter(())
+    else:
+        records = itertools.chain([first], records)
+        if isinstance(first, str):
+            wanted = set(records)
+            records = (
+                row for row in iter_candidate_records(index)
+                if row["tile_id"] in wanted
+            )
     cache = TileMaterializationCache(cache_dpath)
     out = kwcoco.CocoDataset()
     out.add_category(name="background_candidate")
-    for row in records:
-        arr = np.ascontiguousarray(arrays[row["tile_id"]])
-        material = make_materialization_identity(
-            tile_id=row["tile_id"], output_width=row["output_width"],
-            output_height=row["output_height"], interpolation="area",
-            padding=row["padding"], orientation="normalized",
-            color_space="rgb", codec="jpg", quality=jpeg_quality,
-            writer_version=_TILE_WRITER_VERSION,
-        )
-        ok, encoded = cv2.imencode(
-            ".jpg", arr[..., ::-1], [cv2.IMWRITE_JPEG_QUALITY, int(jpeg_quality)]
-        )
-        if not ok:
-            raise IOError(f"failed to encode candidate {row['tile_id']}")
-        path, _ = cache.publish_bytes(material, encoded.tobytes(), suffix="jpg")
-        out.add_image(
-            file_name=str(path), width=row["output_width"], height=row["output_height"],
-            tile_materialization_id=material["materialization_id"],
-            materialization_identity=material["materialization_id"], **row,
-        )
+    for rows, arrays, error in iter_realized_candidate_batches(
+        index, records, batch_size=batch_size,
+    ):
+        if error is not None:
+            raise error
+        for row, array in zip(rows, arrays):
+            arr = np.ascontiguousarray(array)
+            material = make_materialization_identity(
+                tile_id=row["tile_id"], output_width=row["output_width"],
+                output_height=row["output_height"], interpolation="area",
+                padding=row["padding"], orientation="normalized",
+                color_space="rgb", codec="jpg", quality=jpeg_quality,
+                writer_version=_TILE_WRITER_VERSION,
+            )
+            ok, encoded = cv2.imencode(
+                ".jpg", arr[..., ::-1], [cv2.IMWRITE_JPEG_QUALITY, int(jpeg_quality)]
+            )
+            if not ok:
+                raise IOError(f"failed to encode candidate {row['tile_id']}")
+            path, _ = cache.publish_bytes(material, encoded.tobytes(), suffix="jpg")
+            out.add_image(
+                file_name=str(path), width=row["output_width"], height=row["output_height"],
+                tile_materialization_id=material["materialization_id"],
+                materialization_identity=material["materialization_id"], **row,
+            )
     return out
 
 

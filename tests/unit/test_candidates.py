@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import kwcoco
 import kwimage
@@ -55,7 +56,7 @@ def test_virtual_candidates_match_eager_pixels_and_identity(tmp_path):
         "category_names": "widget", "tile_size": 32, "source_scales": "0.37",
         "stride_frac": 1.0, "min_gt_area_frac": 0.0001,
         "min_source_scale_long_side": 1,
-        "cache_dpath": str(tmp_path / "cache"), "jpeg_quality": 90,
+        "cache_dpath": str(tmp_path / "eager-cache"), "jpeg_quality": 90,
         "source_dataset_fingerprint": fingerprint, "progress": False,
     })
     tile_run(eager_cfg)
@@ -63,7 +64,7 @@ def test_virtual_candidates_match_eager_pixels_and_identity(tmp_path):
     eager_by_id = {img["tile_id"]: img for img in eager.images().objs}
     assert row["tile_id"] in eager_by_id
     virtual = materialize_candidates(
-        index, [row], cache_dpath=tmp_path / "cache", jpeg_quality=90,
+        index, [row], cache_dpath=tmp_path / "virtual-cache", jpeg_quality=90,
     )
     got = virtual.images().objs[0]
     expected = eager_by_id[row["tile_id"]]
@@ -118,7 +119,14 @@ def test_predict_batch_cardinality_mismatch_is_durable_failure(tmp_path, monkeyp
     assert doc["scan_complete"] is True
     assert doc["scan_successful"] is False
     assert doc["num_failures"] == doc["num_expected"] > 0
-    assert all("cardinality mismatch" in row["error"] for row in doc["records"])
+    records = [json.loads(line) for line in Path(doc["records_path"]).read_text().splitlines()]
+    assert all("cardinality mismatch" in row["error"] for row in records)
+
+    changed = dict(cfg)
+    changed["score_thresh"] = 0.77
+    changed_cfg = mine.MineConfig.cli(argv=False, data=changed)
+    with pytest.raises(RuntimeError, match="progress fingerprint mismatch"):
+        mine.run(changed_cfg)
 
 
 def test_streaming_index_is_deterministic_sharded_and_validated(tmp_path):
@@ -158,3 +166,100 @@ def test_streaming_index_is_deterministic_sharded_and_validated(tmp_path):
     unrelated.write_bytes(original[:-7])
     with pytest.raises(ValueError, match="validation failed|invalid candidate"):
         list(iter_candidate_records(roots[0]))
+
+
+def test_locality_sharding_and_realization_reuse(tmp_path, monkeypatch):
+    import kwcoco
+    from kwcoco_detector_kit.data.candidates import (
+        CandidateConfig, enumerate_candidates, iter_candidate_records,
+        iter_realized_candidate_batches, load_candidate_index,
+        realize_candidate_arrays,
+    )
+    from kwcoco_detector_kit.data.mine import iter_candidate_shard_assignments
+
+    src = _odd_source(tmp_path)
+    index_path = tmp_path / "local-index"
+    enumerate_candidates(CandidateConfig.cli(argv=False, data={
+        "src": str(src), "dst": str(index_path), "category_names": "widget",
+        "tile_size": 16, "source_scales": "1.0,0.5", "stride_frac": 1.0,
+        "min_source_scale_long_side": 1,
+    }))
+    index = load_candidate_index(index_path)
+    rows = list(iter_candidate_records(index))
+    assignments = list(iter_candidate_shard_assignments(rows, 4, locality_chunk_size=5))
+    assert [row["tile_id"] for row, _rank in assignments] == [row["tile_id"] for row in rows]
+    assert len({row["tile_id"] for row, _rank in assignments}) == len(rows)
+
+    for rank in range(4):
+        shard_rows = [row for row, assigned in assignments if assigned == rank]
+        keys = [(row["tile_source_gid"], tuple(row["tile_actual_scale_xy"])) for row in shard_rows]
+        closed = set()
+        prior = None
+        for key in keys:
+            if key != prior:
+                assert key not in closed
+                if prior is not None:
+                    closed.add(prior)
+                prior = key
+
+    original = kwcoco.CocoImage.imdelay
+    decode_calls = []
+
+    def counted_imdelay(self, *args, **kwargs):
+        decode_calls.append(self.img["id"])
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(kwcoco.CocoImage, "imdelay", counted_imdelay)
+    batches = list(iter_realized_candidate_batches(index, iter(rows), batch_size=2))
+    got = {
+        row["tile_id"]: array
+        for batch, arrays, error in batches
+        for row, array in zip(batch, arrays)
+        if error is None
+    }
+    num_groups = len({
+        (row["tile_source_gid"], tuple(row["tile_actual_scale_xy"])) for row in rows
+    })
+    assert len(decode_calls) == num_groups
+    assert len(batches) > num_groups
+
+    decode_calls.clear()
+    expected = realize_candidate_arrays(index, rows)
+    assert got.keys() == expected.keys()
+    assert all(np.array_equal(got[key], expected[key]) for key in got)
+
+
+def test_materialization_streams_bounded_crop_batches(tmp_path, monkeypatch):
+    from kwcoco_detector_kit.data import candidates
+
+    src = _odd_source(tmp_path)
+    index_path = tmp_path / "materialize-index"
+    candidates.enumerate_candidates(candidates.CandidateConfig.cli(argv=False, data={
+        "src": str(src), "dst": str(index_path), "category_names": "widget",
+        "tile_size": 12, "source_scales": "1.0,0.5", "stride_frac": 1.0,
+        "min_source_scale_long_side": 1,
+    }))
+    index = candidates.load_candidate_index(index_path)
+    rows = list(candidates.iter_candidate_records(index))
+    assert len(rows) > 16
+
+    def forbidden_full_mapping(*args, **kwargs):
+        raise AssertionError("materialization must not build the full array mapping")
+
+    monkeypatch.setattr(candidates, "realize_candidate_arrays", forbidden_full_mapping)
+    original_batches = candidates.iter_realized_candidate_batches
+    observed_batch_sizes = []
+
+    def instrumented_batches(*args, **kwargs):
+        for batch, arrays, error in original_batches(*args, **kwargs):
+            observed_batch_sizes.append(len(batch))
+            yield batch, arrays, error
+
+    monkeypatch.setattr(candidates, "iter_realized_candidate_batches", instrumented_batches)
+    out = candidates.materialize_candidates(
+        index, iter(rows), cache_dpath=tmp_path / "cache", batch_size=4,
+    )
+    assert out.n_images == len(rows)
+    assert max(observed_batch_sizes) <= 4
+    assert len(observed_batch_sizes) > 4
+    assert all(Path(img["file_name"]).is_file() for img in out.images().objs)

@@ -189,89 +189,115 @@ def _atomic_json(data, path):
 def _run_virtual(config, predictor, dst_fpath):
     """Mine a virtual index with durable per-batch progress and exact resume."""
     from kwcoco_detector_kit.data.candidates import (
-        load_candidate_index, materialize_candidates, realize_candidate_arrays,
+        iter_candidate_records, load_candidate_index, materialize_candidates,
+        realize_candidate_arrays,
     )
     from kwcoco_detector_kit.predictors._interface import predict_batch
 
     index = load_candidate_index(config.candidate_index)
-    rows = index["candidates"]
     max_candidates = int(config.max_candidates or 0)
-    if max_candidates and max_candidates < len(rows):
-        wanted = set(stratified_candidate_ids(rows, max_candidates, config.candidate_seed))
-        rows = [row for row in rows if row["tile_id"] in wanted]
+    if max_candidates and max_candidates < index["num_candidates"]:
+        import heapq
+        heap = []
+        seed = int(config.candidate_seed)
+        for row in iter_candidate_records(index):
+            priority = int(hashlib.sha256(
+                f"{seed}:{row['tile_id']}".encode()
+            ).hexdigest(), 16)
+            item = (-priority, row["tile_id"], row)
+            if len(heap) < max_candidates:
+                heapq.heappush(heap, item)
+            elif item > heap[0]:
+                heapq.heapreplace(heap, item)
+        selected_rows = [item[2] for item in heap]
+        selected_rows.sort(key=lambda row: (
+            row["tile_source_gid"], tuple(row["tile_actual_scale_xy"]),
+            row["tile_scaled_extent_xyxy"], row["tile_id"],
+        ))
+        row_iter = iter(selected_rows)
+    else:
+        row_iter = iter_candidate_records(index)
     shard_index, num_shards = int(config.shard_index), int(config.num_shards)
-    rows = [
-        row for row in rows
-        if stable_shard_for_key(row["tile_id"], num_shards) == shard_index
-    ]
-    rows.sort(key=lambda row: row["tile_id"])
-    expected_ids = [row["tile_id"] for row in rows]
-    expected_digest = hashlib.sha256("\n".join(expected_ids).encode()).hexdigest()
     ledger_path = Path(config.ledger) if config.ledger else dst_fpath.with_suffix(".mine_ledger.json")
     progress_path = ledger_path.with_suffix(ledger_path.suffix + ".progress.jsonl")
     records_by_id = {}
-    expected_set = set(expected_ids)
     if progress_path.is_file():
         for line in progress_path.read_text().splitlines():
             try:
                 record = json.loads(line)
             except json.JSONDecodeError:
                 break  # killed during the final append; safely redo that bounded row
-            if record.get("tile_id") in expected_set:
+            if record.get("tile_id"):
                 records_by_id[record["tile_id"]] = record
-    pending = [row for row in rows if row["tile_id"] not in records_by_id]
     progress_path.parent.mkdir(parents=True, exist_ok=True)
     batch_size = max(1, int(config.batch_size))
-    with open(progress_path, "a", encoding="utf8") as progress:
-        for start in range(0, len(pending), batch_size):
-            batch = pending[start:start + batch_size]
-            batch_records = []
+    expected_hasher = hashlib.sha256()
+    expected_count = 0
+
+    def _score_batch(batch, progress):
+        if not batch:
+            return
+        batch_records = []
+        try:
+            arrays_by_id = realize_candidate_arrays(index, batch)
+            arrays = [arrays_by_id[row["tile_id"]] for row in batch]
+            sizes = [(arr.shape[1], arr.shape[0]) for arr in arrays]
+        except Exception as ex:
+            batch_records = [{
+                "tile_id": row["tile_id"], "status": "read_error",
+                "error": f"{type(ex).__name__}: {ex}",
+            } for row in batch]
+        if not batch_records:
             try:
-                arrays_by_id = realize_candidate_arrays(index, batch)
-                arrays = [arrays_by_id[row["tile_id"]] for row in batch]
-                sizes = [(arr.shape[1], arr.shape[0]) for arr in arrays]
+                results = predict_batch(predictor, arrays, sizes)
+                if len(results) != len(batch):
+                    raise RuntimeError(
+                        f"predict_batch cardinality mismatch: {len(results)} != {len(batch)}"
+                    )
+                for row, detections in zip(batch, results):
+                    top = max(detections, key=lambda d: float(d.get("score", 0)), default=None)
+                    batch_records.append({
+                        "tile_id": row["tile_id"], "status": "ok",
+                        "max_score": float(top.get("score", 0)) if top else 0.0,
+                        "top_label": None if top is None else int(top.get("label", 0)),
+                        "top_bbox_xyxy": None if top is None else top.get("bbox_xyxy"),
+                    })
             except Exception as ex:
                 batch_records = [{
-                    "tile_id": row["tile_id"], "status": "read_error",
+                    "tile_id": row["tile_id"], "status": "predict_error",
                     "error": f"{type(ex).__name__}: {ex}",
                 } for row in batch]
-            if not batch_records:
-                try:
-                    results = predict_batch(predictor, arrays, sizes)
-                    if len(results) != len(batch):
-                        raise RuntimeError(
-                            f"predict_batch cardinality mismatch: {len(results)} != {len(batch)}"
-                        )
-                    for row, detections in zip(batch, results):
-                        top = max(detections, key=lambda d: float(d.get("score", 0)), default=None)
-                        batch_records.append({
-                            "tile_id": row["tile_id"], "status": "ok",
-                            "max_score": float(top.get("score", 0)) if top else 0.0,
-                            "top_label": None if top is None else int(top.get("label", 0)),
-                            "top_bbox_xyxy": None if top is None else top.get("bbox_xyxy"),
-                        })
-                except Exception as ex:
-                    batch_records = [{
-                        "tile_id": row["tile_id"], "status": "predict_error",
-                        "error": f"{type(ex).__name__}: {ex}",
-                    } for row in batch]
-            for record in batch_records:
-                progress.write(json.dumps(record, sort_keys=True) + "\n")
-                records_by_id[record["tile_id"]] = record
-            progress.flush()
-            os.fsync(progress.fileno())
-            delay = float(os.environ.get("KCD_MINE_TEST_BATCH_DELAY", "0"))
-            if delay:
-                time.sleep(delay)
+        for record in batch_records:
+            progress.write(json.dumps(record, sort_keys=True) + "\n")
+            records_by_id[record["tile_id"]] = record
+        progress.flush()
+        os.fsync(progress.fileno())
+        delay = float(os.environ.get("KCD_MINE_TEST_BATCH_DELAY", "0"))
+        if delay:
+            time.sleep(delay)
 
-    records = [records_by_id[tile_id] for tile_id in expected_ids]
+    with open(progress_path, "a", encoding="utf8") as progress:
+        batch = []
+        for row in row_iter:
+            if stable_shard_for_key(row["tile_id"], num_shards) != shard_index:
+                continue
+            expected_hasher.update((row["tile_id"] + "\n").encode())
+            expected_count += 1
+            if row["tile_id"] not in records_by_id:
+                batch.append(row)
+                if len(batch) >= batch_size:
+                    _score_batch(batch, progress)
+                    batch = []
+        _score_batch(batch, progress)
+
+    expected_digest = expected_hasher.hexdigest()
+    records = list(records_by_id.values())
     failures = [row for row in records if row["status"] != "ok"]
     ledger = {
         "schema_version": 2, "shard_index": shard_index, "num_shards": num_shards,
         "expected_identity_digest": expected_digest,
-        "expected_tile_ids": expected_ids,
-        "num_expected": len(expected_ids), "num_records": len(records),
-        "num_failures": len(failures), "scan_complete": len(records) == len(expected_ids),
+        "num_expected": expected_count, "num_records": len(records),
+        "num_failures": len(failures), "scan_complete": len(records) == expected_count,
         "scan_successful": not failures, "records": records,
     }
     _atomic_json(ledger, ledger_path)
@@ -285,7 +311,11 @@ def _run_virtual(config, predictor, dst_fpath):
         for row in good if row["max_score"] >= float(config.score_thresh)
     }
     selected_scores = dict(list(selected_scores.items())[:int(config.max_hard_per_round)])
-    selected = [row for row in rows if row["tile_id"] in selected_scores]
+    selected = [
+        row for row in iter_candidate_records(index)
+        if row["tile_id"] in selected_scores
+        and stable_shard_for_key(row["tile_id"], num_shards) == shard_index
+    ]
     if selected and not config.cache_dpath:
         raise ValueError("cache_dpath is required to admit virtual candidates")
     out = materialize_candidates(

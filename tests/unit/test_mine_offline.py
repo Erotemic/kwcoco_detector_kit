@@ -204,7 +204,8 @@ def test_virtual_mining_subprocess_interruption_resume(synthetic_kwcoco, tmp_wor
     proc.kill()
     proc.wait(timeout=5)
     prior = progress_path.read_text().splitlines()
-    assert 1 < len(prior) < json.loads(index_path.read_text())["num_candidates"]
+    manifest = json.loads((index_path / "manifest.json").read_text())
+    assert 1 < len(prior) < manifest["num_candidates"]
     subprocess.run([sys.executable, str(helper), str(config_path)], check=True, timeout=60)
     doc = json.loads(ledger.read_text())
     assert doc["scan_complete"] and doc["scan_successful"]

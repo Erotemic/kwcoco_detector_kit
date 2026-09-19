@@ -5,6 +5,7 @@ import json
 import kwcoco
 import kwimage
 import numpy as np
+import pytest
 
 
 def _odd_source(tmp_path):
@@ -25,7 +26,7 @@ def _odd_source(tmp_path):
 def test_virtual_candidates_match_eager_pixels_and_identity(tmp_path):
     from kwcoco_detector_kit.data.candidates import (
         CandidateConfig, enumerate_candidates, load_candidate_index,
-        materialize_candidates,
+        materialize_candidate_records, materialize_candidates,
     )
     from kwcoco_detector_kit.data.tile import TileConfig, run as tile_run
     from kwcoco_detector_kit.data.tile_cache import sha256_file
@@ -43,7 +44,7 @@ def test_virtual_candidates_match_eager_pixels_and_identity(tmp_path):
     enumerate_candidates(cfg)
     index = load_candidate_index(index_path)
     assert index["num_candidates"] > 0
-    row = index["candidates"][0]
+    row = materialize_candidate_records(index, limit=1)[0]
     sx, sy = row["tile_actual_scale_xy"]
     assert sx != sy
     assert row["context"] == {"cohort": "alpha"}
@@ -118,3 +119,42 @@ def test_predict_batch_cardinality_mismatch_is_durable_failure(tmp_path, monkeyp
     assert doc["scan_successful"] is False
     assert doc["num_failures"] == doc["num_expected"] > 0
     assert all("cardinality mismatch" in row["error"] for row in doc["records"])
+
+
+def test_streaming_index_is_deterministic_sharded_and_validated(tmp_path):
+    from kwcoco_detector_kit.data.candidates import (
+        CandidateConfig, enumerate_candidates, iter_candidate_records,
+        iter_candidate_records_for_shard, load_candidate_index,
+    )
+
+    src = _odd_source(tmp_path)
+    roots = [tmp_path / "index1", tmp_path / "index2"]
+    for root in roots:
+        enumerate_candidates(CandidateConfig.cli(argv=False, data={
+            "src": str(src), "dst": str(root), "category_names": "widget",
+            "tile_size": 16, "source_scales": "1.0", "stride_frac": .5,
+            "min_source_scale_long_side": 1, "rows_per_shard": 5,
+        }))
+    manifests = [load_candidate_index(root) for root in roots]
+    for manifest in manifests:
+        manifest.pop("index_dpath")
+        assert "candidates" not in manifest
+        assert len(manifest["candidate_shards"]) > 1
+    assert manifests[0] == manifests[1]
+    for shard in manifests[0]["candidate_shards"]:
+        assert (roots[0] / shard["name"]).read_bytes() == (roots[1] / shard["name"]).read_bytes()
+    ids1 = [row["tile_id"] for row in iter_candidate_records(roots[0])]
+    ids2 = [row["tile_id"] for row in iter_candidate_records(roots[1])]
+    assert ids1 == ids2
+    assert len(ids1) == manifests[0]["num_candidates"]
+
+    # A physical shard iterator does not touch unrelated shard data.
+    unrelated = roots[0] / manifests[0]["candidate_shards"][1]["name"]
+    original = unrelated.read_bytes()
+    unrelated.write_bytes(b"corrupt unrelated shard\n")
+    assert list(iter_candidate_records_for_shard(roots[0], 0))
+    with pytest.raises(ValueError, match="validation failed|invalid candidate"):
+        list(iter_candidate_records(roots[0]))
+    unrelated.write_bytes(original[:-7])
+    with pytest.raises(ValueError, match="validation failed|invalid candidate"):
+        list(iter_candidate_records(roots[0]))

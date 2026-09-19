@@ -40,6 +40,138 @@ class CandidateConfig(kwconf.Config):
     min_source_scale_long_side = kwconf.Value(64)
     source_dataset_fingerprint = kwconf.Value(None)
     context_fields = kwconf.Value("video_id,date_captured,sensor_coarse,cohort,context")
+    rows_per_shard = kwconf.Value(10000)
+
+
+class _CandidateIndexWriter:
+    """Bounded-memory JSONL shard writer; manifest publication is the commit."""
+
+    def __init__(self, root, base_manifest, rows_per_shard):
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.base_manifest = base_manifest
+        self.rows_per_shard = max(1, int(rows_per_shard))
+        self.shards = []
+        self.total = 0
+        self._file = None
+        self._hasher = None
+        self._count = 0
+        self._tmp = None
+
+    def _open(self):
+        index = len(self.shards)
+        name = f"candidates-{index:05d}.jsonl"
+        self._final = self.root / name
+        self._tmp = self.root / f".{name}.{os.getpid()}.tmp"
+        self._file = open(self._tmp, "xb")
+        import hashlib
+        self._hasher = hashlib.sha256()
+        self._count = 0
+
+    def write(self, row):
+        if self._file is None:
+            self._open()
+        payload = json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+        self._file.write(payload)
+        self._hasher.update(payload)
+        self._count += 1
+        self.total += 1
+        if self._count >= self.rows_per_shard:
+            self._close_shard()
+
+    def _close_shard(self):
+        if self._file is None:
+            return
+        self._file.flush()
+        os.fsync(self._file.fileno())
+        self._file.close()
+        os.replace(self._tmp, self._final)
+        self.shards.append({
+            "name": self._final.name, "num_candidates": self._count,
+            "sha256": self._hasher.hexdigest(),
+        })
+        self._file = self._tmp = self._hasher = None
+        self._count = 0
+
+    def close(self):
+        self._close_shard()
+        manifest = {
+            **self.base_manifest,
+            "num_candidates": self.total,
+            "candidate_shards": self.shards,
+            "candidate_content_digest": canonical_candidate_shard_digest(self.shards),
+        }
+        _atomic_json(manifest, self.root / "manifest.json")
+        return manifest
+
+
+def canonical_candidate_shard_digest(shards):
+    from kwcoco_detector_kit.data.tile_cache import canonical_digest
+    return canonical_digest([
+        {"sha256": row["sha256"], "num_candidates": row["num_candidates"]}
+        for row in shards
+    ])
+
+
+def load_candidate_index(path):
+    """Load only the small index manifest, never all candidate rows."""
+    root = Path(path)
+    manifest_path = root / "manifest.json" if root.is_dir() else root
+    doc = json.loads(manifest_path.read_text())
+    if doc.get("candidate_content_digest") != canonical_candidate_shard_digest(
+        doc.get("candidate_shards", [])
+    ):
+        raise ValueError("candidate manifest shard digest mismatch")
+    doc["index_dpath"] = str(manifest_path.parent.resolve())
+    return doc
+
+
+def iter_candidate_records(path, *, file_shard_indices=None, validate=True):
+    """Stream records in deterministic generation order with digest checks."""
+    import hashlib
+
+    manifest = load_candidate_index(path) if not isinstance(path, dict) else path
+    root = Path(manifest["index_dpath"])
+    wanted = None if file_shard_indices is None else set(map(int, file_shard_indices))
+    total = 0
+    for index, shard in enumerate(manifest["candidate_shards"]):
+        if wanted is not None and index not in wanted:
+            continue
+        hasher = hashlib.sha256()
+        count = 0
+        with open(root / shard["name"], "rb") as file:
+            for line_number, line in enumerate(file, 1):
+                hasher.update(line)
+                try:
+                    row = json.loads(line)
+                except Exception as ex:
+                    raise ValueError(
+                        f"invalid candidate JSONL {shard['name']}:{line_number}: {ex}"
+                    ) from ex
+                count += 1
+                total += 1
+                yield row
+        if validate and (
+            count != shard["num_candidates"] or hasher.hexdigest() != shard["sha256"]
+        ):
+            raise ValueError(f"candidate shard validation failed: {shard['name']}")
+    if validate and wanted is None and total != manifest["num_candidates"]:
+        raise ValueError("candidate index count mismatch")
+
+
+def iter_candidate_records_for_shard(path, shard_index):
+    """Read one physical deterministic file shard and no unrelated files."""
+    yield from iter_candidate_records(path, file_shard_indices=[shard_index])
+
+
+def materialize_candidate_records(path, limit=None):
+    """Explicit small-workflow compatibility helper."""
+    rows = []
+    for row in iter_candidate_records(path):
+        rows.append(row)
+        if limit is not None and len(rows) >= int(limit):
+            break
+    return rows
 
 
 def enumerate_candidates(config):
@@ -78,8 +210,15 @@ def enumerate_candidates(config):
     }
     policy_fingerprint = canonical_digest(policy)
     context_fields = [p.strip() for p in str(config.context_fields).split(",") if p.strip()]
-    records = []
     source_digests = {}
+    dst = Path(config.dst)
+    base_manifest = {
+        "schema_version": 2, "source_kwcoco": str(src),
+        "source_dataset_fingerprint": source_fingerprint,
+        "policy": policy, "policy_fingerprint": policy_fingerprint,
+        "tile_identity_schema_version": 2,
+    }
+    writer = _CandidateIndexWriter(dst, base_manifest, config.rows_per_shard)
 
     for image in dset.images().objs:
         gid = image["id"]
@@ -168,26 +307,9 @@ def enumerate_candidates(config):
                         "policy_fingerprint": policy_fingerprint,
                         "context": {key: image[key] for key in context_fields if key in image},
                     }
-                    records.append(record)
-    records.sort(key=lambda row: row["tile_id"])
-    doc = {
-        "schema_version": 1, "source_kwcoco": str(src),
-        "source_dataset_fingerprint": source_fingerprint,
-        "policy": policy, "policy_fingerprint": policy_fingerprint,
-        "num_candidates": len(records), "candidates": records,
-    }
-    _atomic_json(doc, config.dst)
-    return Path(config.dst)
-
-
-def load_candidate_index(path):
-    doc = json.loads(Path(path).read_text())
-    if doc.get("num_candidates") != len(doc.get("candidates", [])):
-        raise ValueError("candidate index count mismatch")
-    ids = [row["tile_id"] for row in doc["candidates"]]
-    if len(ids) != len(set(ids)):
-        raise ValueError("candidate index contains duplicate tile identities")
-    return doc
+                    writer.write(record)
+    writer.close()
+    return dst
 
 
 def realize_candidate_arrays(index, records):
@@ -239,7 +361,7 @@ def materialize_candidates(index_path, records, *, cache_dpath, jpeg_quality=90)
     index = load_candidate_index(index_path) if not isinstance(index_path, dict) else index_path
     if records and isinstance(records[0], str):
         wanted = set(records)
-        records = [row for row in index["candidates"] if row["tile_id"] in wanted]
+        records = [row for row in iter_candidate_records(index) if row["tile_id"] in wanted]
     arrays = realize_candidate_arrays(index, records)
     cache = TileMaterializationCache(cache_dpath)
     out = kwcoco.CocoDataset()

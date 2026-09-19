@@ -284,7 +284,7 @@ class TiledPredictor:
             _t = time.perf_counter()
             full_dets = self._base.predict_image(image_np, orig_size)  # GPU
             self.t_infer += time.perf_counter() - _t
-        return {"deferred": None, "offsets": offsets,
+        return {"deferred": None, "offsets": offsets, "source_hw": (H, W),
                 "window_dets": window_dets, "full_dets": full_dets}
 
     @profile
@@ -297,8 +297,20 @@ class TiledPredictor:
         """
         import kwimage
         _t = time.perf_counter()
+        raw_groups = list(raw["window_dets"])
+        full_raw = raw.get("full_dets")
+        has_native_masks = any(
+            isinstance(group, list) and any("mask" in item for item in group)
+            for group in raw_groups
+        ) or (
+            isinstance(full_raw, list) and any("mask" in item for item in full_raw)
+        )
+        if has_native_masks:
+            out = self._merge_native_masks(raw, raw_groups)
+            self.t_nms += time.perf_counter() - _t
+            return out
         parts = []
-        for (x0, y0), det in zip(raw["offsets"], raw["window_dets"]):
+        for (x0, y0), det in zip(raw["offsets"], raw_groups):
             det = self._reduce_window(_to_detections(det))
             if len(det):
                 parts.append(det.translate((x0, y0)))  # vectorized
@@ -317,6 +329,45 @@ class TiledPredictor:
         out = _detections_to_dicts(merged)
         self.t_nms += time.perf_counter() - _t
         return out
+
+    def _merge_native_masks(self, raw, raw_groups):
+        """Translate native crop masks into source coordinates before NMS."""
+        full_h, full_w = raw["source_hw"]
+        merged = []
+        for (x0, y0), records in zip(raw["offsets"], raw_groups):
+            records = [dict(record) for record in records]
+            records = [
+                record for record in records
+                if float(record.get("score", 0)) >= self._pre_nms_score_thresh
+            ]
+            if self._per_window_nms:
+                records = _per_class_nms(records, self._nms_thresh)
+            if self._pre_nms_topk and len(records) > self._pre_nms_topk:
+                records.sort(key=lambda item: float(item["score"]), reverse=True)
+                records = records[:self._pre_nms_topk]
+            for record in records:
+                box = list(map(float, record["bbox_xyxy"]))
+                box[0] += x0
+                box[2] += x0
+                box[1] += y0
+                box[3] += y0
+                record["bbox_xyxy"] = box
+                if "mask" in record:
+                    crop_mask = np.asarray(record["mask"], dtype=bool)
+                    canvas = np.zeros((full_h, full_w), dtype=bool)
+                    mh = min(crop_mask.shape[0], full_h - y0)
+                    mw = min(crop_mask.shape[1], full_w - x0)
+                    if mh > 0 and mw > 0:
+                        canvas[y0:y0 + mh, x0:x0 + mw] = crop_mask[:mh, :mw]
+                    record["mask"] = canvas
+                merged.append(record)
+        if raw.get("full_dets") is not None:
+            merged.extend(dict(record) for record in raw["full_dets"])
+        merged = _per_class_nms(merged, self._nms_thresh)
+        if self._max_dets is not None and len(merged) > self._max_dets:
+            merged.sort(key=lambda item: float(item["score"]), reverse=True)
+            merged = merged[:self._max_dets]
+        return merged
 
     @profile
     def _reduce_window(self, det):
@@ -339,7 +390,10 @@ class TiledPredictor:
                 _t = time.perf_counter()
                 dets = self._base.predict_image(crop, (cw, ch))
                 self.t_infer += time.perf_counter() - _t
-                yield _to_detections(dets)
+                if dets and any("mask" in item for item in dets):
+                    yield dets
+                else:
+                    yield _to_detections(dets)
             return
         for i in range(0, len(crops), self._batch_size):
             chunk = crops[i:i + self._batch_size]

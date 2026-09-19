@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import kwcoco
+import numpy as np
 import pytest
 
 
@@ -179,6 +180,109 @@ def test_clipped_annotation_stays_inside_tile(synthetic_kwcoco, tmp_path):
         assert bx >= 0 and by >= 0
         assert bx + bw <= 64 + 1e-3
         assert by + bh <= 64 + 1e-3
+
+
+def _make_boundary_polygon_bundle(tmp_path):
+    import kwimage
+    import numpy as np
+
+    bundle = tmp_path / "boundary_bundle"
+    assets = bundle / "assets"
+    assets.mkdir(parents=True)
+    image = np.zeros((128, 128, 3), dtype=np.uint8)
+    kwimage.imwrite(str(assets / "im.png"), image)
+    dset = kwcoco.CocoDataset()
+    dset.fpath = str(bundle / "data.kwcoco.zip")
+    cid = dset.add_category(name="widget")
+    gid = dset.add_image(file_name="assets/im.png", width=128, height=128)
+    # This straddles the x=64 boundary. With min_keep_fraction > 0.5,
+    # neither fragment is valid positive supervision.
+    polygon = {
+        "exterior": [[60, 10], [68, 10], [68, 50], [60, 50], [60, 10]],
+        "interiors": [],
+    }
+    dset.add_annotation(
+        image_id=gid,
+        category_id=cid,
+        bbox=[60, 10, 8, 40],
+        segmentation=polygon,
+        area=320,
+        iscrowd=0,
+    )
+    dset.dump()
+    return Path(dset.fpath)
+
+
+def test_unsuitable_intersecting_target_is_ignored_not_negative(tmp_path):
+    src = _make_boundary_polygon_bundle(tmp_path)
+    dst = tmp_path / "boundary_tiles.kwcoco.zip"
+    dset = _tile_run(
+        src,
+        dst,
+        mode="multiscale",
+        category_names="widget",
+        progress=False,
+        tile_size=64,
+        source_scales="1.0",
+        stride_frac=1.0,
+        min_keep_fraction=0.75,
+        min_gt_area_frac=0.0001,
+        keep_negative=True,
+    )
+    role_counts = dset.dataset["info"][0]["tile_role_counts"]
+    assert role_counts["ignore"] == 2
+    for img in dset.images().objs:
+        if img["tile_role"] == "negative":
+            x0, y0, x1, y1 = img["tile_extent_xyxy_in_source"]
+            # No emitted negative may overlap the known target rectangle.
+            overlaps = min(x1, 68) > max(x0, 60) and min(y1, 50) > max(y0, 10)
+            assert not overlaps, img
+            assert img["tile_num_intersecting_anns"] == 0
+
+
+def test_multiscale_preserves_segmentation_and_recomputes_geometry(tmp_path):
+    src = _make_boundary_polygon_bundle(tmp_path)
+    dst = tmp_path / "seg_tiles.kwcoco.zip"
+    dset = _tile_run(
+        src,
+        dst,
+        mode="multiscale",
+        category_names="widget",
+        progress=False,
+        tile_size=128,
+        source_scales="1.0",
+        stride_frac=1.0,
+        min_keep_fraction=0.1,
+        min_gt_area_frac=0.0001,
+        keep_negative=True,
+    )
+    assert dset.n_annots == 1
+    ann = dset.dataset["annotations"][0]
+    assert ann.get("segmentation") is not None
+    assert np.allclose(ann["bbox"], [60, 10, 8, 40])
+    assert np.isclose(ann["area"], 320)
+
+
+def test_materialization_cache_is_reused_across_manifests(synthetic_kwcoco, tmp_path):
+    cache_dpath = tmp_path / "tile_cache"
+    kwargs = {
+        "mode": "multiscale",
+        "category_names": "widget",
+        "progress": False,
+        "tile_size": 128,
+        "source_scales": "1.0",
+        "min_source_scale_long_side": 32,
+        "cache_dpath": str(cache_dpath),
+    }
+    first = _tile_run(synthetic_kwcoco, tmp_path / "round0.kwcoco.zip", **kwargs)
+    cached_paths = [Path(img["file_name"]) for img in first.images().objs]
+    mtimes = {path: path.stat().st_mtime_ns for path in cached_paths}
+    second = _tile_run(synthetic_kwcoco, tmp_path / "round1.kwcoco.zip", **kwargs)
+    assert [img["tile_id"] for img in first.images().objs] == [
+        img["tile_id"] for img in second.images().objs
+    ]
+    assert all(path.is_absolute() and path.is_file() for path in cached_paths)
+    assert mtimes == {path: path.stat().st_mtime_ns for path in cached_paths}
 
 
 # ---------------------------------------------------------------------------

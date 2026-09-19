@@ -30,10 +30,19 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
+import tempfile
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import kwconf
+
+
+def stable_shard_for_key(key: str, num_shards: int) -> int:
+    """Deterministic shard assignment independent of Python hash randomization."""
+    if int(num_shards) < 1:
+        raise ValueError("num_shards must be positive")
+    return int(hashlib.sha256(str(key).encode()).hexdigest(), 16) % int(num_shards)
 
 
 class MineConfig(kwconf.Config):
@@ -76,6 +85,10 @@ class MineConfig(kwconf.Config):
     candidate_seed = kwconf.Value(0, help="rng seed for random/stratified strategies")
     device = kwconf.Value("cpu", help="torch device (cpu / cuda:N)")
     progress = kwconf.Value(True, help="show ProgIter")
+    batch_size = kwconf.Value(16, help="predictor batch size; scalar backends fall back safely")
+    shard_index = kwconf.Value(0, help="deterministic mining shard index")
+    num_shards = kwconf.Value(1, help="number of disjoint deterministic shards")
+    ledger = kwconf.Value(None, help="optional atomic JSON score ledger (defaults beside dst)")
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -177,22 +190,88 @@ def run(config):
     else:
         print(f"      budget: unlimited (scoring all {n_pool} candidates)")
 
+    num_shards = int(config.num_shards)
+    shard_index = int(config.shard_index)
+    if num_shards < 1 or not 0 <= shard_index < num_shards:
+        raise ValueError(f"invalid shard {shard_index}/{num_shards}")
+
+    def _stable_key(gid):
+        img = neg_dset.imgs[gid]
+        key = img.get("tile_id") or json.dumps({
+            "source": img.get("tile_source_gid", gid),
+            "scale": img.get("tile_actual_scale"),
+            "extent": img.get("tile_extent_xyxy_in_source"),
+        }, sort_keys=True, separators=(",", ":"))
+        return str(key)
+
+    candidate_gids = [
+        gid for gid in candidate_gids
+        if stable_shard_for_key(_stable_key(gid), num_shards) == shard_index
+    ]
+    print(f"      shard: {shard_index}/{num_shards} -> {len(candidate_gids)} candidates")
+
     scored: List[Tuple[float, int]] = []
-    iterator = ub.ProgIter(candidate_gids, desc="mine score neg tiles", enabled=bool(config.progress))
-    for gid in iterator:
-        try:
-            arr = neg_dset.coco_image(gid).imdelay().finalize()
-        except Exception as ex:
-            print(f"  warn: failed to read gid {gid}: {ex}")
+    ledger_records = []
+    batch_size = max(1, int(config.batch_size))
+    from kwcoco_detector_kit.predictors._interface import predict_batch
+    iterator = ub.ProgIter(
+        range(0, len(candidate_gids), batch_size),
+        total=(len(candidate_gids) + batch_size - 1) // batch_size,
+        desc="mine score neg tile batches", enabled=bool(config.progress),
+    )
+    for start in iterator:
+        gids = candidate_gids[start:start + batch_size]
+        arrays, sizes, valid_gids = [], [], []
+        for gid in gids:
+            try:
+                arr = neg_dset.coco_image(gid).imdelay().finalize()
+                if arr.ndim == 2:
+                    arr = np.repeat(arr[..., None], 3, axis=-1)
+                if arr.shape[2] == 4:
+                    arr = arr[..., :3]
+                arrays.append(arr)
+                sizes.append((arr.shape[1], arr.shape[0]))
+                valid_gids.append(gid)
+            except Exception as ex:
+                ledger_records.append({
+                    "gid": gid, "tile_id": _stable_key(gid),
+                    "status": "read_error", "error": f"{type(ex).__name__}: {ex}",
+                })
+        if not arrays:
             continue
-        if arr.ndim == 2:
-            arr = np.repeat(arr[..., None], 3, axis=-1)
-        if arr.shape[2] == 4:
-            arr = arr[..., :3]
-        orig_h, orig_w = arr.shape[:2]
-        detections = predictor.predict_image(arr, (orig_w, orig_h))
-        s = max((float(d.get("score", 0.0)) for d in detections), default=0.0)
-        scored.append((s, gid))
+        try:
+            result_batch = predict_batch(predictor, arrays, sizes)
+        except Exception as ex:
+            for gid in valid_gids:
+                ledger_records.append({
+                    "gid": gid, "tile_id": _stable_key(gid),
+                    "status": "predict_error", "error": f"{type(ex).__name__}: {ex}",
+                })
+            continue
+        for gid, detections in zip(valid_gids, result_batch):
+            top = max(detections, key=lambda d: float(d.get("score", 0.0)), default=None)
+            score = float(top.get("score", 0.0)) if top else 0.0
+            scored.append((score, gid))
+            ledger_records.append({
+                "gid": gid, "tile_id": _stable_key(gid), "status": "ok",
+                "max_score": score,
+                "top_label": None if top is None else int(top.get("label", 0)),
+                "top_bbox_xyxy": None if top is None else top.get("bbox_xyxy"),
+            })
+
+    ledger_fpath = Path(config.ledger) if config.ledger else dst_fpath.with_suffix(".mine_ledger.json")
+    ledger_fpath.parent.mkdir(parents=True, exist_ok=True)
+    ledger_doc = {
+        "schema_version": 1, "complete": True,
+        "shard_index": shard_index, "num_shards": num_shards,
+        "num_expected": len(candidate_gids), "num_records": len(ledger_records),
+        "records": ledger_records,
+    }
+    with tempfile.NamedTemporaryFile("w", dir=ledger_fpath.parent, delete=False) as file:
+        json.dump(ledger_doc, file, indent=2)
+        file.write("\n")
+        tmp_ledger = Path(file.name)
+    os.replace(tmp_ledger, ledger_fpath)
 
     thresh = float(config.score_thresh)
     max_keep = int(config.max_hard_per_round)

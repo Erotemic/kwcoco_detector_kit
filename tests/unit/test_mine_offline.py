@@ -18,6 +18,18 @@ import numpy as np
 import pytest
 
 
+def test_stable_shards_have_exact_disjoint_coverage():
+    from kwcoco_detector_kit.data.mine import stable_shard_for_key
+    keys = [f"tile-{idx:05d}" for idx in range(1000)]
+    shards = [
+        {key for key in keys if stable_shard_for_key(key, 4) == rank}
+        for rank in range(4)
+    ]
+    assert set.union(*shards) == set(keys)
+    assert sum(map(len, shards)) == len(keys)
+    assert all(shards[i].isdisjoint(shards[j]) for i in range(4) for j in range(i))
+
+
 def _build_neg_bundle(bundle_dpath: Path, n: int, seed: int = 0) -> Path:
     import kwimage
     rng = np.random.RandomState(seed)

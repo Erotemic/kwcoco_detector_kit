@@ -124,6 +124,7 @@ def provenance_dict() -> Dict[str, Any]:
     kit_root = _kit_repo_root()
     deimv2 = (kit_root / "tpl" / "DEIMv2") if kit_root else None
     ogdino = (kit_root / "tpl" / "Open-GroundingDino") if kit_root else None
+    rfdetr = (kit_root / "tpl" / "rf-detr") if kit_root else None
 
     # Track where each value came from so we can surface confusing
     # situations (e.g. file says X but git says Y).
@@ -145,6 +146,7 @@ def provenance_dict() -> Dict[str, Any]:
     kit_sha = _resolve_with_src("KCD_PROVENANCE_KIT_SHA", "kit_sha", kit_root)
     deimv2_sha = _resolve_with_src("KCD_PROVENANCE_DEIMV2_SHA", "deimv2_sha", deimv2)
     ogdino_sha = _resolve_with_src("KCD_PROVENANCE_OGDINO_SHA", "opengroundingdino_sha", ogdino)
+    rfdetr_sha = _resolve_with_src("KCD_PROVENANCE_RFDETR_SHA", "rfdetr_sha", rfdetr)
     dataloader_sha = _resolve_with_src("KCD_PROVENANCE_DATALOADER_SHA", "kwcoco_dataloader_sha", dataloader)
     # Build-time-only fields (no runtime git fallback): present iff the
     # image baked /etc/kcd_provenance.json (see Dockerfile).
@@ -162,6 +164,7 @@ def provenance_dict() -> Dict[str, Any]:
     kit_dirty = _git_dirty(kit_root) if kit_root else None
     deimv2_dirty = _git_dirty(deimv2) if deimv2 else None
     ogdino_dirty = _git_dirty(ogdino) if ogdino else None
+    rfdetr_dirty = _git_dirty(rfdetr) if rfdetr else None
 
     return {
         "kit_sha": kit_sha,
@@ -170,6 +173,8 @@ def provenance_dict() -> Dict[str, Any]:
         "deimv2_dirty": deimv2_dirty,
         "opengroundingdino_sha": ogdino_sha,
         "opengroundingdino_dirty": ogdino_dirty,
+        "rfdetr_sha": rfdetr_sha,
+        "rfdetr_dirty": rfdetr_dirty,
         "kwcoco_dataloader_sha": dataloader_sha,
         "build_time": build_time,
         "dockerfile_sha256": dockerfile_sha256,

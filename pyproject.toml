@@ -85,6 +85,9 @@ kwcoco-dataloader = [
     "kwcoco-dataloader>=0.1.3",
     "ndsampler>=0.7",
 ]
+rfdetr = [
+    "rfdetr[train,loggers]==1.10.1",
+]
 # Dev / test
 dev = [
     "pytest>=8",

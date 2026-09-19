@@ -22,6 +22,28 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 
+def _segmentation_to_mscoco(segmentation, *, height: int, width: int):
+    """Convert kwcoco polygons/RLE to the strict MS-COCO representation.
+
+    kwcoco's ``{"exterior": ..., "interiors": ...}`` polygon dictionaries
+    are richer than MS-COCO's flat polygon lists.  Hole-free polygons can be
+    represented losslessly as lists; geometries with holes are rasterized to
+    uncompressed RLE so the negative space is not accidentally filled.
+    """
+    import kwimage
+
+    seg = kwimage.Segmentation.coerce(segmentation)
+    mpoly = seg.to_multi_polygon()
+    if all(not poly.interiors for poly in mpoly.data):
+        return [poly.to_coco(style="orig") for poly in mpoly.data]
+    mask = seg.to_mask(dims=(int(height), int(width)))
+    rle = mask.to_coco(style="orig")
+    return {
+        "size": [int(height), int(width)],
+        "counts": rle["counts"],
+    }
+
+
 def export_mscoco(
     src,
     dst,
@@ -99,6 +121,7 @@ def export_mscoco(
             "bbox": ann.get("bbox"),
             "area": float(ann.get("area", 0.0)),
         }
+        image = src_dset.imgs[gid]
         # Fall back to segmentation bbox when bbox is missing (mirror of v9 ensure_true_bboxes).
         if new_ann["bbox"] is None and ann.get("segmentation") is not None:
             seg = kwimage.Segmentation.coerce(ann["segmentation"]).to_multi_polygon()
@@ -107,7 +130,11 @@ def export_mscoco(
         elif new_ann["bbox"] is not None and not new_ann["area"]:
             new_ann["area"] = float(new_ann["bbox"][2] * new_ann["bbox"][3])
         if include_segmentations and ann.get("segmentation") is not None:
-            new_ann["segmentation"] = ann["segmentation"]
+            new_ann["segmentation"] = _segmentation_to_mscoco(
+                ann["segmentation"],
+                height=int(image["height"]),
+                width=int(image["width"]),
+            )
             if not new_ann["area"]:
                 seg = kwimage.Segmentation.coerce(ann["segmentation"]).to_multi_polygon()
                 new_ann["area"] = float(seg.area)

@@ -10,6 +10,17 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 
+def predict_batch(predictor, images_np, orig_sizes):
+    """Use an optional backend batch method, with a correct serial fallback."""
+    method = getattr(predictor, "predict_batch", None)
+    if callable(method):
+        return method(images_np, orig_sizes)
+    return [
+        predictor.predict_image(image, size)
+        for image, size in zip(images_np, orig_sizes)
+    ]
+
+
 @runtime_checkable
 class DetectorPredictor(Protocol):
     """The trainer-plugin-supplied inference adapter.
@@ -33,5 +44,15 @@ class DetectorPredictor(Protocol):
 
         Returns:
             list of ``{'label': int, 'bbox_xyxy': [x0, y0, x1, y1],
-            'score': float}`` dicts. May be empty.
+            'score': float}`` dicts. A native instance-segmentation backend
+            adds ``mask`` as a 2-D bool/uint8 array in the same ``orig_size``
+            coordinate frame. May be empty.
         """
+
+
+@runtime_checkable
+class BatchDetectorPredictor(DetectorPredictor, Protocol):
+    """Optional acceleration protocol; callers must support serial fallback."""
+
+    def predict_batch(self, images_np, orig_sizes) -> list[list[dict]]:
+        """Score a batch, preserving input order and the per-image contract."""

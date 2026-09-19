@@ -49,6 +49,16 @@ class _FakeBatchDetector(_FakeWindowDetector):
         return [self.predict_image(im, sz) for im, sz in zip(images_np, orig_sizes)]
 
 
+class _FakeMaskDetector(_FakeBatchDetector):
+    def predict_image(self, image_np, orig_size):
+        mask = np.zeros(image_np.shape[:2], dtype=bool)
+        mask[3:13, 2:12] = True
+        return [{
+            "label": 0, "score": 0.9,
+            "bbox_xyxy": [2.0, 3.0, 12.0, 13.0], "mask": mask,
+        }]
+
+
 def test_window_offsets_translate_to_full_image():
     base = _FakeWindowDetector(size=(64, 64))
     pred = TiledPredictor(base, overlap=0.0, keep_full=False)
@@ -102,6 +112,18 @@ def test_batched_path_used_and_equivalent():
     assert max(batched_base.batch_sizes) <= 2     # respected batch_size
     key = lambda ds: sorted((d["label"], *d["bbox_xyxy"]) for d in ds)
     assert key(a) == key(b)                       # identical detections
+
+
+def test_native_masks_are_reconstructed_in_source_coordinates():
+    pred = TiledPredictor(
+        _FakeMaskDetector((64, 64)), overlap=0.0, keep_full=False, batch_size=2,
+    )
+    image = np.zeros((128, 128, 3), dtype=np.uint8)
+    records = pred.predict_image(image, (128, 128))
+    assert len(records) == 4
+    assert all(record["mask"].shape == (128, 128) for record in records)
+    assert sum(int(record["mask"].sum()) for record in records) == 400
+    assert any(record["mask"][67, 66] for record in records)
 
 
 def test_max_dets_caps_top_k_by_score():

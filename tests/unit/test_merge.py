@@ -97,6 +97,45 @@ def test_merge_preserves_positive_annotations(tmp_path):
     assert dset.n_annots == 3
 
 
+def test_merge_preserves_positive_segmentation(tmp_path):
+    pos = _build_role_bundle(tmp_path, "positive", 1)
+    pos_dset = kwcoco.CocoDataset.coerce(str(pos))
+    ann = pos_dset.dataset["annotations"][0]
+    ann["segmentation"] = {
+        "exterior": [[10, 10], [30, 10], [30, 30], [10, 30]],
+        "interiors": [],
+    }
+    pos_dset.dump()
+    neg = _build_role_bundle(tmp_path / "neg_dir", "negative", 1)
+    dst = tmp_path / "out.kwcoco.zip"
+    dset = _merge(pos, neg, dst, neg_over_pos=1.0)
+    assert dset.dataset["annotations"][0]["segmentation"] == ann["segmentation"]
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ["annotation", "kept_count", "intersection_count"],
+)
+def test_merge_rejects_unsafe_negative_pool(tmp_path, corruption):
+    pos = _build_role_bundle(tmp_path, "positive", 1)
+    neg = _build_role_bundle(tmp_path / "neg_dir", "negative", 1)
+    neg_dset = kwcoco.CocoDataset.coerce(str(neg))
+    neg_img = neg_dset.dataset["images"][0]
+    if corruption == "annotation":
+        cid = neg_dset.ensure_category("widget")
+        neg_dset.add_annotation(
+            image_id=neg_img["id"], category_id=cid,
+            bbox=[1, 1, 2, 2], area=4, iscrowd=0,
+        )
+    elif corruption == "kept_count":
+        neg_img["tile_num_kept_anns"] = 1
+    elif corruption == "intersection_count":
+        neg_img["tile_num_intersecting_anns"] = 1
+    neg_dset.dump()
+    with pytest.raises(ValueError, match="background-safety invariants"):
+        _merge(pos, neg, tmp_path / "bad.kwcoco.zip", neg_over_pos=1.0)
+
+
 def _build_multiclass_positive(bundle_dpath: Path, n_per_class: int,
                                category_names=("widget", "gizmo"),
                                seed: int = 0) -> Path:

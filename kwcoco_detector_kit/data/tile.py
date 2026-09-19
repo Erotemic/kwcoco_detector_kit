@@ -93,6 +93,14 @@ class TileConfig(kwconf.Config):
     )
     output_ext = kwconf.Value(".jpg", help="asset extension")
     jpeg_quality = kwconf.Value(90, help="JPEG quality if output_ext is .jpg")
+    cache_dpath = kwconf.Value(
+        None,
+        help=(
+            "optional deterministic materialization cache. When set, tile "
+            "manifests point directly at validated hash-addressed assets so "
+            "identical windows are reused across immutable training rounds"
+        ),
+    )
     progress = kwconf.Value(True, help="show ubelt.ProgIter progress")
     seed = kwconf.Value(0, help="RNG seed (used by sampled modes)")
     oversize_factor = kwconf.Value(
@@ -128,6 +136,14 @@ class TileConfig(kwconf.Config):
     min_gt_area_frac = kwconf.Value(
         0.005,
         help="multiscale: tile is positive iff total surviving GT area / tile_area >= this",
+    )
+    negative_safety_margin = kwconf.Value(
+        0,
+        help=(
+            "multiscale: scaled-image pixels around a crop that must also be "
+            "free of target geometry before the crop can be a training "
+            "negative. A target in this margin makes the window ignored."
+        ),
     )
     min_source_scale_long_side = kwconf.Value(
         64,
@@ -219,6 +235,96 @@ def _imwrite(fpath: Path, image, ext: str, jpeg_quality: int):
             f"image shape={shp} dtype={dt} c_contiguous={contig} "
             f"(expected contiguous uint8 HxWx3 — see _read_image_rgb)"
         ) from ex
+
+
+class _TileWriter:
+    """Write legacy bundle assets or publish them to the shared tile cache."""
+
+    def __init__(self, config, src_dset, src_fpath, dst_fpath, asset_dpath):
+        from kwcoco_detector_kit.data.tile_cache import sha256_file
+
+        self.config = config
+        self.src_dset = src_dset
+        self.dst_fpath = dst_fpath
+        self.asset_dpath = asset_dpath
+        self.dataset_fingerprint = sha256_file(src_fpath)
+        self._source_digests = {}
+        cache_dpath = getattr(config, "cache_dpath", None)
+        if cache_dpath:
+            from kwcoco_detector_kit.data.tile_cache import TileMaterializationCache
+            self.cache = TileMaterializationCache(cache_dpath)
+        else:
+            self.cache = None
+
+    def _source_identity(self, coco_img):
+        from kwcoco_detector_kit.data.tile_cache import sha256_file
+
+        gid = coco_img.img["id"]
+        source_fpath = Path(self.src_dset.get_image_fpath(gid)).resolve()
+        digest = self._source_digests.get(source_fpath)
+        if digest is None:
+            digest = sha256_file(source_fpath)
+            self._source_digests[source_fpath] = digest
+        return source_fpath, digest
+
+    def write(self, image, *, coco_img, stem, extent_xyxy, scale,
+              requested_scale=None, scaled_extent_xyxy=None,
+              interpolation="area", padding="none"):
+        """Materialize one image and return ``(file_name, identity_metadata)``."""
+        import numpy as np
+
+        ext = str(self.config.output_ext)
+        if self.cache is None:
+            asset_fpath = self.asset_dpath / (stem + ext)
+            _imwrite(asset_fpath, image, ext, int(self.config.jpeg_quality))
+            return str(asset_fpath.relative_to(self.dst_fpath.parent)), {}
+
+        import cv2
+        from kwcoco_detector_kit.data.tile_cache import (
+            make_materialization_identity,
+            make_tile_identity,
+        )
+
+        source_fpath, source_digest = self._source_identity(coco_img)
+        tile = make_tile_identity(
+            dataset_fingerprint=self.dataset_fingerprint,
+            source_asset_digest=source_digest,
+            source_image_id=coco_img.img["id"],
+            source_asset_name=str(coco_img.img.get("file_name", source_fpath.name)),
+            extent_xyxy=extent_xyxy,
+            requested_scale=scale if requested_scale is None else requested_scale,
+            actual_scale=scale,
+            scaled_extent_xyxy=scaled_extent_xyxy,
+        )
+        h, w = image.shape[:2]
+        codec = ext.lower().lstrip(".")
+        codec = "jpg" if codec == "jpeg" else codec
+        material = make_materialization_identity(
+            tile_id=tile["tile_id"], output_width=w, output_height=h,
+            interpolation=interpolation, padding=padding,
+            orientation="normalized", color_space="rgb", codec=codec,
+            quality=int(self.config.jpeg_quality) if codec == "jpg" else None,
+            writer_version=_TILE_WRITER_VERSION,
+        )
+        rgb = np.ascontiguousarray(image)
+        encoded_input = rgb[..., ::-1] if rgb.ndim == 3 and rgb.shape[2] == 3 else rgb
+        params = []
+        if codec == "jpg":
+            params = [int(cv2.IMWRITE_JPEG_QUALITY), int(self.config.jpeg_quality)]
+        ok, encoded = cv2.imencode("." + codec, encoded_input, params)
+        if not ok:
+            raise IOError(f"failed to encode cached tile {stem!r} as {codec}")
+        cache_fpath, _created = self.cache.publish_bytes(
+            material, encoded.tobytes(), suffix=codec,
+        )
+        identity_meta = {
+            "tile_id": tile["tile_id"],
+            "tile_identity": tile["tile_id"],
+            "tile_materialization_id": material["materialization_id"],
+            "materialization_identity": material["materialization_id"],
+            "tile_source_asset_sha256": source_digest,
+        }
+        return str(cache_fpath), identity_meta
 
 
 def _clip_bbox_xywh(bbox, x0, y0, x1, y1, min_keep_fraction):
@@ -333,11 +439,58 @@ def _passthrough_fields(src_ann: dict, src_dset=None) -> dict:
     return out
 
 
+def _clip_annotation_geometry(
+    ann,
+    *,
+    source_dims,
+    scale,
+    crop_xyxy,
+    output_dims,
+):
+    """Transform one annotation through source scaling and tile cropping."""
+    from kwcoco_detector_kit.data.tile_geometry import (
+        clip_bbox_geometry,
+        clip_segmentation,
+    )
+
+    segmentation = ann.get("segmentation")
+    if segmentation is not None:
+        return clip_segmentation(
+            segmentation,
+            scale=scale,
+            crop_xyxy=crop_xyxy,
+            source_dims=source_dims,
+            output_dims=output_dims,
+        )
+    bbox = ann.get("bbox")
+    if bbox is None:
+        return None
+    return clip_bbox_geometry(bbox, scale=scale, crop_xyxy=crop_xyxy)
+
+
+def _annotation_from_geometry(ann, geom, *, image_id, category_id, ann_id, src_dset):
+    new_ann = {
+        **_passthrough_fields(ann, src_dset),
+        "id": ann_id,
+        "image_id": image_id,
+        "category_id": category_id,
+        "bbox": list(geom.bbox_xywh),
+        "area": float(geom.area),
+        "iscrowd": int(ann.get("iscrowd", 0)),
+        "tile_keep_fraction": float(geom.visible_fraction),
+    }
+    if geom.segmentation is not None:
+        new_ann["segmentation"] = geom.segmentation
+    if ann.get("id") is not None:
+        new_ann["src_ann_id"] = ann["id"]
+    return new_ann
+
+
 # Bump this when changing the tile-writer's annotation/image emit semantics
 # in a way that downstream consumers can detect (e.g. new passthrough field,
 # new stamping logic). Mixed into the universal-tile cache fingerprint so
 # the launcher gets a fresh hash and rebuilds the bundle.
-_TILE_WRITER_VERSION = 2
+_TILE_WRITER_VERSION = 3
 
 
 def _read_image_rgb(coco_img):
@@ -381,7 +534,7 @@ def _dump_kwcoco(out: dict, dst_fpath: Path):
 # ---------------------------------------------------------------------------
 
 
-def _run_full_only(config, src_dset, dst_fpath, asset_dpath, target_cat_names, src_cid_to_new_cid):
+def _run_full_only(config, src_dset, dst_fpath, asset_dpath, target_cat_names, src_cid_to_new_cid, writer):
     """Resize each source image to ``full_dim``; warp annotations through the scale."""
     import ubelt as ub
 
@@ -402,17 +555,19 @@ def _run_full_only(config, src_dset, dst_fpath, asset_dpath, target_cat_names, s
         gid = coco_img.img["id"]
         anns = [
             ann for ann in src_dset.annots(gid=gid).objs
-            if ann.get("category_id") in src_cid_to_new_cid and ann.get("bbox") is not None
+            if ann.get("category_id") in src_cid_to_new_cid
+            and (ann.get("bbox") is not None or ann.get("segmentation") is not None)
         ]
         resized, scale = _resize_with_long_side(image, full_dim)
         stem = f"gid{gid:08d}_full"
-        asset_fname = stem + str(config.output_ext)
-        asset_fpath = asset_dpath / asset_fname
-        _imwrite(asset_fpath, resized, str(config.output_ext), int(config.jpeg_quality))
         out_h, out_w = resized.shape[:2]
+        file_name, identity_meta = writer.write(
+            resized, coco_img=coco_img, stem=stem,
+            extent_xyxy=(0, 0, w, h), scale=scale,
+        )
         out["images"].append({
             "id": next_gid,
-            "file_name": str(asset_fpath.relative_to(dst_fpath.parent)),
+            "file_name": file_name,
             "width": int(out_w),
             "height": int(out_h),
             "name": stem,
@@ -421,20 +576,27 @@ def _run_full_only(config, src_dset, dst_fpath, asset_dpath, target_cat_names, s
             "tile_resize_scale": float(scale),
             "tile_model_input_size": [int(out_h), int(out_w)],
             "tile_oversize_factor": float(config.oversize_factor),
+            **identity_meta,
         })
         kept_count = 0
         for ann in anns:
-            bx, by, bw, bh = ann["bbox"]
-            new_bbox = [bx * scale, by * scale, bw * scale, bh * scale]
-            out["annotations"].append({
-                **_passthrough_fields(ann, src_dset),
-                "id": next_ann_id,
-                "image_id": next_gid,
-                "category_id": src_cid_to_new_cid[ann["category_id"]],
-                "bbox": new_bbox,
-                "area": float(new_bbox[2] * new_bbox[3]),
-                "iscrowd": int(ann.get("iscrowd", 0)),
-            })
+            geom = _clip_annotation_geometry(
+                ann,
+                source_dims=(h, w),
+                scale=scale,
+                crop_xyxy=(0, 0, out_w, out_h),
+                output_dims=(out_h, out_w),
+            )
+            if geom is None:
+                continue
+            out["annotations"].append(_annotation_from_geometry(
+                ann,
+                geom,
+                image_id=next_gid,
+                category_id=src_cid_to_new_cid[ann["category_id"]],
+                ann_id=next_ann_id,
+                src_dset=src_dset,
+            ))
             next_ann_id += 1
             kept_count += 1
         out["images"][-1]["tile_num_kept_anns"] = kept_count
@@ -446,7 +608,7 @@ def _run_full_only(config, src_dset, dst_fpath, asset_dpath, target_cat_names, s
     print(f"tile.full_only: wrote {n_imgs} images, {n_anns} annotations to {dst_fpath}")
 
 
-def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_names, src_cid_to_new_cid):
+def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_names, src_cid_to_new_cid, writer):
     """NxN overlapping tiles cut from full-resolution source images + optional resized full-frame."""
     import ubelt as ub
 
@@ -473,20 +635,22 @@ def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_names, sr
         gid = coco_img.img["id"]
         anns = [
             ann for ann in src_dset.annots(gid=gid).objs
-            if ann.get("category_id") in src_cid_to_new_cid and ann.get("bbox") is not None
+            if ann.get("category_id") in src_cid_to_new_cid
+            and (ann.get("bbox") is not None or ann.get("segmentation") is not None)
         ]
 
         # full frame
         if bool(config.keep_full):
             full_resized, scale = _resize_with_long_side(image, full_dim)
             stem = f"gid{gid:08d}_full"
-            asset_fname = stem + str(config.output_ext)
-            asset_fpath = asset_dpath / asset_fname
-            _imwrite(asset_fpath, full_resized, str(config.output_ext), int(config.jpeg_quality))
             out_h, out_w = full_resized.shape[:2]
+            file_name, identity_meta = writer.write(
+                full_resized, coco_img=coco_img, stem=stem,
+                extent_xyxy=(0, 0, w, h), scale=scale,
+            )
             out["images"].append({
                 "id": next_gid,
-                "file_name": str(asset_fpath.relative_to(dst_fpath.parent)),
+                "file_name": file_name,
                 "width": int(out_w),
                 "height": int(out_h),
                 "name": stem,
@@ -495,21 +659,30 @@ def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_names, sr
                 "tile_resize_scale": float(scale),
                 "tile_model_input_size": [int(out_h), int(out_w)],
                 "tile_oversize_factor": float(over),
+                **identity_meta,
             })
+            full_kept = 0
             for ann in anns:
-                bx, by, bw, bh = ann["bbox"]
-                new_bbox = [bx * scale, by * scale, bw * scale, bh * scale]
-                out["annotations"].append({
-                    **_passthrough_fields(ann, src_dset),
-                    "id": next_ann_id,
-                    "image_id": next_gid,
-                    "category_id": src_cid_to_new_cid[ann["category_id"]],
-                    "bbox": new_bbox,
-                    "area": float(new_bbox[2] * new_bbox[3]),
-                    "iscrowd": int(ann.get("iscrowd", 0)),
-                })
+                geom = _clip_annotation_geometry(
+                    ann,
+                    source_dims=(h, w),
+                    scale=scale,
+                    crop_xyxy=(0, 0, out_w, out_h),
+                    output_dims=(out_h, out_w),
+                )
+                if geom is None:
+                    continue
+                out["annotations"].append(_annotation_from_geometry(
+                    ann,
+                    geom,
+                    image_id=next_gid,
+                    category_id=src_cid_to_new_cid[ann["category_id"]],
+                    ann_id=next_ann_id,
+                    src_dset=src_dset,
+                ))
                 next_ann_id += 1
-            out["images"][-1]["tile_num_kept_anns"] = len(anns)
+                full_kept += 1
+            out["images"][-1]["tile_num_kept_anns"] = full_kept
             next_gid += 1
 
         # NxN tiles
@@ -520,13 +693,14 @@ def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_names, sr
             tile_image = image[y0:y1, x0:x1]
             tile_resized, scale = _resize_with_long_side(tile_image, disk_tile_dim)
             stem = f"gid{gid:08d}_tile{tile_idx:02d}_g{grid}"
-            asset_fname = stem + str(config.output_ext)
-            asset_fpath = asset_dpath / asset_fname
-            _imwrite(asset_fpath, tile_resized, str(config.output_ext), int(config.jpeg_quality))
             out_h, out_w = tile_resized.shape[:2]
+            file_name, identity_meta = writer.write(
+                tile_resized, coco_img=coco_img, stem=stem,
+                extent_xyxy=(x0, y0, x1, y1), scale=scale,
+            )
             out["images"].append({
                 "id": next_gid,
-                "file_name": str(asset_fpath.relative_to(dst_fpath.parent)),
+                "file_name": file_name,
                 "width": int(out_w),
                 "height": int(out_h),
                 "name": stem,
@@ -537,24 +711,30 @@ def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_names, sr
                 "tile_grid": int(grid),
                 "tile_model_input_size": [int(base_tile_dim), int(base_tile_dim)],
                 "tile_oversize_factor": float(over),
+                **identity_meta,
             })
             kept = 0
             for ann in anns:
-                clipped = _clip_bbox_xywh(ann["bbox"], x0, y0, x1, y1, min_keep)
-                if clipped is None:
+                # Crop in source space, then apply the tile resize. Expressing
+                # the crop in scaled coordinates lets the shared geometry
+                # helper perform both operations in one transform.
+                geom = _clip_annotation_geometry(
+                    ann,
+                    source_dims=(h, w),
+                    scale=scale,
+                    crop_xyxy=(x0 * scale, y0 * scale, x1 * scale, y1 * scale),
+                    output_dims=(out_h, out_w),
+                )
+                if geom is None or geom.visible_fraction < min_keep:
                     continue
-                new_bbox, keep = clipped
-                new_bbox = [v * scale for v in new_bbox]
-                out["annotations"].append({
-                    **_passthrough_fields(ann, src_dset),
-                    "id": next_ann_id,
-                    "image_id": next_gid,
-                    "category_id": src_cid_to_new_cid[ann["category_id"]],
-                    "bbox": new_bbox,
-                    "area": float(new_bbox[2] * new_bbox[3]),
-                    "iscrowd": int(ann.get("iscrowd", 0)),
-                    "tile_keep_fraction": float(keep),
-                })
+                out["annotations"].append(_annotation_from_geometry(
+                    ann,
+                    geom,
+                    image_id=next_gid,
+                    category_id=src_cid_to_new_cid[ann["category_id"]],
+                    ann_id=next_ann_id,
+                    src_dset=src_dset,
+                ))
                 next_ann_id += 1
                 kept += 1
             out["images"][-1]["tile_num_kept_anns"] = kept
@@ -566,7 +746,7 @@ def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_names, sr
     print(f"tile.quadrant: wrote {n_imgs} images, {n_anns} annotations to {dst_fpath}")
 
 
-def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, src_cid_to_new_cid):
+def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, src_cid_to_new_cid, writer):
     """Fixed-size square tiles from N pre-downscaled copies of each source image."""
     import numpy as np
     import ubelt as ub
@@ -579,6 +759,7 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
     min_long_side = int(config.min_source_scale_long_side)
     min_gt_area_abs = float(config.min_gt_area_frac) * (base_tile_size * base_tile_size)
     min_keep = float(config.min_keep_fraction)
+    safety_margin = max(0, int(config.negative_safety_margin))
 
     out = _init_out(config, target_cat_names, "multiscale")
     next_gid = 1
@@ -586,6 +767,7 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
     n_pos = 0
     n_neg_kept = 0
     n_neg_dropped = 0
+    n_ignored = 0
 
     coco_imgs = list(src_dset.images().coco_images)
     iterator = ub.ProgIter(coco_imgs, desc="tile.multiscale", enabled=bool(config.progress))
@@ -599,7 +781,8 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
         gid = coco_img.img["id"]
         anns_src = [
             ann for ann in src_dset.annots(gid=gid).objs
-            if ann.get("category_id") in src_cid_to_new_cid and ann.get("bbox") is not None
+            if ann.get("category_id") in src_cid_to_new_cid
+            and (ann.get("bbox") is not None or ann.get("segmentation") is not None)
         ]
 
         for scale_name, scale_factor in scales:
@@ -611,18 +794,6 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
 
             xs = _grid_positions(sW, disk_tile_size, stride)
             ys = _grid_positions(sH, disk_tile_size, stride)
-
-            anns_scaled = []
-            for ann in anns_src:
-                bx, by, bw, bh = ann["bbox"]
-                anns_scaled.append({
-                    "bbox": [bx * actual_scale, by * actual_scale,
-                             bw * actual_scale, bh * actual_scale],
-                    "iscrowd": int(ann.get("iscrowd", 0)),
-                    "src_ann_id": ann.get("id"),
-                    "new_cid": src_cid_to_new_cid[ann["category_id"]],
-                    "passthrough": _passthrough_fields(ann, src_dset),
-                })
 
             for x0 in xs:
                 for y0 in ys:
@@ -636,29 +807,68 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
 
                     kept_anns = []
                     total_kept_area = 0.0
-                    for ann in anns_scaled:
-                        clipped = _clip_bbox_xywh(
-                            ann["bbox"], x0, y0, x0 + disk_tile_size, y0 + disk_tile_size,
-                            min_keep,
+                    num_intersecting = 0
+                    has_unsafe_target = False
+                    crop_xyxy = (
+                        x0, y0, x0 + disk_tile_size, y0 + disk_tile_size,
+                    )
+                    for ann in anns_src:
+                        geom = _clip_annotation_geometry(
+                            ann,
+                            source_dims=(H, W),
+                            scale=actual_scale,
+                            crop_xyxy=crop_xyxy,
+                            output_dims=(disk_tile_size, disk_tile_size),
                         )
-                        if clipped is None:
+                        if geom is None:
+                            if safety_margin:
+                                margin_geom = _clip_annotation_geometry(
+                                    ann,
+                                    source_dims=(H, W),
+                                    scale=actual_scale,
+                                    crop_xyxy=(
+                                        x0 - safety_margin,
+                                        y0 - safety_margin,
+                                        x0 + disk_tile_size + safety_margin,
+                                        y0 + disk_tile_size + safety_margin,
+                                    ),
+                                    output_dims=(
+                                        disk_tile_size + (2 * safety_margin),
+                                        disk_tile_size + (2 * safety_margin),
+                                    ),
+                                )
+                                if margin_geom is not None:
+                                    has_unsafe_target = True
                             continue
-                        new_bbox, _keep = clipped
-                        kept_anns.append({
-                            "bbox": new_bbox,
-                            "iscrowd": ann["iscrowd"],
-                            "src_ann_id": ann["src_ann_id"],
-                            "new_cid": ann["new_cid"],
-                            "passthrough": ann.get("passthrough", {}),
-                        })
-                        total_kept_area += new_bbox[2] * new_bbox[3]
+                        num_intersecting += 1
+                        if geom.visible_fraction < min_keep:
+                            has_unsafe_target = True
+                            continue
+                        kept_anns.append((ann, geom))
+                        total_kept_area += geom.area
 
-                    is_positive = total_kept_area >= min_gt_area_abs
-                    if not is_positive and not bool(config.keep_negative):
+                    if num_intersecting:
+                        is_positive = (
+                            not has_unsafe_target
+                            and len(kept_anns) == num_intersecting
+                            and total_kept_area >= min_gt_area_abs
+                        )
+                        if not is_positive:
+                            # Known target content is present but cannot be
+                            # represented as valid positive supervision. It is
+                            # never legal to turn this into background.
+                            n_ignored += 1
+                            continue
+                        role = "positive"
+                    elif has_unsafe_target:
+                        n_ignored += 1
+                        continue
+                    else:
+                        role = "negative"
+
+                    if role == "negative" and not bool(config.keep_negative):
                         n_neg_dropped += 1
                         continue
-
-                    role = "positive" if is_positive else "negative"
 
                     src_x0 = int(round(x0 / max(actual_scale, 1e-6)))
                     src_y0 = int(round(y0 / max(actual_scale, 1e-6)))
@@ -667,13 +877,20 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
 
                     stem = (f"gid{gid:08d}_{scale_name}"
                             f"_x{x0:05d}_y{y0:05d}_{role}")
-                    asset_fname = stem + str(config.output_ext)
-                    asset_fpath = asset_dpath / asset_fname
-                    _imwrite(asset_fpath, crop, str(config.output_ext), int(config.jpeg_quality))
+                    was_padded = (y1 - y0 < disk_tile_size or x1 - x0 < disk_tile_size)
+                    file_name, identity_meta = writer.write(
+                        crop, coco_img=coco_img, stem=stem,
+                        extent_xyxy=(src_x0, src_y0, src_x1, src_y1),
+                        scale=actual_scale,
+                        requested_scale=scale_factor,
+                        scaled_extent_xyxy=(x0, y0, x0 + disk_tile_size, y0 + disk_tile_size),
+                        interpolation="area",
+                        padding="zero_bottom_right" if was_padded else "none",
+                    )
 
                     out["images"].append({
                         "id": next_gid,
-                        "file_name": str(asset_fpath.relative_to(dst_fpath.parent)),
+                        "file_name": file_name,
                         "width": int(disk_tile_size),
                         "height": int(disk_tile_size),
                         "name": stem,
@@ -684,31 +901,44 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
                         "tile_extent_xyxy_in_source": [src_x0, src_y0, src_x1, src_y1],
                         "tile_role": role,
                         "tile_num_kept_anns": len(kept_anns),
+                        "tile_num_intersecting_anns": int(num_intersecting),
                         "tile_model_input_size": [int(base_tile_size), int(base_tile_size)],
                         "tile_oversize_factor": float(over),
+                        **identity_meta,
+                        **({
+                            "negative_origin": (
+                                "zero_annotation_source" if not anns_src
+                                else "safe_background_window"
+                            ),
+                        } if role == "negative" else {}),
                     })
-                    for ann in kept_anns:
-                        out["annotations"].append({
-                            **ann.get("passthrough", {}),
-                            "id": next_ann_id,
-                            "image_id": next_gid,
-                            "category_id": ann["new_cid"],
-                            "bbox": ann["bbox"],
-                            "area": float(ann["bbox"][2] * ann["bbox"][3]),
-                            "iscrowd": ann["iscrowd"],
-                            "src_ann_id": ann["src_ann_id"],
-                        })
+                    for ann, geom in kept_anns:
+                        out["annotations"].append(_annotation_from_geometry(
+                            ann,
+                            geom,
+                            image_id=next_gid,
+                            category_id=src_cid_to_new_cid[ann["category_id"]],
+                            ann_id=next_ann_id,
+                            src_dset=src_dset,
+                        ))
                         next_ann_id += 1
                     next_gid += 1
-                    if is_positive:
+                    if role == "positive":
                         n_pos += 1
                     else:
                         n_neg_kept += 1
 
+    out["info"][0]["tile_role_counts"] = {
+        "positive": n_pos,
+        "negative": n_neg_kept,
+        "ignore": n_ignored,
+        "dropped_negative": n_neg_dropped,
+    }
     _dump_kwcoco(out, dst_fpath)
     print(
         f"tile.multiscale: wrote {len(out['images'])} tiles "
-        f"(pos={n_pos}, neg={n_neg_kept}, dropped_neg={n_neg_dropped})"
+        f"(pos={n_pos}, neg={n_neg_kept}, ignore={n_ignored}, "
+        f"dropped_neg={n_neg_dropped})"
     )
     print(f"  annotations: {len(out['annotations'])}")
     print(f"  scales: " + ", ".join(f"{n}={s}" for n, s in scales))
@@ -730,12 +960,13 @@ def _init_out(config, target_cat_names, mode_label):
             "src": str(config.src),
             "config": {k: getattr(config, k) for k in [
                 "mode", "category_names", "output_ext", "jpeg_quality",
+                "cache_dpath",
                 "oversize_factor", "min_keep_fraction",
                 "full_dim", "keep_full",
                 "tile_grid", "tile_overlap", "tile_output_dim",
                 "tile_size", "source_scales", "stride_frac",
                 "min_gt_area_frac", "min_source_scale_long_side",
-                "keep_negative",
+                "negative_safety_margin", "keep_negative",
             ]},
         }],
         "categories": [
@@ -791,7 +1022,11 @@ def run(config):
     }
 
     mode = str(config.mode)
-    args = (config, src_dset, dst_fpath, asset_dpath, target_cat_names, src_cid_to_new_cid)
+    writer = _TileWriter(config, src_dset, src_fpath, dst_fpath, asset_dpath)
+    args = (
+        config, src_dset, dst_fpath, asset_dpath, target_cat_names,
+        src_cid_to_new_cid, writer,
+    )
     if mode == "full_only":
         _run_full_only(*args)
     elif mode == "quadrant":

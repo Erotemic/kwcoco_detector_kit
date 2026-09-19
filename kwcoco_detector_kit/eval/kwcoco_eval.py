@@ -12,12 +12,68 @@ Output layout (mirrors prior project so eligibility.py finds it)::
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
 from typing import Sequence, Tuple
 
 from kwcoco_detector_kit._lineprofile import profile
+
+
+def negative_image_fp_report(true_dset, pred_dset, *, category_names, thresholds):
+    """Summarize predictions on original source images with zero target GT."""
+    target_names = set(category_names)
+    true_target_cids = {
+        cat["id"] for cat in true_dset.dataset.get("categories", [])
+        if cat["name"] in target_names
+    }
+    pred_target_cids = {
+        cat["id"] for cat in pred_dset.dataset.get("categories", [])
+        if cat["name"] in target_names
+    }
+    positive_gids = {
+        ann["image_id"] for ann in true_dset.dataset.get("annotations", [])
+        if ann.get("category_id") in true_target_cids
+    }
+    negative_gids = [gid for gid in true_dset.images() if gid not in positive_gids]
+    scores_by_gid = {gid: [] for gid in negative_gids}
+    for ann in pred_dset.dataset.get("annotations", []):
+        gid = ann.get("image_id")
+        if gid in scores_by_gid and ann.get("category_id") in pred_target_cids:
+            scores_by_gid[gid].append(float(ann.get("score", 0)))
+    max_scores = [max(scores_by_gid[gid], default=0.0) for gid in negative_gids]
+    import numpy as np
+    return {
+        "schema_version": 1,
+        "num_negative_source_images": len(negative_gids),
+        "thresholds": {
+            str(float(threshold)): {
+                "num_images_with_fp": sum(score >= threshold for score in max_scores),
+                "fraction_images_with_fp": (
+                    sum(score >= threshold for score in max_scores) / len(max_scores)
+                    if max_scores else 0.0
+                ),
+                "num_predictions": sum(
+                    sum(score >= threshold for score in scores_by_gid[gid])
+                    for gid in negative_gids
+                ),
+            }
+            for threshold in thresholds
+        },
+        "max_score_quantiles": {
+            str(q): float(np.quantile(max_scores, q)) if max_scores else 0.0
+            for q in [0, .5, .9, .95, .99, 1.0]
+        },
+        "per_image": [
+            {
+                "image_id": gid,
+                "max_score": max(scores_by_gid[gid], default=0.0),
+                "num_predictions": len(scores_by_gid[gid]),
+            }
+            for gid in negative_gids
+        ],
+    }
 
 
 def _valid_detection_bbox(bbox) -> bool:
@@ -360,6 +416,26 @@ def run_kwcoco_eval(
         """Add one image's detections to the pred bundle (main thread only —
         kwcoco add_annotation isn't thread-safe)."""
         nonlocal dropped_unknown_label
+        if detections and all("mask" in det for det in detections):
+            from kwcoco_detector_kit.data.postprocess import mask_records_to_anns
+            label_mapping = {idx: name for idx, name in enumerate(category_names)}
+            mask_anns = mask_records_to_anns(
+                detections,
+                {
+                    "score_thresh": float(score_thresh),
+                    # Predictor/window merger owns suppression for eval.
+                    "nms_thresh": 0.0,
+                    "polygon_simplify": 0.0,
+                    "min_component_area": 0.0,
+                    "keep_largest_component": False,
+                },
+                label_mapping,
+            )
+            for ann in mask_anns:
+                name = ann.pop("category_name")
+                ann.update(image_id=_gid, category_id=pred.ensure_category(name))
+                pred.add_annotation(**ann)
+            return
         for det in detections:
             score = float(det.get("score", 0.0))
             if score < float(score_thresh):
@@ -465,6 +541,13 @@ def run_kwcoco_eval(
     _m = _t2.perf_counter()
     pred.dump()
     print(f"  eval: wrote predictions in {_t2.perf_counter() - _m:.0f}s", flush=True)
+    fp_report = negative_image_fp_report(
+        true, pred, category_names=category_names,
+        thresholds=[0.01, 0.05, 0.10, 0.20, 0.50],
+    )
+    fp_fpath = eval_inner / "negative_source_image_fp.json"
+    fp_fpath.write_text(json.dumps(fp_report, indent=2) + "\n")
+    print(f"  eval: wrote source-image false-positive report -> {fp_fpath}")
 
     print("  eval: filtering to bbox-only detections (true + pred) ...", flush=True)
     _m = _t2.perf_counter()

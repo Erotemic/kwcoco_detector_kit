@@ -14,6 +14,7 @@ from kwcoco_detector_kit.trainers import _interface, _registry, _tier
 from kwcoco_detector_kit.trainers import mock_tiny  # noqa: F401
 from kwcoco_detector_kit.trainers import deimv2  # noqa: F401
 from kwcoco_detector_kit.trainers import opengroundingdino  # noqa: F401
+from kwcoco_detector_kit.trainers import rfdetr  # noqa: F401
 
 __all__ = ["_interface", "_registry", "_tier", "mock_tiny", "deimv2",
-           "opengroundingdino"]
+           "opengroundingdino", "rfdetr"]

@@ -85,6 +85,33 @@ def run(config):
     if not pos_gids:
         raise RuntimeError(f"no positive tiles in {pos_fpath}")
 
+    # A training negative is a semantic assertion, not merely an image with
+    # annotations omitted during merge. Reject contradictory inputs before
+    # selecting a subset so a malformed pool can never teach known target
+    # content as background.
+    neg_ann_gids = {
+        ann.get("image_id") for ann in neg_dset.dataset.get("annotations", [])
+    }
+    neg_gid_set = set(neg_gids)
+    bad_negatives = []
+    for img in neg_dset.images().objs:
+        if img["id"] not in neg_gid_set:
+            continue
+        reasons = []
+        if img["id"] in neg_ann_gids:
+            reasons.append("has annotations")
+        if int(img.get("tile_num_kept_anns", 0) or 0) != 0:
+            reasons.append("tile_num_kept_anns != 0")
+        if int(img.get("tile_num_intersecting_anns", 0) or 0) != 0:
+            reasons.append("tile_num_intersecting_anns != 0")
+        if reasons:
+            bad_negatives.append((img["id"], reasons))
+    if bad_negatives:
+        raise ValueError(
+            "negative pool violates background-safety invariants; "
+            f"examples={bad_negatives[:5]}"
+        )
+
     rng = np.random.RandomState(int(config.seed))
     if float(config.neg_over_pos) > 0:
         target_n_neg = int(round(float(config.neg_over_pos) * len(pos_gids)))
@@ -141,11 +168,18 @@ def run(config):
         bbox = ann.get("bbox")
         if not bbox:
             continue
-        out_dset.add_annotation(
-            image_id=new_gid, category_id=target_name_to_new_cid[src_cat["name"]],
-            bbox=list(bbox), area=float(ann.get("area", bbox[2] * bbox[3])),
-            iscrowd=int(ann.get("iscrowd", 0)),
-        )
+        new_ann = {
+            k: v for k, v in ann.items()
+            if k not in {"id", "image_id", "category_id"}
+        }
+        new_ann.update({
+            "image_id": new_gid,
+            "category_id": target_name_to_new_cid[src_cat["name"]],
+            "bbox": list(bbox),
+            "area": float(ann.get("area", bbox[2] * bbox[3])),
+            "iscrowd": int(ann.get("iscrowd", 0)),
+        })
+        out_dset.add_annotation(**new_ann)
 
     # negatives — images only, no annotations
     neg_set = set(neg_gids_picked)

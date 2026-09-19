@@ -173,6 +173,7 @@ def predict_kwcoco(
         add_prediction_annotations,
         detector_records_to_anns,
         detector_records_to_bbox_anns,
+        mask_records_to_anns,
     )
     from kwcoco_detector_kit.trainers._registry import get_trainer
 
@@ -226,6 +227,10 @@ def predict_kwcoco(
                 records = predictor.predict_image(arr, (W, H))
                 if segmenter is not None:
                     anns = detector_records_to_anns(arr, records, segmenter, post_cfg, label_mapping)
+                elif records and all("mask" in record for record in records):
+                    # Native segmentation backends (RF-DETR Seg, MaskDINO,
+                    # etc.) must not be silently degraded to boxes.
+                    anns = mask_records_to_anns(records, post_cfg, label_mapping)
                 else:
                     anns = detector_records_to_bbox_anns(records, post_cfg, label_mapping)
                 add_prediction_annotations(pred, gid, anns, backend_name)

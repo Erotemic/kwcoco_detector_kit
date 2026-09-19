@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+
+import json
 from pathlib import Path
 
 import pytest
@@ -87,6 +89,55 @@ def test_export_mscoco_rejects_empty_list(synthetic_kwcoco, tmp_path):
     from kwcoco_detector_kit.data.coco_export import export_mscoco
     with pytest.raises(ValueError):
         export_mscoco(synthetic_kwcoco, tmp_path / "x.json", category_names=[])
+
+
+def test_export_converts_kwcoco_polygon_dict_to_mscoco_list(tmp_path):
+    import kwcoco
+    from kwcoco_detector_kit.data.coco_export import export_mscoco
+
+    dset = kwcoco.CocoDataset()
+    gid = dset.add_image(file_name=str(tmp_path / "im.png"), width=32, height=32)
+    cid = dset.add_category(name="widget")
+    dset.add_annotation(
+        image_id=gid, category_id=cid, bbox=[2, 2, 10, 10], area=100,
+        segmentation={
+            "exterior": [[2, 2], [12, 2], [12, 12], [2, 12]],
+            "interiors": [],
+        },
+    )
+    src = tmp_path / "src.kwcoco.json"
+    dset.dump(src)
+    dst = tmp_path / "out.json"
+    export_mscoco(src, dst, category_names=["widget"])
+    coco_seg = json.loads(dst.read_text())["annotations"][0]["segmentation"]
+    assert coco_seg == [[2, 2, 12, 2, 12, 12, 2, 12]]
+
+
+def test_export_polygon_hole_as_mscoco_rle(tmp_path):
+    import kwcoco
+    import kwimage
+    from kwcoco_detector_kit.data.coco_export import export_mscoco
+
+    dset = kwcoco.CocoDataset()
+    gid = dset.add_image(file_name=str(tmp_path / "im.png"), width=32, height=32)
+    cid = dset.add_category(name="widget")
+    segmentation = {
+        "exterior": [[2, 2], [20, 2], [20, 20], [2, 20]],
+        "interiors": [[[7, 7], [15, 7], [15, 15], [7, 15]]],
+    }
+    dset.add_annotation(
+        image_id=gid, category_id=cid, bbox=[2, 2, 18, 18], area=260,
+        segmentation=segmentation,
+    )
+    src = tmp_path / "src.kwcoco.json"
+    dset.dump(src)
+    dst = tmp_path / "out.json"
+    export_mscoco(src, dst, category_names=["widget"])
+    coco_seg = json.loads(dst.read_text())["annotations"][0]["segmentation"]
+    assert set(coco_seg) == {"size", "counts"}
+    decoded = kwimage.Mask.coerce(coco_seg).to_c_mask().data
+    assert decoded[3, 3] == 1
+    assert decoded[10, 10] == 0
 
 
 def test_export_training_splits(synthetic_kwcoco_factory, tmp_path):

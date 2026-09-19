@@ -6,9 +6,24 @@
 	path = tpl/Open-GroundingDino
 	url = https://github.com/Erotemic/Open-GroundingDino.git
 [submodule "tpl/kwcoco_dataloader"]
-	path = tpl/kwcoco_dataloader
+	path = stack/kwcoco_dataloader
 	url = https://gitlab.kitware.com/computer-vision/kwcoco_dataloader.git
 	branch = dev/0.1.3
 [submodule "tpl/rf-detr"]
 	path = tpl/rf-detr
 	url = https://github.com/roboflow/rf-detr.git
+[submodule "stack/kwcoco"]
+	path = stack/kwcoco
+	url = https://gitlab.kitware.com/computer-vision/kwcoco.git
+[submodule "stack/kwimage"]
+	path = stack/kwimage
+	url = https://gitlab.kitware.com/computer-vision/kwimage.git
+[submodule "stack/kwarray"]
+	path = stack/kwarray
+	url = https://gitlab.kitware.com/computer-vision/kwarray.git
+[submodule "stack/delayed_image"]
+	path = stack/delayed_image
+	url = https://gitlab.kitware.com/computer-vision/delayed_image.git
+[submodule "stack/kwplot"]
+	path = stack/kwplot
+	url = https://gitlab.kitware.com/computer-vision/kwplot.git

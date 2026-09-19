@@ -285,6 +285,28 @@ def test_virtual_global_finalizer_exact_topk_and_deterministic(tmp_path):
     assert selected_runs == [expected, expected]
 
 
+def test_virtual_global_finalizer_tie_breaks_by_tile_id(tmp_path):
+    from kwcoco_detector_kit.data.mine import finalize_virtual_mining
+
+    index, rows, _score_by_id, ledgers = _synthetic_virtual_ledgers(tmp_path)
+    for ledger in ledgers:
+        doc = json.loads(ledger.read_text())
+        progress = Path(doc["records_path"])
+        records = [json.loads(line) for line in progress.read_text().splitlines()]
+        for record in records:
+            record["max_score"] = 0.5
+        progress.write_text("".join(json.dumps(record) + "\n" for record in records))
+    dst = tmp_path / "tie-break.kwcoco.zip"
+    finalize_virtual_mining(
+        index, ledgers, dst, cache_dpath=tmp_path / "cache",
+        score_thresh=0.0, max_hard_per_round=3,
+    )
+    selected = json.loads(dst.with_suffix(".selected_candidates.json").read_text())
+    assert [row["tile_id"] for row in selected["selected"]] == sorted(
+        row["tile_id"] for row in rows
+    )[:3]
+
+
 def test_virtual_global_finalizer_rejects_missing_duplicate_and_failure(tmp_path):
     from kwcoco_detector_kit.data.mine import finalize_virtual_mining
 

@@ -491,7 +491,10 @@ def finalize_virtual_mining(candidate_index, ledger_paths, dst, *, cache_dpath,
                     continue
                 if len(heap) < max_keep:
                     heapq.heappush(heap, item)
-                elif item > heap[0]:
+                elif (
+                    score > heap[0][0]
+                    or (score == heap[0][0] and tile_id < heap[0][2])
+                ):
                     heapq.heapreplace(heap, item)
         if count != doc["num_expected"]:
             raise RuntimeError(f"shard {rank} terminal-result count mismatch")

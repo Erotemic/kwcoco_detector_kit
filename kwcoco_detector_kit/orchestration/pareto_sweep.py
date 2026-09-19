@@ -431,6 +431,16 @@ def _find_plausible_onnx(workdir: Path) -> Optional[Path]:
     for fpath in sorted(export_dpath.glob("*.onnx")):
         if fpath.stat().st_size >= 262144:
             return fpath
+        # The smoke model is deliberately tiny, so size alone is not a
+        # correctness criterion. Keep the large-file fast path above for
+        # normal exports, but accept a small artifact only when ONNX itself
+        # validates it.
+        try:
+            import onnx
+            onnx.checker.check_model(str(fpath))
+        except Exception:
+            continue
+        return fpath
     return None
 
 

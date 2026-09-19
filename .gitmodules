@@ -27,3 +27,6 @@
 [submodule "stack/kwplot"]
 	path = stack/kwplot
 	url = https://gitlab.kitware.com/computer-vision/kwplot.git
+[submodule "stack/ndsampler"]
+	path = stack/ndsampler
+	url = https://gitlab.kitware.com/computer-vision/ndsampler.git

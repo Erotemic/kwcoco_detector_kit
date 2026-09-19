@@ -123,7 +123,9 @@ def test_predict_batch_cardinality_mismatch_is_durable_failure(tmp_path, monkeyp
     assert all("cardinality mismatch" in row["error"] for row in records)
 
     changed = dict(cfg)
-    changed["score_thresh"] = 0.77
+    # Batch size affects the actual scoring execution and remains part of the
+    # resumable scan identity.  Final hard-negative threshold/top-K do not.
+    changed["batch_size"] = 7
     changed_cfg = mine.MineConfig.cli(argv=False, data=changed)
     with pytest.raises(RuntimeError, match="progress fingerprint mismatch"):
         mine.run(changed_cfg)

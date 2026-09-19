@@ -179,8 +179,8 @@ def _synthetic_virtual_ledgers(tmp_path, num_shards=4):
     }
     run_spec = {
         "num_shards": num_shards, "max_candidates": 0, "candidate_seed": 0,
+        "candidate_strategy": "stratified_by_image",
         "locality_chunk_size": 3,
-        "score_thresh": 0.0, "max_hard_per_round": 5,
     }
     fingerprint = canonical_digest(run_spec)
     ledgers = []
@@ -210,6 +210,51 @@ def _synthetic_virtual_ledgers(tmp_path, num_shards=4):
         }))
         ledgers.append(ledger)
     return index_path, rows, score_by_id, ledgers
+
+
+def test_virtual_budget_strategies_are_deterministic_and_stratified(tmp_path):
+    from kwcoco_detector_kit.data.candidates import (
+        CandidateConfig, enumerate_candidates, load_candidate_index,
+    )
+    from kwcoco_detector_kit.data.mine import _budgeted_candidate_rows
+
+    source = _build_neg_bundle(tmp_path / "budget-source", n=4)
+    index_path = tmp_path / "budget-index"
+    enumerate_candidates(CandidateConfig.cli(argv=False, data={
+        "src": str(source), "dst": str(index_path), "category_names": "widget",
+        "tile_size": 16, "source_scales": "1.0,0.5", "stride_frac": 1.0,
+        "min_source_scale_long_side": 1, "rows_per_shard": 5,
+    }))
+    index = load_candidate_index(index_path)
+
+    selected_by_strategy = {}
+    for strategy in ["first", "random", "stratified_by_image"]:
+        factory = _budgeted_candidate_rows(index, 8, seed=13, strategy=strategy)
+        rows1 = list(factory())
+        rows2 = list(factory())
+        assert [r["tile_id"] for r in rows1] == [r["tile_id"] for r in rows2]
+        assert len(rows1) == 8
+        selected_by_strategy[strategy] = rows1
+
+    stratified = selected_by_strategy["stratified_by_image"]
+    assert len({r["tile_source_gid"] for r in stratified}) == 4
+    assert len({r["tile_scale_name"] for r in stratified}) == 2
+    assert len({(r["tile_source_gid"], r["tile_scale_name"]) for r in stratified}) == 8
+
+
+def test_virtual_finalizer_can_retune_selection_without_rescoring(tmp_path):
+    from kwcoco_detector_kit.data.mine import finalize_virtual_mining
+
+    index, _rows, _score_by_id, ledgers = _synthetic_virtual_ledgers(tmp_path)
+    dst = tmp_path / "retuned.kwcoco.zip"
+    finalize_virtual_mining(
+        index, ledgers, dst, cache_dpath=tmp_path / "cache",
+        score_thresh=0.5, max_hard_per_round=2,
+    )
+    selected = json.loads(dst.with_suffix(".selected_candidates.json").read_text())
+    assert len(selected["selected"]) <= 2
+    assert selected["score_thresh"] == 0.5
+    assert selected["max_hard_per_round"] == 2
 
 
 def test_virtual_global_finalizer_exact_topk_and_deterministic(tmp_path):

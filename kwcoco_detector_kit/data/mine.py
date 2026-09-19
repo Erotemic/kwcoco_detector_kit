@@ -175,7 +175,7 @@ class MineConfig(kwconf.Config):
             "How to sub-sample negatives when max_candidates > 0: "
             "'first' = first N gids (deterministic, biased toward earlier "
             "images); 'random' = uniform sample; 'stratified_by_image' = "
-            "pick a balanced count per source image so the round 0 pool "
+            "pick balanced coverage across source image and scale so the pool "
             "doesn't oversample one scene (recommended)."
         ),
     )
@@ -307,12 +307,30 @@ def _workdir_model_identity(workdir):
     return canonical_digest(files)
 
 
-def _budgeted_candidate_rows(index, max_candidates, seed):
-    """Return a factory for deterministic streaming/bounded candidate traversal."""
+def _budgeted_candidate_rows(index, max_candidates, seed,
+                             strategy="stratified_by_image"):
+    """Return a factory for deterministic bounded candidate traversal.
+
+    The full candidate index stays streaming.  A finite budget necessarily
+    retains at most ``max_candidates`` selected row dictionaries in memory so
+    the exact same selected universe can be traversed repeatedly by the
+    sharding/fingerprinting passes.
+    """
+    import heapq
+    import itertools
+
     from kwcoco_detector_kit.data.candidates import iter_candidate_records
 
-    if max_candidates and max_candidates < index["num_candidates"]:
-        import heapq
+    max_candidates = int(max_candidates or 0)
+    if not max_candidates or max_candidates >= int(index["num_candidates"]):
+        return lambda: iter_candidate_records(index)
+
+    strategy = str(strategy)
+    if strategy == "first":
+        selected = list(itertools.islice(iter_candidate_records(index), max_candidates))
+    elif strategy == "random":
+        # Deterministic hash-priority reservoir: bounded memory, independent of
+        # Python hash randomization, and stable across index file sharding.
         heap = []
         for row in iter_candidate_records(index):
             priority = int(hashlib.sha256(
@@ -324,12 +342,66 @@ def _budgeted_candidate_rows(index, max_candidates, seed):
             elif item > heap[0]:
                 heapq.heapreplace(heap, item)
         selected = [item[2] for item in heap]
-        selected.sort(key=lambda row: (
-            row["tile_source_gid"], tuple(row["tile_actual_scale_xy"]),
-            row["tile_scaled_extent_xyxy"], row["tile_id"],
-        ))
-        return lambda: iter(selected)
-    return lambda: iter_candidate_records(index)
+    elif strategy == "stratified_by_image":
+        # The semantic strata are actually (source image, scale).  First count
+        # them in one streaming pass, then distribute the finite budget in a
+        # deterministic round-robin.  A second streaming pass keeps the
+        # lowest hash-priority rows for each stratum.  Memory is O(groups + K),
+        # not O(candidate universe).
+        group_counts = {}
+        for row in iter_candidate_records(index):
+            key = _semantic_source_scale(row)
+            group_counts[key] = group_counts.get(key, 0) + 1
+
+        def _group_priority(key):
+            payload = json.dumps(key, sort_keys=True, separators=(",", ":"))
+            return hashlib.sha256(f"{int(seed)}:{payload}".encode()).hexdigest()
+
+        active = sorted(group_counts, key=lambda key: (_group_priority(key), repr(key)))
+        quotas = {key: 0 for key in active}
+        remaining = max_candidates
+        while remaining and active:
+            next_active = []
+            for key in active:
+                if quotas[key] < group_counts[key]:
+                    quotas[key] += 1
+                    remaining -= 1
+                    if remaining == 0:
+                        break
+                if quotas[key] < group_counts[key]:
+                    next_active.append(key)
+            active = next_active
+
+        group_heaps = {}
+        for row in iter_candidate_records(index):
+            key = _semantic_source_scale(row)
+            quota = quotas.get(key, 0)
+            if not quota:
+                continue
+            heap = group_heaps.setdefault(key, [])
+            priority = int(hashlib.sha256(
+                f"{int(seed)}:{row['tile_id']}".encode()
+            ).hexdigest(), 16)
+            item = (-priority, row["tile_id"], row)
+            if len(heap) < quota:
+                heapq.heappush(heap, item)
+            elif item > heap[0]:
+                heapq.heapreplace(heap, item)
+        selected = [
+            item[2]
+            for heap in group_heaps.values()
+            for item in heap
+        ]
+    else:
+        raise ValueError(f"unknown candidate_strategy: {strategy!r}")
+
+    # Mining realization relies on source/scale locality so one decoded/scaled
+    # source can feed several predictor microbatches.
+    selected.sort(key=lambda row: (
+        row["tile_source_gid"], tuple(row["tile_actual_scale_xy"]),
+        row["tile_scaled_extent_xyxy"], row["tile_id"],
+    ))
+    return lambda: iter(selected)
 
 
 def finalize_virtual_mining(candidate_index, ledger_paths, dst, *, cache_dpath,
@@ -357,10 +429,6 @@ def finalize_virtual_mining(candidate_index, ledger_paths, dst, *, cache_dpath,
         raise RuntimeError("mining shard run-spec mismatch")
     if canonical_digest(run_spec) != fingerprint:
         raise RuntimeError("mining shard fingerprint does not match run spec")
-    if float(score_thresh) != float(run_spec["score_thresh"]):
-        raise RuntimeError("finalizer score threshold differs from fingerprinted run")
-    if int(max_hard_per_round) != int(run_spec["max_hard_per_round"]):
-        raise RuntimeError("finalizer top-K differs from fingerprinted run")
     num_shards = int(run_spec["num_shards"])
     locality_chunk_size = int(run_spec["locality_chunk_size"])
     if len(docs) != num_shards or {doc["shard_index"] for doc in docs} != set(range(num_shards)):
@@ -369,7 +437,10 @@ def finalize_virtual_mining(candidate_index, ledger_paths, dst, *, cache_dpath,
         raise RuntimeError("incomplete mining shard")
 
     row_factory = _budgeted_candidate_rows(
-        index, int(run_spec["max_candidates"]), int(run_spec["candidate_seed"]),
+        index,
+        int(run_spec["max_candidates"]),
+        int(run_spec["candidate_seed"]),
+        run_spec.get("candidate_strategy", "stratified_by_image"),
     )
     expected_hashers = [hashlib.sha256() for _ in range(num_shards)]
     expected_counts = [0] * num_shards
@@ -471,7 +542,9 @@ def _run_virtual(config, predictor, dst_fpath):
 
     index = load_candidate_index(config.candidate_index)
     max_candidates = int(config.max_candidates or 0)
-    row_factory = _budgeted_candidate_rows(index, max_candidates, config.candidate_seed)
+    row_factory = _budgeted_candidate_rows(
+        index, max_candidates, config.candidate_seed, config.candidate_strategy,
+    )
     shard_index, num_shards = int(config.shard_index), int(config.num_shards)
     locality_chunk_size = int(config.locality_chunk_size)
     ledger_path = Path(config.ledger) if config.ledger else dst_fpath.with_suffix(".mine_ledger.json")
@@ -504,8 +577,9 @@ def _run_virtual(config, predictor, dst_fpath):
         "model_workdir_identity": _workdir_model_identity(config.workdir),
         "device": str(config.device),
         "batch_size": int(config.batch_size),
-        "score_thresh": float(config.score_thresh),
-        "max_hard_per_round": int(config.max_hard_per_round),
+        # score_thresh / max_hard_per_round are finalization policy, not
+        # expensive score-scan identity.  A completed score ledger can be
+        # safely re-finalized with different selection thresholds/top-K.
         "candidate_policy_fingerprint": index["policy_fingerprint"],
     }
     mining_run_fingerprint = canonical_digest(run_spec)

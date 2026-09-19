@@ -32,6 +32,7 @@ import json
 import os
 import hashlib
 import tempfile
+import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -45,10 +46,80 @@ def stable_shard_for_key(key: str, num_shards: int) -> int:
     return int(hashlib.sha256(str(key).encode()).hexdigest(), 16) % int(num_shards)
 
 
+def _semantic_source_scale(item):
+    """Semantic stratification keys; filenames are deliberately irrelevant."""
+    if "tile_source_gid" not in item:
+        raise KeyError("candidate is missing required tile_source_gid metadata")
+    scale = item.get("tile_scale_name")
+    if scale is None:
+        scale = tuple(item.get("tile_actual_scale_xy", []))
+    if scale in (None, ()):
+        raise KeyError("candidate is missing explicit scale metadata")
+    return item["tile_source_gid"], scale
+
+
+def stratified_candidate_ids(items, budget, seed=0):
+    """Round-robin over source and scale groups for broad finite coverage."""
+    import numpy as np
+
+    items = list(items)
+    if not budget or budget >= len(items):
+        return [item["id"] if "id" in item else item["tile_id"] for item in items]
+    groups = {}
+    for item in items:
+        groups.setdefault(_semantic_source_scale(item), []).append(item)
+    rng = np.random.RandomState(int(seed))
+    keys = sorted(groups, key=repr)
+    rng.shuffle(keys)
+    for rows in groups.values():
+        rng.shuffle(rows)
+    chosen = []
+    while len(chosen) < budget and keys:
+        next_keys = []
+        for key in keys:
+            rows = groups[key]
+            if rows:
+                item = rows.pop()
+                chosen.append(item["id"] if "id" in item else item["tile_id"])
+                if len(chosen) >= budget:
+                    break
+            if rows:
+                next_keys.append(key)
+        keys = next_keys
+    return chosen
+
+
+def merge_shard_ledgers(ledger_paths, expected_ids):
+    """Merge complete shards while proving disjoint, exact global coverage."""
+    records = []
+    seen = set()
+    for path in ledger_paths:
+        doc = json.loads(Path(path).read_text())
+        if not doc.get("scan_complete"):
+            raise RuntimeError(f"incomplete mining shard: {path}")
+        ids = {row["tile_id"] for row in doc["records"]}
+        overlap = seen & ids
+        if overlap:
+            raise RuntimeError(f"shard ledgers overlap: {sorted(overlap)[:3]}")
+        seen |= ids
+        records.extend(doc["records"])
+    expected = set(expected_ids)
+    if seen != expected:
+        raise RuntimeError(
+            f"merged shard coverage mismatch: missing={len(expected - seen)} "
+            f"extra={len(seen - expected)}"
+        )
+    records.sort(key=lambda row: row["tile_id"])
+    return records
+
+
 class MineConfig(kwconf.Config):
     """Score every negative tile with a trained detector; emit a kwcoco of the hardest."""
 
-    neg_kwcoco = kwconf.Value(None, help="input kwcoco of negative tiles", required=True)
+    neg_kwcoco = kwconf.Value(None, help="input materialized kwcoco negative tiles")
+    candidate_index = kwconf.Value(None, help="virtual negative candidate JSON index")
+    cache_dpath = kwconf.Value(None, help="cache for admitted virtual candidates")
+    jpeg_quality = kwconf.Value(90)
     workdir = kwconf.Value(None, help="trainer workdir (contains the checkpoint + config)", required=True)
     dst = kwconf.Value(None, help="output kwcoco of hard negatives", required=True)
 
@@ -89,6 +160,7 @@ class MineConfig(kwconf.Config):
     shard_index = kwconf.Value(0, help="deterministic mining shard index")
     num_shards = kwconf.Value(1, help="number of disjoint deterministic shards")
     ledger = kwconf.Value(None, help="optional atomic JSON score ledger (defaults beside dst)")
+    allow_failures = kwconf.Value(False, help="permit scan_successful=false output")
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -104,14 +176,146 @@ def _load_predictor(trainer_name: str, workdir: Path, device: str):
     return trainer.build_predictor(workdir, device=device)
 
 
+def _atomic_json(data, path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as file:
+        json.dump(data, file, indent=2, sort_keys=True)
+        file.write("\n")
+        tmp = Path(file.name)
+    os.replace(tmp, path)
+
+
+def _run_virtual(config, predictor, dst_fpath):
+    """Mine a virtual index with durable per-batch progress and exact resume."""
+    from kwcoco_detector_kit.data.candidates import (
+        load_candidate_index, materialize_candidates, realize_candidate_arrays,
+    )
+    from kwcoco_detector_kit.predictors._interface import predict_batch
+
+    index = load_candidate_index(config.candidate_index)
+    rows = index["candidates"]
+    max_candidates = int(config.max_candidates or 0)
+    if max_candidates and max_candidates < len(rows):
+        wanted = set(stratified_candidate_ids(rows, max_candidates, config.candidate_seed))
+        rows = [row for row in rows if row["tile_id"] in wanted]
+    shard_index, num_shards = int(config.shard_index), int(config.num_shards)
+    rows = [
+        row for row in rows
+        if stable_shard_for_key(row["tile_id"], num_shards) == shard_index
+    ]
+    rows.sort(key=lambda row: row["tile_id"])
+    expected_ids = [row["tile_id"] for row in rows]
+    expected_digest = hashlib.sha256("\n".join(expected_ids).encode()).hexdigest()
+    ledger_path = Path(config.ledger) if config.ledger else dst_fpath.with_suffix(".mine_ledger.json")
+    progress_path = ledger_path.with_suffix(ledger_path.suffix + ".progress.jsonl")
+    records_by_id = {}
+    expected_set = set(expected_ids)
+    if progress_path.is_file():
+        for line in progress_path.read_text().splitlines():
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                break  # killed during the final append; safely redo that bounded row
+            if record.get("tile_id") in expected_set:
+                records_by_id[record["tile_id"]] = record
+    pending = [row for row in rows if row["tile_id"] not in records_by_id]
+    progress_path.parent.mkdir(parents=True, exist_ok=True)
+    batch_size = max(1, int(config.batch_size))
+    with open(progress_path, "a", encoding="utf8") as progress:
+        for start in range(0, len(pending), batch_size):
+            batch = pending[start:start + batch_size]
+            batch_records = []
+            try:
+                arrays_by_id = realize_candidate_arrays(index, batch)
+                arrays = [arrays_by_id[row["tile_id"]] for row in batch]
+                sizes = [(arr.shape[1], arr.shape[0]) for arr in arrays]
+            except Exception as ex:
+                batch_records = [{
+                    "tile_id": row["tile_id"], "status": "read_error",
+                    "error": f"{type(ex).__name__}: {ex}",
+                } for row in batch]
+            if not batch_records:
+                try:
+                    results = predict_batch(predictor, arrays, sizes)
+                    if len(results) != len(batch):
+                        raise RuntimeError(
+                            f"predict_batch cardinality mismatch: {len(results)} != {len(batch)}"
+                        )
+                    for row, detections in zip(batch, results):
+                        top = max(detections, key=lambda d: float(d.get("score", 0)), default=None)
+                        batch_records.append({
+                            "tile_id": row["tile_id"], "status": "ok",
+                            "max_score": float(top.get("score", 0)) if top else 0.0,
+                            "top_label": None if top is None else int(top.get("label", 0)),
+                            "top_bbox_xyxy": None if top is None else top.get("bbox_xyxy"),
+                        })
+                except Exception as ex:
+                    batch_records = [{
+                        "tile_id": row["tile_id"], "status": "predict_error",
+                        "error": f"{type(ex).__name__}: {ex}",
+                    } for row in batch]
+            for record in batch_records:
+                progress.write(json.dumps(record, sort_keys=True) + "\n")
+                records_by_id[record["tile_id"]] = record
+            progress.flush()
+            os.fsync(progress.fileno())
+            delay = float(os.environ.get("KCD_MINE_TEST_BATCH_DELAY", "0"))
+            if delay:
+                time.sleep(delay)
+
+    records = [records_by_id[tile_id] for tile_id in expected_ids]
+    failures = [row for row in records if row["status"] != "ok"]
+    ledger = {
+        "schema_version": 2, "shard_index": shard_index, "num_shards": num_shards,
+        "expected_identity_digest": expected_digest,
+        "expected_tile_ids": expected_ids,
+        "num_expected": len(expected_ids), "num_records": len(records),
+        "num_failures": len(failures), "scan_complete": len(records) == len(expected_ids),
+        "scan_successful": not failures, "records": records,
+    }
+    _atomic_json(ledger, ledger_path)
+    if failures and not bool(config.allow_failures):
+        raise RuntimeError(f"mining scan completed with {len(failures)} failures; see {ledger_path}")
+
+    good = [row for row in records if row["status"] == "ok"]
+    good.sort(key=lambda row: (-row["max_score"], row["tile_id"]))
+    selected_scores = {
+        row["tile_id"]: row["max_score"]
+        for row in good if row["max_score"] >= float(config.score_thresh)
+    }
+    selected_scores = dict(list(selected_scores.items())[:int(config.max_hard_per_round)])
+    selected = [row for row in rows if row["tile_id"] in selected_scores]
+    if selected and not config.cache_dpath:
+        raise ValueError("cache_dpath is required to admit virtual candidates")
+    out = materialize_candidates(
+        index, selected, cache_dpath=config.cache_dpath,
+        jpeg_quality=int(config.jpeg_quality),
+    ) if selected else __import__("kwcoco").CocoDataset()
+    out.fpath = str(dst_fpath)
+    for image in out.images().objs:
+        image["max_pred_score"] = selected_scores[image["tile_id"]]
+        image["mined_for_round"] = int(os.environ.get("KCD_ROUND", "0"))
+    dst_fpath.parent.mkdir(parents=True, exist_ok=True)
+    out.dump()
+    return dst_fpath
+
+
 def run(config):
     import kwcoco
     import numpy as np
     import ubelt as ub
 
     workdir = Path(str(config.workdir)).expanduser().resolve()
-    neg_fpath = Path(str(config.neg_kwcoco)).expanduser().resolve()
     dst_fpath = Path(str(config.dst)).expanduser().resolve()
+
+    if bool(config.neg_kwcoco) == bool(config.candidate_index):
+        raise ValueError("specify exactly one of neg_kwcoco or candidate_index")
+
+    neg_fpath = (
+        Path(str(config.neg_kwcoco)).expanduser().resolve()
+        if config.neg_kwcoco else None
+    )
 
     print(f"mine: trainer={config.trainer} workdir={workdir}")
     print(f"      neg_kwcoco={neg_fpath}")
@@ -120,6 +324,8 @@ def run(config):
     print(f"      max_hard_per_round={config.max_hard_per_round}")
 
     predictor = _load_predictor(str(config.trainer), workdir, str(config.device))
+    if config.candidate_index:
+        return _run_virtual(config, predictor, dst_fpath)
 
     neg_dset = kwcoco.CocoDataset.coerce(str(neg_fpath))
     candidate_gids = [
@@ -143,44 +349,17 @@ def run(config):
                 rng.choice(candidate_gids, size=max_candidates, replace=False)
             )
         elif strategy == "stratified_by_image":
-            # The "source image" for a tile is encoded in the
-            # multiscale-tile filename; fall back to the kwcoco image's
-            # `source_gid` field, else its own gid.
-            def _src_key(img):
-                if "source_gid" in img:
-                    return img["source_gid"]
-                fn = img.get("file_name", "")
-                # filenames look like gid00005049_s10_x00320_y00960_negative.jpg
-                # use the gid prefix as the source key
-                base = Path(fn).name
-                prefix = base.split("_")[0] if "_" in base else base
-                return prefix
             # Build the membership set ONCE -- with a 1.8M-tile pool,
             # rebuilding the set per-iteration is O(N^2) and hangs for
             # hours before the first ProgIter line prints.
             candidate_id_set = set(candidate_gids)
-            groups: dict = {}
-            for img in neg_dset.images().objs:
-                if img["id"] not in candidate_id_set:
-                    continue
-                groups.setdefault(_src_key(img), []).append(img["id"])
-            # round-robin pick per-source until budget hit
-            picked: list = []
-            keys = list(groups.keys())
-            rng.shuffle(keys)
-            cycles = max(1, max_candidates // max(1, len(keys)) + 1)
-            for _ in range(cycles):
-                for k in keys:
-                    bucket = groups[k]
-                    if bucket:
-                        picked.append(bucket.pop(
-                            int(rng.randint(0, len(bucket)))
-                        ))
-                        if len(picked) >= max_candidates:
-                            break
-                if len(picked) >= max_candidates:
-                    break
-            candidate_gids = picked
+            items = [
+                img for img in neg_dset.images().objs
+                if img["id"] in candidate_id_set
+            ]
+            candidate_gids = stratified_candidate_ids(
+                items, max_candidates, config.candidate_seed,
+            )
         else:
             raise ValueError(f"unknown candidate_strategy: {strategy!r}")
         print(
@@ -197,11 +376,15 @@ def run(config):
 
     def _stable_key(gid):
         img = neg_dset.imgs[gid]
-        key = img.get("tile_id") or json.dumps({
-            "source": img.get("tile_source_gid", gid),
-            "scale": img.get("tile_actual_scale"),
-            "extent": img.get("tile_extent_xyxy_in_source"),
-        }, sort_keys=True, separators=(",", ":"))
+        key = img.get("tile_identity") or img.get("tile_id")
+        if key is None:
+            source, scale = _semantic_source_scale(img)
+            extent = img.get("tile_extent_xyxy_in_source")
+            if extent is None:
+                raise KeyError("candidate lacks explicit source crop metadata")
+            key = json.dumps({
+                "source": source, "scale": scale, "extent": extent,
+            }, sort_keys=True, separators=(",", ":"))
         return str(key)
 
     candidate_gids = [
@@ -241,6 +424,11 @@ def run(config):
             continue
         try:
             result_batch = predict_batch(predictor, arrays, sizes)
+            if len(result_batch) != len(valid_gids):
+                raise RuntimeError(
+                    f"predict_batch cardinality mismatch: "
+                    f"{len(result_batch)} != {len(valid_gids)}"
+                )
         except Exception as ex:
             for gid in valid_gids:
                 ledger_records.append({
@@ -262,9 +450,11 @@ def run(config):
     ledger_fpath = Path(config.ledger) if config.ledger else dst_fpath.with_suffix(".mine_ledger.json")
     ledger_fpath.parent.mkdir(parents=True, exist_ok=True)
     ledger_doc = {
-        "schema_version": 1, "complete": True,
+        "schema_version": 2, "complete": True, "scan_complete": True,
         "shard_index": shard_index, "num_shards": num_shards,
         "num_expected": len(candidate_gids), "num_records": len(ledger_records),
+        "num_failures": sum(r["status"] != "ok" for r in ledger_records),
+        "scan_successful": all(r["status"] == "ok" for r in ledger_records),
         "records": ledger_records,
     }
     with tempfile.NamedTemporaryFile("w", dir=ledger_fpath.parent, delete=False) as file:
@@ -272,6 +462,11 @@ def run(config):
         file.write("\n")
         tmp_ledger = Path(file.name)
     os.replace(tmp_ledger, ledger_fpath)
+    failures = [record for record in ledger_records if record["status"] != "ok"]
+    if failures and not bool(config.allow_failures):
+        raise RuntimeError(
+            f"mining scan completed with {len(failures)} failures; see {ledger_fpath}"
+        )
 
     thresh = float(config.score_thresh)
     max_keep = int(config.max_hard_per_round)

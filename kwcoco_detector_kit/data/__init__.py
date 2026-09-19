@@ -8,6 +8,7 @@ Public surface:
   tile.run                 programmatic entry point.
   merge.MergeConfig        positive + negative tile merger CLI.
   mine.MineConfig          offline hard-negative miner CLI.
+  candidates.CandidateConfig  virtual mask-safe negative-window index.
   coco_export.export_mscoco  kwcoco -> MSCOCO json (DEIMv2/OGDino input).
   balance_mscoco.run        Resample an MSCOCO json to hit a target
                              class distribution (JPEG-path class balance).
@@ -22,9 +23,9 @@ Public surface:
                                          heterogeneous channels, JQ filters).
 """
 from kwcoco_detector_kit.data import (
-    tile, merge, mine, coco_export, balance_mscoco,
+    tile, merge, mine, candidates, coco_export, balance_mscoco,
     tile_store, tile_loader, stats,
 )
 
-__all__ = ["tile", "merge", "mine", "coco_export", "balance_mscoco",
+__all__ = ["tile", "merge", "mine", "candidates", "coco_export", "balance_mscoco",
            "tile_store", "tile_loader", "stats", "kwcoco_sampler"]

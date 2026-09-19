@@ -49,6 +49,9 @@ dependencies = [
     # (failure #5). opencv-python-headless avoids X11 deps on servers.
     "opencv-python-headless>=4.8",
     "Pillow>=10.0",
+    "filelock>=3.12",
+    "kwarray>=0.7",
+    "delayed_image>=0.4",
 ]
 
 [project.optional-dependencies]

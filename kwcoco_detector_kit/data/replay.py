@@ -1,7 +1,6 @@
 """Deterministic cumulative hard-negative replay selection."""
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 import kwconf
@@ -25,11 +24,7 @@ def _identity(img):
     )
     if value:
         return str(value)
-    payload = (
-        img.get("tile_source_gid"), img.get("tile_actual_scale"),
-        tuple(img.get("tile_extent_xyxy_in_source", [])),
-    )
-    return hashlib.sha256(repr(payload).encode()).hexdigest()
+    raise KeyError("replay item lacks explicit tile identity metadata")
 
 
 def run(config):
@@ -59,8 +54,12 @@ def run(config):
     def _admit(dset, img, origin):
         if img.get("tile_role", "negative") != "negative":
             return False
-        source = img.get("tile_source_gid", img.get("id"))
-        scale = img.get("tile_scale_name", img.get("tile_actual_scale"))
+        if "tile_source_gid" not in img:
+            raise KeyError("replay item lacks tile_source_gid")
+        source = img["tile_source_gid"]
+        scale = img.get("tile_scale_name", tuple(img.get("tile_actual_scale_xy", [])))
+        if scale in (None, ()):
+            raise KeyError("replay item lacks explicit scale metadata")
         if int(config.per_source_cap) > 0 and source_counts.get(source, 0) >= int(config.per_source_cap):
             return False
         if int(config.per_scale_cap) > 0 and scale_counts.get(scale, 0) >= int(config.per_scale_cap):

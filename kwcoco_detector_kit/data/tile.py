@@ -46,7 +46,7 @@ Multi-scale tiles additionally carry::
 
   ``tile_scale_name``              e.g. "s10", "s07", "s04", "s02"
   ``tile_scale_factor``            float, e.g. 1.0, 0.66, 0.40, 0.25
-  ``tile_actual_scale``            float — may differ from requested due to int rounding
+  ``tile_actual_scale_xy``         [sx, sy] — realized resize after integer rounding
 
 Quadrant tiles additionally carry::
 
@@ -218,19 +218,19 @@ def _keep_negative_window(*, fraction, seed, source_gid, scale_name, x0, y0):
 
 
 def _resize_image_to_scale(image, scale: float):
-    """Resize image by ``scale``; returns (resized, actual_scale)."""
+    """Resize image by ``scale``; returns ``(resized, (sx, sy))``."""
     import kwimage
 
     h, w = image.shape[:2]
     new_w = max(1, int(round(w * scale)))
     new_h = max(1, int(round(h * scale)))
     if new_w == w and new_h == h:
-        return image, 1.0
+        return image, (1.0, 1.0)
     try:
         resized = kwimage.imresize(image, dsize=(new_w, new_h), interpolation="area")
     except NotImplementedError:
         resized = kwimage.imresize(image, dsize=(new_w, new_h), interpolation="linear")
-    return resized, new_w / float(w)
+    return resized, (new_w / float(w), new_h / float(h))
 
 
 def _imwrite(fpath: Path, image, ext: str, jpeg_quality: int):
@@ -407,14 +407,15 @@ def _parse_scales(scales) -> List[Tuple[str, float]]:
 
 
 def _grid_positions(extent: int, tile: int, stride: int) -> List[int]:
-    """Sliding-window start positions covering [0, extent), inclusive of edges."""
-    if extent <= tile:
-        return [0]
-    positions = list(range(0, extent - tile + 1, max(stride, 1)))
-    last = extent - tile
-    if not positions or positions[-1] != last:
-        positions.append(last)
-    return positions
+    """Sliding-window starts covering an extent, delegated to kwarray."""
+    import kwarray
+
+    padded_extent = max(int(extent), int(tile))
+    windows = kwarray.SlidingWindow(
+        shape=(padded_extent,), window=(int(tile),), stride=(max(int(stride), 1),),
+        keepbound=True, allow_overshoot=True,
+    )
+    return [int(window[0].start) for window in windows]
 
 
 def _tile_extents_quadrant(width: int, height: int, grid: int, overlap: float) -> List[Tuple[int, int, int, int]]:
@@ -832,7 +833,8 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
             scaled_long = max(int(round(W * scale_factor)), int(round(H * scale_factor)))
             if scaled_long < min_long_side:
                 continue
-            scaled_img, actual_scale = _resize_image_to_scale(image_full, scale_factor)
+            scaled_img, actual_scale_xy = _resize_image_to_scale(image_full, scale_factor)
+            actual_scale = tuple(actual_scale_xy)
             sH, sW = scaled_img.shape[:2]
 
             xs = _grid_positions(sW, disk_tile_size, stride)
@@ -843,6 +845,9 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
                     x1 = min(x0 + disk_tile_size, sW)
                     y1 = min(y0 + disk_tile_size, sH)
                     crop = scaled_img[y0:y1, x0:x1]
+                    was_padded = (
+                        crop.shape[0] < disk_tile_size or crop.shape[1] < disk_tile_size
+                    )
                     if crop.shape[0] < disk_tile_size or crop.shape[1] < disk_tile_size:
                         pad = np.zeros((disk_tile_size, disk_tile_size, 3), dtype=crop.dtype)
                         pad[:crop.shape[0], :crop.shape[1]] = crop
@@ -922,14 +927,15 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
                             n_neg_dropped += 1
                             continue
 
-                    src_x0 = int(round(x0 / max(actual_scale, 1e-6)))
-                    src_y0 = int(round(y0 / max(actual_scale, 1e-6)))
-                    src_x1 = int(round((x0 + disk_tile_size) / max(actual_scale, 1e-6)))
-                    src_y1 = int(round((y0 + disk_tile_size) / max(actual_scale, 1e-6)))
+                    import kwimage
+                    source_from_scaled = kwimage.Affine.scale(actual_scale_xy).inv()
+                    source_box = kwimage.Boxes(
+                        [[x0, y0, x0 + disk_tile_size, y0 + disk_tile_size]], "ltrb"
+                    ).warp(source_from_scaled).to_ltrb().data[0]
+                    src_x0, src_y0, src_x1, src_y1 = map(lambda v: int(round(v)), source_box)
 
                     stem = (f"gid{gid:08d}_{scale_name}"
                             f"_x{x0:05d}_y{y0:05d}_{role}")
-                    was_padded = (y1 - y0 < disk_tile_size or x1 - x0 < disk_tile_size)
                     file_name, identity_meta = writer.write(
                         crop, coco_img=coco_img, stem=stem,
                         extent_xyxy=(src_x0, src_y0, src_x1, src_y1),
@@ -949,7 +955,7 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
                         "tile_source_gid": int(gid),
                         "tile_scale_name": scale_name,
                         "tile_scale_factor": float(scale_factor),
-                        "tile_actual_scale": float(actual_scale),
+                        "tile_actual_scale_xy": [float(v) for v in actual_scale_xy],
                         "tile_extent_xyxy_in_source": [src_x0, src_y0, src_x1, src_y1],
                         "tile_role": role,
                         "tile_num_kept_anns": len(kept_anns),

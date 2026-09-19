@@ -15,14 +15,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import time
 import uuid
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Mapping
 
 
-IDENTITY_SCHEMA_VERSION = 1
+IDENTITY_SCHEMA_VERSION = 2
 MATERIALIZATION_SCHEMA_VERSION = 1
 
 
@@ -60,11 +58,16 @@ def make_tile_identity(
     extent_xyxy: list[float] | tuple[float, float, float, float],
     scale: float | None = None,
     requested_scale: float | None = None,
-    actual_scale: float | None = None,
+    actual_scale: float | tuple[float, float] | list[float] | None = None,
     scaled_extent_xyxy: list[float] | tuple[float, float, float, float] | None = None,
     channels: str = "r|g|b",
 ) -> dict[str, Any]:
     """Return the complete semantic identity record for a source window."""
+    realized = actual_scale if actual_scale is not None else scale
+    if isinstance(realized, (tuple, list)):
+        actual_scale_xy = [float(realized[0]), float(realized[1])]
+    else:
+        actual_scale_xy = [float(realized), float(realized)]
     record = {
         "schema_version": IDENTITY_SCHEMA_VERSION,
         "dataset_fingerprint": str(dataset_fingerprint),
@@ -77,7 +80,7 @@ def make_tile_identity(
             if scaled_extent_xyxy is not None else None
         ),
         "requested_scale": float(requested_scale if requested_scale is not None else scale),
-        "actual_scale": float(actual_scale if actual_scale is not None else scale),
+        "actual_scale_xy": actual_scale_xy,
         "channels": str(channels),
     }
     record["tile_id"] = canonical_digest(record)
@@ -133,27 +136,24 @@ class TileMaterializationCache:
         image_fpath = dpath / (key + suffix)
         return image_fpath, image_fpath.with_suffix(image_fpath.suffix + ".json")
 
-    @contextmanager
-    def _lock(self, image_fpath: Path) -> Iterator[None]:
+    def _lock(self, image_fpath: Path):
+        from filelock import FileLock
+
         lock_fpath = image_fpath.with_suffix(image_fpath.suffix + ".lock")
-        deadline = time.monotonic() + self.lock_timeout
-        while True:
-            try:
-                fd = os.open(lock_fpath, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-            except FileExistsError:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(f"timed out waiting for cache lock {lock_fpath}")
-                time.sleep(0.05)
-            else:
-                try:
-                    os.write(fd, f"pid={os.getpid()}\n".encode())
-                finally:
-                    os.close(fd)
-                break
-        try:
-            yield
-        finally:
-            lock_fpath.unlink(missing_ok=True)
+        return FileLock(str(lock_fpath), timeout=self.lock_timeout)
+
+    def _quarantine(self, image_fpath: Path, sidecar_fpath: Path) -> list[Path]:
+        """Preserve incomplete/corrupt canonical entries for inspection."""
+        moved = []
+        quarantine = image_fpath.parent / "quarantine"
+        quarantine.mkdir(parents=True, exist_ok=True)
+        token = f"{os.getpid()}-{uuid.uuid4().hex}"
+        for path in (image_fpath, sidecar_fpath):
+            if path.exists():
+                dst = quarantine / f"{path.name}.{token}.corrupt"
+                os.replace(path, dst)
+                moved.append(dst)
+        return moved
 
     def validate(
         self,
@@ -209,7 +209,10 @@ class TileMaterializationCache:
         image_fpath.parent.mkdir(parents=True, exist_ok=True)
         with self._lock(image_fpath):
             if image_fpath.exists() or sidecar_fpath.exists():
-                return self.validate(materialization, suffix=suffix), False
+                try:
+                    return self.validate(materialization, suffix=suffix), False
+                except (FileNotFoundError, CacheCorruptionError):
+                    self._quarantine(image_fpath, sidecar_fpath)
             token = f"{os.getpid()}-{uuid.uuid4().hex}"
             tmp_image = image_fpath.with_name(image_fpath.name + f".{token}.tmp")
             tmp_sidecar = sidecar_fpath.with_name(sidecar_fpath.name + f".{token}.tmp")

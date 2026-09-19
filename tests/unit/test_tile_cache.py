@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 
 import cv2
 import numpy as np
@@ -68,6 +70,32 @@ def test_cache_detects_corruption(tmp_path):
         cache.validate(material, suffix="jpg")
 
 
+@pytest.mark.parametrize("missing", ["image", "sidecar"])
+def test_cache_repairs_partial_canonical_pair(tmp_path, missing):
+    from kwcoco_detector_kit.data.tile_cache import TileMaterializationCache
+    _, material = _identities()
+    cache = TileMaterializationCache(tmp_path)
+    path, _ = cache.publish_bytes(material, _jpeg_bytes(), suffix="jpg")
+    sidecar = path.with_suffix(".jpg.json")
+    (path if missing == "image" else sidecar).unlink()
+    repaired, created = cache.publish_bytes(material, _jpeg_bytes(), suffix="jpg")
+    assert created is True
+    assert cache.validate(material, suffix="jpg") == repaired
+    assert list(path.parent.joinpath("quarantine").glob("*.corrupt"))
+
+
+def test_cache_quarantines_corruption_and_rebuilds(tmp_path):
+    from kwcoco_detector_kit.data.tile_cache import TileMaterializationCache
+    _, material = _identities()
+    cache = TileMaterializationCache(tmp_path)
+    path, _ = cache.publish_bytes(material, _jpeg_bytes(), suffix="jpg")
+    path.write_bytes(b"broken")
+    repaired, created = cache.publish_bytes(material, _jpeg_bytes(), suffix="jpg")
+    assert created is True
+    assert cache.validate(material, suffix="jpg") == repaired
+    assert list(path.parent.joinpath("quarantine").glob("*.corrupt"))
+
+
 def test_unpublished_temp_file_does_not_poison_cache(tmp_path):
     from kwcoco_detector_kit.data.tile_cache import TileMaterializationCache
     _, material = _identities()
@@ -93,3 +121,49 @@ def test_concurrent_duplicate_publish_has_one_winner(tmp_path):
         ))
     assert sum(created for _path, created in results) == 1
     assert len({path for path, _created in results}) == 1
+
+
+def test_killed_lock_holder_does_not_wedge_cache(tmp_path):
+    from kwcoco_detector_kit.data.tile_cache import TileMaterializationCache
+    _, material = _identities()
+    cache = TileMaterializationCache(tmp_path, lock_timeout=2)
+    image_path, _ = cache.paths(material["materialization_id"], "jpg")
+    image_path.parent.mkdir(parents=True)
+    lock_path = image_path.with_suffix(image_path.suffix + ".lock")
+    code = (
+        "from filelock import FileLock; import sys,time; "
+        "lock=FileLock(sys.argv[1]); lock.acquire(); "
+        "print('locked', flush=True); time.sleep(60)"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", code, str(lock_path)],
+        stdout=subprocess.PIPE, text=True,
+    )
+    assert proc.stdout.readline().strip() == "locked"
+    proc.kill()
+    proc.wait(timeout=5)
+    path, created = cache.publish_bytes(material, _jpeg_bytes(), suffix="jpg")
+    assert created is True
+    assert cache.validate(material, suffix="jpg") == path
+
+
+def test_concurrent_subprocess_publish_converges(tmp_path):
+    from pathlib import Path
+    _, material = _identities()
+    material_path = tmp_path / "material.json"
+    payload_path = tmp_path / "payload.jpg"
+    material_path.write_text(json.dumps(material))
+    payload_path.write_bytes(_jpeg_bytes())
+    helper = Path(__file__).parents[1] / "helpers" / "cache_publish_worker.py"
+    procs = [subprocess.Popen(
+        [sys.executable, str(helper), str(tmp_path / "cache"),
+         str(material_path), str(payload_path)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    ) for _ in range(4)]
+    results = []
+    for proc in procs:
+        stdout, stderr = proc.communicate(timeout=20)
+        assert proc.returncode == 0, stderr
+        results.append(json.loads(stdout))
+    assert sum(row["created"] for row in results) == 1
+    assert len({row["path"] for row in results}) == 1

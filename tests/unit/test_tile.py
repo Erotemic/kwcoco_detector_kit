@@ -263,6 +263,32 @@ def test_multiscale_preserves_segmentation_and_recomputes_geometry(tmp_path):
     assert np.isclose(ann["area"], 320)
 
 
+def test_realized_resize_uses_distinct_xy_scales(tmp_path):
+    src = _make_boundary_polygon_bundle(tmp_path)
+    import kwcoco
+    dset = kwcoco.CocoDataset.coerce(src)
+    dset.imgs[1]["width"] = 129
+    dset.imgs[1]["height"] = 127
+    # Keep the actual asset and manifest dimensions aligned.
+    import kwimage
+    image_path = dset.get_image_fpath(1)
+    kwimage.imwrite(image_path, np.zeros((127, 129, 3), dtype=np.uint8))
+    dset.dump()
+    out = _tile_run(
+        src, tmp_path / "odd_scale.kwcoco.zip", mode="multiscale",
+        category_names="widget", progress=False, tile_size=128,
+        source_scales="0.333", stride_frac=1.0,
+        min_source_scale_long_side=1,
+        min_keep_fraction=0.1, min_gt_area_frac=0.0001,
+        keep_negative=True,
+    )
+    image = out.images().objs[0]
+    sx, sy = image["tile_actual_scale_xy"]
+    assert sx != sy
+    assert np.isclose(sx, round(129 * .333) / 129)
+    assert np.isclose(sy, round(127 * .333) / 127)
+
+
 def test_negative_keep_fraction_is_deterministic_and_prewrite(synthetic_kwcoco, tmp_path):
     common = {
         "mode": "multiscale",

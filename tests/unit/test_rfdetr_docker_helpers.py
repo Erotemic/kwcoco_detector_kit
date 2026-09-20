@@ -82,13 +82,17 @@ def test_rfdetr_dockerfile_keeps_python_out_of_root_home():
     text = (REPO / "docker" / "rfdetr" / "Dockerfile").read_text()
     assert "UV_PYTHON_INSTALL_DIR=/opt/uv-python" in text
     assert "uv python install --install-dir ${UV_PYTHON_INSTALL_DIR}" in text
+    assert "umask 022" in text
+    assert "chmod -R" not in text
     assert 'kcd.runtime_uid_safe="1"' in text
+    assert 'kcd.prediction_fastpaths="1"' in text
 
 
 def test_rfdetr_runner_checks_uid_safe_image_label():
     text = RUN.read_text()
     assert "kcd.runtime_uid_safe" in text
-    assert "predates the UID-safe runtime contract" in text
+    assert "kcd.prediction_fastpaths" in text
+    assert "predates the current prediction runtime contract" in text
 
 
 def test_rfdetr_runner_supports_external_data_mounts(tmp_path):
@@ -104,3 +108,21 @@ def test_rfdetr_runner_supports_external_data_mounts(tmp_path):
     )
     mount = f"--volume {data_root}:{data_root}"
     assert mount in out
+
+def test_rfdetr_dockerfile_installs_prediction_fast_paths():
+    text = (REPO / "docker" / "rfdetr" / "Dockerfile").read_text()
+    assert "kwimage_ext>=0.3.3" in text
+    assert "python -m kwcoco finish_install" in text
+    assert "--with_gdal=True" in text
+    assert "--with_cv2_headless=False" in text
+    assert "from osgeo import gdal" in text
+    assert "import kwimage_ext" in text
+
+
+def test_rfdetr_image_info_reports_prediction_fast_paths():
+    text = RUN.read_text()
+    assert "import json, pathlib, torch, rfdetr, kwimage_ext" in text
+    assert "from osgeo import gdal" in text
+    assert 'print("kwimage_ext=", kwimage_ext.__file__)' in text
+    assert 'print("gdal=", gdal.VersionInfo())' in text
+

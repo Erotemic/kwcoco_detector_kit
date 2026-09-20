@@ -9,6 +9,20 @@ RF-DETR has no custom CUDA extension in this image. The CUDA profile selects a
 compatible CUDA runtime / PyTorch wheel pair; it does not compile a
 GPU-architecture-specific RF-DETR kernel.
 
+The runtime image also installs the optional image-I/O and geometry
+accelerators used by source-space prediction:
+
+- `kwimage_ext` is installed from PyPI so KWCoco/KWImage NMS can use the
+  compiled backend instead of falling back to pure Python/NumPy paths;
+- GDAL is installed with `python -m kwcoco finish_install --with_gdal=True`
+  through Kitware's large-image wheel index. This enables `delayed_image` to
+  use region-readable raster paths without adding a distro GDAL development
+  stack to the image.
+
+The Docker build imports both `kwimage_ext` and `osgeo.gdal` after
+installation, so an image is not published as usable if either fast-path
+dependency failed to install.
+
 ## Normal build: auto profile
 
 Use the generic builder:

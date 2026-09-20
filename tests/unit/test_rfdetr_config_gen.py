@@ -22,12 +22,31 @@ def test_rfdetr_config_and_segmentation_dataset_layout(synthetic_kwcoco, tmp_pat
         num_classes=1, batch_size=2, val_batch_size=4, num_epochs=3,
         lr=1e-4, backbone_lr=1.5e-4, use_amp=True, channels="r|g|b",
         scale_tier="XL", num_gpus=4, data_format="kwcoco",
-        extra={"category_names": ["widget"], "grad_accum_steps": 2},
+        extra={
+            "category_names": ["widget"],
+            "grad_accum_steps": 2,
+            "lr_scheduler": "cosine",
+            "lr_scheduler_kwargs": {"min_factor": 0.05},
+            "warmup_epochs": 1.0,
+            "best_model_metric": "map",
+            "early_stopping": True,
+            "early_stopping_patience": 4,
+            "early_stopping_min_delta": 0.002,
+            "early_stopping_use_ema": True,
+        },
     )
     cfg = json.loads(cfg_path.read_text())
     assert cfg["runtime"] == {"distributed": True, "num_gpus": 4}
     assert cfg["train"]["grad_accum_steps"] == 2
     assert cfg["train"]["multi_scale"] is False
+    assert cfg["train"]["lr_scheduler"] == "cosine"
+    assert cfg["train"]["lr_scheduler_kwargs"] == {"min_factor": 0.05}
+    assert cfg["train"]["warmup_epochs"] == 1.0
+    assert cfg["train"]["best_model_metric"] == "map"
+    assert cfg["train"]["early_stopping"] is True
+    assert cfg["train"]["early_stopping_patience"] == 4
+    assert cfg["train"]["early_stopping_min_delta"] == 0.002
+    assert cfg["train"]["early_stopping_use_ema"] is True
     root = Path(cfg["train"]["dataset_dir"])
     for split in ["train", "valid"]:
         coco = json.loads((root / split / "_annotations.coco.json").read_text())

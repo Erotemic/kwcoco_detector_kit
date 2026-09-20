@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# Run kwcoco-detector-kit RF-DETR commands in the reproducible Docker image.
+#
+# Examples:
+#   docker/rfdetr/kcd-rfdetr build
+#   docker/rfdetr/kcd-rfdetr package-build --workdir=... --trainer=rfdetr ...
+#   docker/rfdetr/kcd-rfdetr predict --model=... --src=... --dst=... --device=cuda:0
+#
+# The default physical GPU is 0. Override with KCD_RFDETR_GPU=1.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$HERE/../.." && pwd)"
+IMAGE="${KCD_RFDETR_IMAGE:-kwcoco-detector-kit:rfdetr-auto}"
+GPU="${KCD_RFDETR_GPU:-0}"
+AUTO_BUILD="${KCD_RFDETR_AUTO_BUILD:-1}"
+SHM_SIZE="${KCD_RFDETR_SHM_SIZE:-8g}"
+
+usage() {
+    cat <<'USAGE'
+Usage:
+  docker/rfdetr/kcd-rfdetr build
+  docker/rfdetr/kcd-rfdetr image-info
+  docker/rfdetr/kcd-rfdetr shell
+  docker/rfdetr/kcd-rfdetr exec COMMAND [ARG ...]
+  docker/rfdetr/kcd-rfdetr KDK_COMMAND [ARG ...]
+
+Environment:
+  KCD_RFDETR_IMAGE       image tag (default kwcoco-detector-kit:rfdetr-auto)
+  KCD_RFDETR_GPU         physical GPU exposed to Docker (default 0)
+  KCD_RFDETR_AUTO_BUILD  build missing image automatically (default 1)
+  KCD_RFDETR_SHM_SIZE    Docker --shm-size (default 8g)
+  KCD_RFDETR_CUDA_PROFILE auto|cu130|cu132 for `build`
+USAGE
+}
+
+if [ $# -eq 0 ]; then
+    usage
+    exit 2
+fi
+
+subcommand="$1"
+if [ "$subcommand" = "build" ]; then
+    shift
+    if [ $# -ne 0 ]; then
+        echo "build takes profile overrides via environment, not positional arguments" >&2
+        exit 2
+    fi
+    exec "$HERE/build_auto.sh"
+fi
+
+ensure_image() {
+    if docker image inspect "$IMAGE" >/dev/null 2>&1; then
+        return 0
+    fi
+    if [ "$AUTO_BUILD" != "1" ]; then
+        echo "RF-DETR image is missing: $IMAGE" >&2
+        echo "Run: docker/rfdetr/kcd-rfdetr build" >&2
+        exit 1
+    fi
+    echo "RF-DETR image $IMAGE is missing; building it now." >&2
+    "$HERE/build_auto.sh"
+}
+
+if [ "${KCD_DOCKER_DRYRUN:-0}" = "1" ]; then
+    dryrun=1
+else
+    dryrun=0
+fi
+
+if [ "$dryrun" != "1" ]; then
+    ensure_image
+fi
+
+# Keep host paths stable inside the container so package provenance and KWCoco
+# asset paths remain meaningful. The current checkout is additionally mounted
+# over the baked editable-install location, so local source edits are exercised.
+run_base=(
+    docker run --rm
+    --gpus "device=$GPU"
+    --ipc=host
+    --shm-size="$SHM_SIZE"
+    --user "$(id -u):$(id -g)"
+    --env "HOME=$HOME"
+    --env "USER=${USER:-$(id -un)}"
+    --volume "$HOME:$HOME"
+    --volume "$REPO_ROOT:/opt/kwcoco_detector_kit"
+    --workdir /opt/kwcoco_detector_kit
+)
+
+case "$subcommand" in
+    image-info)
+        command=(python -c 'import json, pathlib, torch, rfdetr; print("torch=", torch.__version__); print("torch_cuda=", torch.version.cuda); print("cuda_available=", torch.cuda.is_available()); print("gpu=", torch.cuda.get_device_name(0) if torch.cuda.is_available() else None); print("capability=", torch.cuda.get_device_capability(0) if torch.cuda.is_available() else None); print("rfdetr=", rfdetr.__file__); p=pathlib.Path("/etc/kcd_provenance.json"); print("provenance=", json.loads(p.read_text()) if p.exists() else None)')
+        ;;
+    shell)
+        command=(bash)
+        ;;
+    exec)
+        shift
+        [ $# -gt 0 ] || { echo "exec requires a command" >&2; exit 2; }
+        command=("$@")
+        ;;
+    -h|--help|help)
+        usage
+        exit 0
+        ;;
+    *)
+        command=(kwcoco-detector-kit "$@")
+        ;;
+esac
+
+# The historical RF-DETR image uses `bash -lc` as its entrypoint because the
+# production multi-GPU launch files pass a shell command string. Quote argv into
+# one shell-safe command while preserving that compatibility.
+printf -v command_string '%q ' "${command[@]}"
+
+if [ "$dryrun" = "1" ]; then
+    printf 'DRY RUN:'
+    printf ' %q' "${run_base[@]}" "$IMAGE" "$command_string"
+    printf '\n'
+    exit 0
+fi
+
+if [ "$subcommand" = "shell" ]; then
+    exec "${run_base[@]}" -it "$IMAGE" "$command_string"
+else
+    exec "${run_base[@]}" "$IMAGE" "$command_string"
+fi

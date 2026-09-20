@@ -23,7 +23,7 @@ class _FakeDelayed:
 class _FakeCocoImage:
     def __init__(self, arr, suffix):
         self.arr = arr
-        self.counter = {"full": 0, "region": 0}
+        self.counter = {"imdelay": 0, "full": 0, "region": 0}
         self.img = {
             "file_name": f"fake{suffix}",
             "height": arr.shape[0],
@@ -31,6 +31,7 @@ class _FakeCocoImage:
         }
 
     def imdelay(self):
+        self.counter["imdelay"] += 1
         return _FakeDelayed(self.arr, self.counter)
 
 
@@ -43,13 +44,33 @@ def test_source_window_reader_decode_once_and_region_equivalence():
     a = r1.read_window(0, 0, 32, 32)
     b = r1.read_window(16, 16, 48, 48)
     assert r1.strategy == "decode_once"
-    assert jpg.counter == {"full": 1, "region": 0}
+    assert jpg.counter == {"imdelay": 1, "full": 1, "region": 0}
 
     tif = _FakeCocoImage(arr, ".tif")
     r2 = SourceWindowReader(tif, strategy="auto")
     a2 = r2.read_window(0, 0, 32, 32)
     b2 = r2.read_window(16, 16, 48, 48)
     assert r2.strategy == "delayed_region"
-    assert tif.counter == {"full": 0, "region": 2}
+    assert tif.counter == {"imdelay": 1, "full": 0, "region": 2}
     assert np.array_equal(a, a2)
     assert np.array_equal(b, b2)
+
+
+def test_prepare_decodes_decode_once_but_keeps_region_source_lazy():
+    from kwcoco_detector_kit.predictors.source_window import SourceWindowReader
+
+    arr = np.zeros((32, 48, 3), dtype=np.uint8)
+
+    jpg = _FakeCocoImage(arr, ".jpg")
+    jpg_reader = SourceWindowReader(jpg, strategy="auto")
+    jpg_reader.prepare()
+    assert jpg.counter == {"imdelay": 1, "full": 1, "region": 0}
+    jpg_reader.read_window(0, 0, 16, 16)
+    assert jpg.counter == {"imdelay": 1, "full": 1, "region": 0}
+
+    tif = _FakeCocoImage(arr, ".tif")
+    tif_reader = SourceWindowReader(tif, strategy="auto")
+    tif_reader.prepare()
+    assert tif.counter == {"imdelay": 0, "full": 0, "region": 0}
+    tif_reader.read_window(0, 0, 16, 16)
+    assert tif.counter == {"imdelay": 1, "full": 0, "region": 1}

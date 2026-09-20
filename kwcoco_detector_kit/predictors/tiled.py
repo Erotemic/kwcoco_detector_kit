@@ -31,6 +31,7 @@ window seams or exceed a single window.
 from __future__ import annotations
 
 import time
+import threading
 from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -41,35 +42,33 @@ from kwcoco_detector_kit._lineprofile import profile
 
 @profile
 def _per_class_nms(detections: List[dict], iou_thresh: float) -> List[dict]:
-    """Greedy IoU NMS applied independently within each class label.
+    """Greedy per-class NMS on the fastest supported CPU backend.
 
-    Uses torchvision.ops.batched_nms (vectorized C++/CUDA, same greedy
-    algorithm) when available — critical for tiled eval, where merging
-    ~16k detections/image with a pure-Python O(n^2) loop dominated runtime
-    (53 of 75 min on the gen005 pup test set). Falls back to the numpy
-    implementation if torchvision isn't importable.
+    Prediction records are already host NumPy data.  Keep suppression on the
+    CPU and explicitly select the accelerated KDK/kwimage backend instead of
+    relying on kwimage's auto heuristic (which may see an importable but
+    intentionally unimplemented GPU compatibility shim in Rust kwimage_ext).
     """
     if not detections:
         return detections
+    boxes = np.array([d["bbox_xyxy"] for d in detections], dtype=np.float32)
+    scores = np.array([d["score"] for d in detections], dtype=np.float32)
+    idxs = np.array([d["label"] for d in detections], dtype=np.int64)
     try:
-        import torch
-        from torchvision.ops import batched_nms
-        # Build arrays via numpy first — torch.tensor(list-of-lists) is much
-        # slower than np.array + from_numpy for ~16k rows (the conversion,
-        # not the NMS, was otherwise the cost).
-        boxes = np.array([d["bbox_xyxy"] for d in detections], dtype=np.float32)
-        scores = np.array([d["score"] for d in detections], dtype=np.float32)
-        idxs = np.array([d["label"] for d in detections], dtype=np.int64)
-        keep = batched_nms(
-            torch.from_numpy(boxes), torch.from_numpy(scores),
-            torch.from_numpy(idxs), float(iou_thresh)).tolist()
-        return [detections[i] for i in keep]
+        import kwimage
+        from kwcoco_detector_kit.data.postprocess import _preferred_cpu_nms_impl
+
+        keep = kwimage.non_max_supression(
+            boxes, scores, float(iou_thresh), classes=idxs,
+            impl=_preferred_cpu_nms_impl(),
+        )
+        return [detections[int(i)] for i in keep]
     except Exception:
         return _per_class_nms_numpy(detections, iou_thresh)
 
 
 def _per_class_nms_numpy(detections: List[dict], iou_thresh: float) -> List[dict]:
-    """Pure-numpy greedy per-class NMS (fallback when torchvision is absent)."""
+    """Pure-numpy greedy per-class NMS fallback."""
     by_label: dict = {}
     for det in detections:
         by_label.setdefault(int(det["label"]), []).append(det)
@@ -102,12 +101,7 @@ def _to_detections(obj):
 
 @profile
 def _nms_detections(det, iou_thresh: float):
-    """Per-class NMS on a kwimage.Detections via torchvision.ops.batched_nms.
-
-    Operates on the columnar arrays the Detections already holds — no
-    list-of-dicts -> np.array conversion (that conversion, not the NMS, was
-    the bespoke overhead). Returns the reduced Detections.
-    """
+    """Per-class NMS over columnar detections on a supported CPU backend."""
     n = len(det)
     if n <= 1:
         return det
@@ -115,12 +109,15 @@ def _nms_detections(det, iou_thresh: float):
     scores = np.ascontiguousarray(det.scores, dtype=np.float32)
     idxs = np.ascontiguousarray(det.class_idxs, dtype=np.int64)
     try:
-        import torch
-        from torchvision.ops import batched_nms
-        keep = batched_nms(torch.from_numpy(boxes), torch.from_numpy(scores),
-                           torch.from_numpy(idxs), float(iou_thresh)).cpu().numpy()
+        import kwimage
+        from kwcoco_detector_kit.data.postprocess import _preferred_cpu_nms_impl
+
+        keep = kwimage.non_max_supression(
+            boxes, scores, float(iou_thresh), classes=idxs,
+            impl=_preferred_cpu_nms_impl(),
+        )
+        keep = np.ascontiguousarray(np.asarray(keep, dtype=np.int64))
     except Exception:
-        # numpy per-class greedy fallback
         keep_list = []
         for c in np.unique(idxs):
             sel = np.where(idxs == c)[0]
@@ -238,6 +235,9 @@ class TiledPredictor:
         self.t_infer = 0.0
         self.t_nms = 0.0
         self.n_windows = 0
+        # CPU merge/NMS can run on background workers. Protect only the tiny
+        # shared timing accumulator; prediction data itself is source-local.
+        self._timing_lock = threading.Lock()
 
     @property
     def eval_spatial_size(self) -> Tuple[int, int]:
@@ -254,13 +254,26 @@ class TiledPredictor:
         return self._merge_and_nms(raw)
 
     @profile
-    def predict_source(self, reader, orig_size=None) -> List[dict]:
+    def predict_source(self, reader, orig_size=None, *, pipeline=None) -> List[dict]:
         """Predict from a :class:`SourceWindowReader` without a tile cache.
 
-        Window realization is bounded by ``batch_size``. JPEG-like sources can
-        decode once and slice in memory; region-readable sources can finalize
-        delayed crops independently. The merger sees the same offsets either
-        way, so geometry is invariant to the read strategy.
+        ``pipeline`` is optional. When supplied, future window batches are
+        realized on its bounded I/O worker while the calling thread owns GPU
+        inference. The result is otherwise identical to the serial path.
+        """
+        raw = self._infer_source(reader, orig_size=orig_size, pipeline=pipeline)
+        if raw.get("deferred") is not None:
+            return raw["deferred"]
+        return self._merge_and_nms(raw)
+
+    @profile
+    def _infer_source(self, reader, orig_size=None, *, pipeline=None) -> dict:
+        """GPU stage for a source reader, leaving merge/NMS for a CPU stage.
+
+        The method is intentionally analogous to :meth:`_infer_windows`, but
+        window pixels are realized lazily through ``SourceWindowReader``. A
+        ``PredictionPipeline`` can prefetch the next bounded window batch; CUDA
+        remains exclusively on the calling thread.
         """
         H, W = map(int, reader.source_hw)
         if orig_size is None:
@@ -272,7 +285,7 @@ class TiledPredictor:
             _t = time.perf_counter()
             records = list(self._base.predict_image(image, orig_size))
             self.t_infer += time.perf_counter() - _t
-            return records
+            return {"deferred": records}
 
         stride_h = max(1, int(round(win_h * (1.0 - self._overlap))))
         stride_w = max(1, int(round(win_w * (1.0 - self._overlap))))
@@ -280,13 +293,24 @@ class TiledPredictor:
         xs = _grid_positions(W, win_w, stride_w)
         offsets = [(x0, y0) for y0 in ys for x0 in xs]
         self.n_windows += len(offsets)
+
+        offset_chunks = [
+            offsets[i:i + self._batch_size]
+            for i in range(0, len(offsets), self._batch_size)
+        ]
+
+        def _read_chunk(offset_chunk):
+            return reader.read_windows(offset_chunk, self._window)
+
+        if pipeline is None:
+            batch_iter = ((chunk, _read_chunk(chunk)) for chunk in offset_chunks)
+        else:
+            batch_iter = pipeline.iter_window_batches(offset_chunks, _read_chunk)
+
+        realized_offsets = []
         window_dets = []
-        for i in range(0, len(offsets), self._batch_size):
-            offset_chunk = offsets[i:i + self._batch_size]
-            crops = [
-                reader.read_window(x0, y0, min(x0 + win_w, W), min(y0 + win_h, H))
-                for x0, y0 in offset_chunk
-            ]
+        for offset_chunk, crops in batch_iter:
+            realized_offsets.extend(offset_chunk)
             window_dets.extend(self._score_crops(crops))
 
         full_dets = None
@@ -295,14 +319,13 @@ class TiledPredictor:
             _t = time.perf_counter()
             full_dets = self._base.predict_image(image, orig_size)
             self.t_infer += time.perf_counter() - _t
-        raw = {
+        return {
             "deferred": None,
-            "offsets": offsets,
+            "offsets": realized_offsets,
             "source_hw": (H, W),
             "window_dets": window_dets,
             "full_dets": full_dets,
         }
-        return self._merge_and_nms(raw)
 
     @profile
     def _infer_windows(self, image_np, orig_size) -> dict:
@@ -359,7 +382,8 @@ class TiledPredictor:
         )
         if has_native_masks:
             out = self._merge_native_masks(raw, raw_groups)
-            self.t_nms += time.perf_counter() - _t
+            with self._timing_lock:
+                self.t_nms += time.perf_counter() - _t
             return out
         parts = []
         for (x0, y0), det in zip(raw["offsets"], raw_groups):
@@ -379,11 +403,19 @@ class TiledPredictor:
             order = np.argsort(merged.scores)[::-1][:self._max_dets]
             merged = merged.take(np.ascontiguousarray(order))
         out = _detections_to_dicts(merged)
-        self.t_nms += time.perf_counter() - _t
+        with self._timing_lock:
+            self.t_nms += time.perf_counter() - _t
         return out
 
     def _merge_native_masks(self, raw, raw_groups):
-        """Translate native crop masks into source coordinates before NMS."""
+        """Translate native crop masks after box-only NMS selects survivors.
+
+        Earlier code expanded every candidate crop mask into an HxW source
+        canvas before cross-window NMS, even though NMS only consumes boxes,
+        scores, and labels. At low annotation-QA score floors that can allocate
+        many large temporary masks. Keep crop masks compact through filtering
+        and NMS, then reconstruct source-space masks only for final survivors.
+        """
         full_h, full_w = raw["source_hw"]
         merged = []
         for (x0, y0), records in zip(raw["offsets"], raw_groups):
@@ -405,20 +437,47 @@ class TiledPredictor:
                 box[3] += y0
                 record["bbox_xyxy"] = box
                 if "mask" in record:
-                    crop_mask = np.asarray(record["mask"], dtype=bool)
-                    canvas = np.zeros((full_h, full_w), dtype=bool)
-                    mh = min(crop_mask.shape[0], full_h - y0)
-                    mw = min(crop_mask.shape[1], full_w - x0)
-                    if mh > 0 and mw > 0:
-                        canvas[y0:y0 + mh, x0:x0 + mw] = crop_mask[:mh, :mw]
-                    record["mask"] = canvas
+                    # Private transient metadata; removed after final mask
+                    # reconstruction below.
+                    record["_kdk_mask_offset_xy"] = (int(x0), int(y0))
                 merged.append(record)
+
         if raw.get("full_dets") is not None:
-            merged.extend(dict(record) for record in raw["full_dets"])
+            for record in raw["full_dets"]:
+                record = dict(record)
+                if "mask" in record:
+                    record["_kdk_mask_offset_xy"] = None
+                merged.append(record)
+
         merged = _per_class_nms(merged, self._nms_thresh)
         if self._max_dets is not None and len(merged) > self._max_dets:
             merged.sort(key=lambda item: float(item["score"]), reverse=True)
             merged = merged[:self._max_dets]
+
+        for record in merged:
+            if "mask" not in record:
+                continue
+            offset = record.pop("_kdk_mask_offset_xy", None)
+            mask = np.asarray(record["mask"], dtype=bool)
+            if offset is None:
+                if mask.shape != (full_h, full_w):
+                    # Whole-image predictors should already emit source-sized
+                    # masks. Preserve correctness if a backend returns a
+                    # smaller mask by embedding the overlapping extent.
+                    canvas = np.zeros((full_h, full_w), dtype=bool)
+                    mh = min(mask.shape[0], full_h)
+                    mw = min(mask.shape[1], full_w)
+                    canvas[:mh, :mw] = mask[:mh, :mw]
+                    mask = canvas
+            else:
+                x0, y0 = offset
+                canvas = np.zeros((full_h, full_w), dtype=bool)
+                mh = min(mask.shape[0], full_h - y0)
+                mw = min(mask.shape[1], full_w - x0)
+                if mh > 0 and mw > 0:
+                    canvas[y0:y0 + mh, x0:x0 + mw] = mask[:mh, :mw]
+                mask = canvas
+            record["mask"] = mask
         return merged
 
     @profile

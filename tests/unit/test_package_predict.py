@@ -115,3 +115,9 @@ def test_predict_config_windowed_key_value_boolean():
 
     config = PredictConfig.cli(argv=common, strict=True)
     assert config.windowed is None
+
+    config = PredictConfig.cli(argv=common + ["--pipeline=false"], strict=True)
+    assert config.pipeline is False
+
+    config = PredictConfig.cli(argv=common + ["--pipeline=true"], strict=True)
+    assert config.pipeline is True

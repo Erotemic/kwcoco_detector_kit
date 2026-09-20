@@ -8,13 +8,21 @@ Trained-checkpoint inference adapters.
                                   (onnxruntime only - no PyTorch).
   source_window.SourceWindowReader
                                   No-cache source/window realization.
+  pipeline.PredictionPipeline     Bounded I/O/GPU/CPU pipeline orchestration.
   tiled.TiledPredictor            Source-coordinate tiled inference/merge.
 """
 from kwcoco_detector_kit.predictors import _interface
 from kwcoco_detector_kit.predictors.onnx import OnnxPredictor
+from kwcoco_detector_kit.predictors.pipeline import PredictionPipeline
 from kwcoco_detector_kit.predictors.source_window import SourceWindowReader
 
-__all__ = ["_interface", "OnnxPredictor", "SourceWindowReader", "TiledPredictor"]
+__all__ = [
+    "_interface",
+    "OnnxPredictor",
+    "PredictionPipeline",
+    "SourceWindowReader",
+    "TiledPredictor",
+]
 
 
 def __getattr__(name):

@@ -60,7 +60,7 @@ kwcoco-detector-kit predict \
     --src /path/to/source.kwcoco.zip \
     --dst /path/to/pred.kwcoco.zip \
     --device cuda:0 \
-    --windowed \
+    --windowed=true \
     --window 768 \
     --overlap 0.25 \
     --batch-size 16
@@ -84,6 +84,75 @@ calls, coordinate translation, native-mask reconstruction, per-window
 reduction, and cross-window per-class NMS. Evaluation imports the same
 implementation through a compatibility shim; it does not maintain a second
 geometry engine.
+
+The ordinary `predict` path is pipelined by default. It uses three bounded
+stages while keeping CUDA ownership on the main thread:
+
+```text
+source/window I/O threads
+        ↓ bounded prefetch
+GPU detector inference (main thread only)
+        ↓ bounded completed-source queue
+CPU merge/NMS + mask polygonization workers
+        ↓ deterministic in-order commit
+prediction KWCoco
+```
+
+This deliberately uses threads rather than multiprocessing for source/window
+realization. The expensive codecs/GDAL/NumPy operations release the GIL, while
+threads keep decoded images and 768-window NumPy arrays in shared memory instead
+of serializing tens of MiB per model batch through process IPC. The window stage
+uses one producer per active source reader, avoiding assumptions about concurrent
+access to a single GDAL/delayed-image object. CUDA models are never copied into a
+worker.
+
+All queues are bounded. `source_prefetch` and `window_prefetch` mean the number
+of future items retained beyond the item currently owned by the GPU thread;
+`postprocess_inflight` bounds completed source results waiting on CPU work. CPU
+workers may finish out of order, but annotations are committed in source order so
+output is deterministic and worker exceptions surface at a stable boundary.
+
+The defaults are conservative and suitable for a single local GPU:
+
+```text
+pipeline=true
+source_workers=2
+source_prefetch=2
+window_prefetch=2
+postprocess_workers=1
+postprocess_inflight=2
+```
+
+Tune without changing code, for example:
+
+```bash
+kwcoco-detector-kit predict \
+    --model=model.zip \
+    --src=source.kwcoco.zip \
+    --dst=pred.kwcoco.zip \
+    --device=cuda:0 \
+    --windowed=true \
+    --batch-size=16 \
+    --source-workers=4 \
+    --source-prefetch=3 \
+    --window-prefetch=3 \
+    --postprocess-workers=2 \
+    --postprocess-inflight=3
+```
+
+Use `--pipeline=false` for a serial diagnostic baseline. The emitted
+`*.profile.json` separates stage *work* time from main-thread *wait* time for
+source preparation, window realization, GPU inference, CPU postprocessing, and
+annotation commit. Because stages overlap, work-time totals are not expected to
+sum to wall time. High `source_prefetch_wait_seconds` or
+`window_prefetch_wait_seconds` means the GPU is starving for pixels; high
+`postprocess_wait_seconds` means CPU finalization is applying backpressure.
+
+For native segmentation, crop masks remain crop-sized through score filtering,
+per-window reduction, and cross-window box NMS. KDK only reconstructs a
+full-source mask for detections that survive NMS/max-detection capping. This is
+important for low-score annotation-QA passes, where expanding every candidate
+mask before suppression can dominate host memory and CPU time.
 
 Prediction KWCoco preserves source image IDs and source assets, contains only
 prediction annotations, and records package/checkpoint/ONNX hashes, backend

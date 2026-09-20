@@ -215,6 +215,12 @@ def predict_kwcoco(
     source_read_strategy: str = "auto",
     whole_image_pass: Optional[bool] = None,
     max_dets: Optional[int] = None,
+    pipeline: bool = True,
+    source_workers: int = 2,
+    source_prefetch: int = 2,
+    window_prefetch: int = 2,
+    postprocess_workers: int = 1,
+    postprocess_inflight: int = 2,
 ) -> Path:
     """Run one self-describing model package over original source KWCoco.
 
@@ -275,8 +281,11 @@ def predict_kwcoco(
             "keep_largest_component": bool(post_manifest.get("keep_largest_component", True)),
         }
 
-        pipeline = str(manifest.get("pipeline", "detector_only"))
-        segmenter = _build_segmenter(manifest, package_root) if pipeline == "detector_segmenter" else None
+        model_pipeline = str(manifest.get("pipeline", "detector_only"))
+        segmenter = (
+            _build_segmenter(manifest, package_root)
+            if model_pipeline == "detector_segmenter" else None
+        )
 
         tmp_ctx = None
         if workdir is None:
@@ -325,45 +334,180 @@ def predict_kwcoco(
             strategy_counts = {}
             total_decode = 0.0
             total_window_read = 0.0
+            total_whole_infer = 0.0
+            inline_postprocess_seconds = 0.0
+            annotation_commit_seconds = 0.0
+            committed_images = 0
+            last_progress_report = 0.0
             started = time.perf_counter()
 
-            for gid in list(true.images()):
-                coco_img = true.coco_image(gid)
+            from kwcoco_detector_kit.predictors.pipeline import PredictionPipeline
+            from kwcoco_detector_kit.predictors.source_window import SourceWindowReader
+
+            if not pipeline:
+                source_workers = 0
+                source_prefetch = 0
+                window_prefetch = 0
+                postprocess_workers = 0
+
+            source_items = (
+                (int(gid), true.coco_image(gid))
+                for gid in true.images()
+            )
+
+            def _prepare_source(item):
+                gid, coco_img = item
+                try:
+                    reader = SourceWindowReader(
+                        coco_img, strategy=str(source_read_strategy)
+                    )
+                    # Whole-image prediction and detector+segmenter pipelines
+                    # need the full array anyway. Native tiled detectors keep
+                    # TIFF/COG sources lazy and only decode JPEG-like sources.
+                    reader.prepare(force_full=(tiled is None or segmenter is not None))
+                    return reader
+                except Exception as ex:
+                    raise RuntimeError(
+                        f"predict: failed to prepare gid {gid}; refusing partial output"
+                    ) from ex
+
+            tiled_post_cfg = dict(post_cfg)
+            tiled_post_cfg["nms_thresh"] = 0.0
+
+            def _finalize_source(gid, payload, arr):
                 try:
                     if tiled is not None:
-                        from kwcoco_detector_kit.predictors.source_window import SourceWindowReader
-
-                        reader = SourceWindowReader(
-                            coco_img, strategy=str(source_read_strategy)
-                        )
-                        H, W = reader.source_hw
-                        records = tiled.predict_source(reader, (W, H))
-                        strategy_counts[reader.strategy] = strategy_counts.get(reader.strategy, 0) + 1
-                        total_decode += reader.t_decode
-                        total_window_read += reader.t_window_read
-                        # Segmenter pipelines require a full image after detector
-                        # boxes are merged; native-mask detectors do not.
-                        arr = reader.read_full() if segmenter is not None else None
+                        raw = payload
+                        if raw.get("deferred") is not None:
+                            records = raw["deferred"]
+                        else:
+                            records = tiled._merge_and_nms(raw)
+                        ann_cfg = tiled_post_cfg
                     else:
-                        arr = _coerce_rgb(coco_img.imdelay().finalize())
-                        H, W = arr.shape[:2]
-                        records = base_predictor.predict_image(arr, (W, H))
-                except Exception as ex:
-                    raise RuntimeError(f"predict: failed gid {gid}; refusing partial output") from ex
+                        records = payload
+                        ann_cfg = post_cfg
 
-                if segmenter is not None:
-                    anns = detector_records_to_anns(
-                        arr, records, segmenter, post_cfg, label_mapping
-                    )
-                elif records and all("mask" in record for record in records):
-                    anns = mask_records_to_anns(records, post_cfg, label_mapping)
-                else:
-                    if manifest.get("capabilities", {}).get("supports_masks") and records:
-                        raise RuntimeError(
-                            "model package advertises native masks but selected backend returned box-only records"
+                    if segmenter is not None:
+                        anns = detector_records_to_anns(
+                            arr, records, segmenter, ann_cfg, label_mapping
                         )
-                    anns = detector_records_to_bbox_anns(records, post_cfg, label_mapping)
-                add_prediction_annotations(pred, gid, anns, backend_name)
+                    elif records and all("mask" in record for record in records):
+                        anns = mask_records_to_anns(records, ann_cfg, label_mapping)
+                    else:
+                        if manifest.get("capabilities", {}).get("supports_masks") and records:
+                            raise RuntimeError(
+                                "model package advertises native masks but selected backend returned box-only records"
+                            )
+                        anns = detector_records_to_bbox_anns(records, ann_cfg, label_mapping)
+                    return anns
+                except Exception as ex:
+                    raise RuntimeError(
+                        f"predict: failed postprocess gid {gid}; refusing partial output"
+                    ) from ex
+
+            def _commit_ready(ready):
+                nonlocal annotation_commit_seconds
+                nonlocal committed_images
+                nonlocal last_progress_report
+                for gid, anns in ready:
+                    commit_started = time.perf_counter()
+                    add_prediction_annotations(pred, gid, anns, backend_name)
+                    annotation_commit_seconds += time.perf_counter() - commit_started
+                    committed_images += 1
+                    now = time.perf_counter()
+                    should_report = (
+                        committed_images == 1
+                        or committed_images == int(true.n_images)
+                        or committed_images % 25 == 0
+                        or now - last_progress_report >= 10.0
+                    )
+                    if should_report:
+                        wall = max(now - started, 1e-9)
+                        image_rate = committed_images / wall
+                        window_text = ""
+                        if tiled is not None and tiled.n_windows:
+                            window_text = f", {tiled.n_windows / wall:.1f} windows/s"
+                        print(
+                            f"predict: finalized {committed_images}/{true.n_images} "
+                            f"({image_rate:.2f} images/s{window_text})",
+                            flush=True,
+                        )
+                        last_progress_report = now
+
+            # CUDA is intentionally owned by this main thread. Source decode,
+            # future window realization, and CPU merge/polygonization use
+            # separate bounded worker pools so they can overlap without model
+            # duplication or large multiprocessing IPC copies.
+            with PredictionPipeline(
+                source_workers=int(source_workers),
+                source_prefetch=int(source_prefetch),
+                window_prefetch=int(window_prefetch),
+                postprocess_workers=int(postprocess_workers),
+                postprocess_inflight=int(postprocess_inflight),
+            ) as pred_pipeline:
+                prepared_iter = pred_pipeline.iter_prepared_sources(
+                    source_items, _prepare_source
+                )
+                for (gid, _coco_img), reader in prepared_iter:
+                    # Bound memory before producing one more source's raw masks
+                    # / detections. Completed CPU results are committed in the
+                    # same order as source images regardless of worker timing.
+                    _commit_ready(
+                        pred_pipeline.wait_for_postprocess_capacity(reserve=1)
+                    )
+                    try:
+                        H, W = reader.source_hw
+                        if tiled is not None:
+                            payload = tiled._infer_source(
+                                reader, (W, H), pipeline=pred_pipeline
+                            )
+                            # Segmenter pipelines need pixels after detector
+                            # merge. They stay synchronous because the
+                            # segmenter may itself own CUDA.
+                            arr = reader.read_full() if segmenter is not None else None
+                        else:
+                            arr = reader.read_full()
+                            infer_started = time.perf_counter()
+                            payload = base_predictor.predict_image(arr, (W, H))
+                            total_whole_infer += time.perf_counter() - infer_started
+                    except Exception as ex:
+                        raise RuntimeError(
+                            f"predict: failed inference gid {gid}; refusing partial output"
+                        ) from ex
+
+                    strategy_counts[reader.strategy] = (
+                        strategy_counts.get(reader.strategy, 0) + 1
+                    )
+                    total_decode += reader.t_decode
+                    total_window_read += reader.t_window_read
+
+                    can_async_finalize = (
+                        pred_pipeline.async_postprocess and segmenter is None
+                    )
+                    if can_async_finalize:
+                        # Detector-only finalization does not need source
+                        # pixels. Avoid retaining a decoded whole image in the
+                        # bounded postprocess queue for whole-image predictors.
+                        finalize_arr = None
+                        pred_pipeline.submit_postprocess(
+                            gid, _finalize_source, gid, payload, finalize_arr
+                        )
+                        _commit_ready(pred_pipeline.drain_postprocess_ready())
+                    else:
+                        post_started = time.perf_counter()
+                        anns = _finalize_source(gid, payload, arr)
+                        inline_postprocess_seconds += time.perf_counter() - post_started
+                        _commit_ready([(gid, anns)])
+
+                _commit_ready(pred_pipeline.finish_postprocess())
+                pipeline_profile = pred_pipeline.profile_dict()
+                async_post_work = pipeline_profile["postprocess"]["work_seconds"]
+                pipeline_profile["postprocess"]["inline_work_seconds"] = (
+                    inline_postprocess_seconds
+                )
+                pipeline_profile["postprocess"]["total_work_seconds"] = (
+                    async_post_work + inline_postprocess_seconds
+                )
 
             elapsed = time.perf_counter() - started
             info = {
@@ -390,13 +534,30 @@ def predict_kwcoco(
                     "source_read_strategy": str(source_read_strategy),
                     "source_read_strategy_counts": strategy_counts,
                     "whole_image_pass": bool(whole_image_pass),
+                    "pipeline": bool(pipeline),
+                    "source_workers": int(source_workers),
+                    "source_prefetch": int(source_prefetch),
+                    "window_prefetch": int(window_prefetch),
+                    "postprocess_workers": int(postprocess_workers),
+                    "postprocess_inflight": int(postprocess_inflight),
                 },
+                "pipeline": pipeline_profile,
                 "timing": {
                     "prediction_wall_seconds": elapsed,
+                    # Stage work can overlap, so these work totals are not
+                    # expected to sum to prediction_wall_seconds.
                     "source_decode_seconds": total_decode,
                     "window_read_seconds": total_window_read,
-                    "model_infer_seconds": getattr(tiled, "t_infer", None),
+                    "source_prefetch_wait_seconds": pipeline_profile["source_prepare"]["wait_seconds"],
+                    "window_prefetch_wait_seconds": pipeline_profile["window_read"]["wait_seconds"],
+                    "model_infer_seconds": (
+                        getattr(tiled, "t_infer", None)
+                        if tiled is not None else total_whole_infer
+                    ),
                     "merge_nms_seconds": getattr(tiled, "t_nms", None),
+                    "postprocess_work_seconds": pipeline_profile["postprocess"]["total_work_seconds"],
+                    "postprocess_wait_seconds": pipeline_profile["postprocess"]["wait_seconds"],
+                    "annotation_commit_seconds": annotation_commit_seconds,
                     "source_images": int(true.n_images),
                     "windows": getattr(tiled, "n_windows", None),
                     "source_images_per_second": (true.n_images / elapsed) if elapsed > 0 else None,
@@ -416,6 +577,8 @@ def predict_kwcoco(
                 "package_sha256": package_sha256,
                 "source_dataset_sha256": source_sha256,
                 "backend": backend_used,
+                "resolved_inference": info["resolved_inference"],
+                "pipeline": pipeline_profile,
                 "timing": {**info["timing"], "output_serialization_seconds": serialization_seconds},
             }
             Path(str(dst) + ".profile.json").write_text(
@@ -455,6 +618,34 @@ class PredictConfig(kwconf.Config):
     source_read_strategy = kwconf.Value(
         "auto", choices=["auto", "decode_once", "delayed_region"]
     )
+    pipeline = kwconf.Value(
+        True,
+        isflag=True,
+        help=(
+            "overlap source/window reads and CPU postprocess with GPU inference; "
+            "use --pipeline=false for a fully serial diagnostic run"
+        ),
+    )
+    source_workers = kwconf.Value(
+        2, parser=int,
+        help="threads preparing upcoming source images (0 disables source prefetch)",
+    )
+    source_prefetch = kwconf.Value(
+        2, parser=int,
+        help="future source images queued beyond the current source",
+    )
+    window_prefetch = kwconf.Value(
+        2, parser=int,
+        help="future realized window batches queued beyond the current GPU batch",
+    )
+    postprocess_workers = kwconf.Value(
+        1, parser=int,
+        help="CPU workers for tiled merge/NMS and mask polygonization",
+    )
+    postprocess_inflight = kwconf.Value(
+        2, parser=int,
+        help="bounded number of source results awaiting CPU postprocess",
+    )
     whole_image_pass = kwconf.Value(
         None, isflag=True, help="include an additional whole-image pass; package default when omitted"
     )
@@ -484,6 +675,12 @@ class PredictConfig(kwconf.Config):
             source_read_strategy=str(config.source_read_strategy),
             whole_image_pass=config.whole_image_pass,
             max_dets=config.max_dets,
+            pipeline=bool(config.pipeline),
+            source_workers=int(config.source_workers),
+            source_prefetch=int(config.source_prefetch),
+            window_prefetch=int(config.window_prefetch),
+            postprocess_workers=int(config.postprocess_workers),
+            postprocess_inflight=int(config.postprocess_inflight),
         )
         if config.create_labelme:
             from kwcoco_detector_kit.export.labelme import export_to_labelme

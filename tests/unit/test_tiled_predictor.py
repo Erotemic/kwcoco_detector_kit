@@ -5,6 +5,8 @@ These use a fake base predictor so no model/checkpoint is needed — they
 exercise the window geometry, coordinate translation back to full-image
 space, and the cross-window NMS merge.
 """
+import threading
+
 import numpy as np
 
 from kwcoco_detector_kit.eval.tiled_predictor import (
@@ -62,15 +64,28 @@ class _FakeMaskDetector(_FakeBatchDetector):
 class _FakeArrayReader:
     """Minimal source-window reader used to exercise the no-cache path."""
 
-    def __init__(self, image):
+    def __init__(self, image, batch_event=None):
         self.image = image
         self.source_hw = image.shape[:2]
         self.window_reads = []
         self.full_reads = 0
+        self.batch_reads = 0
+        self.batch_event = batch_event
 
     def read_window(self, x0, y0, x1, y1):
         self.window_reads.append((x0, y0, x1, y1))
         return self.image[y0:y1, x0:x1]
+
+    def read_windows(self, offsets, window_hw):
+        self.batch_reads += 1
+        if self.batch_reads >= 2 and self.batch_event is not None:
+            self.batch_event.set()
+        win_h, win_w = window_hw
+        H, W = self.source_hw
+        return [
+            self.read_window(x0, y0, min(x0 + win_w, W), min(y0 + win_h, H))
+            for x0, y0 in offsets
+        ]
 
     def read_full(self):
         self.full_reads += 1
@@ -109,6 +124,45 @@ def test_predict_source_uses_window_reader_without_full_decode():
     ]
     assert reader.full_reads == 0
     assert pred.n_windows == 4
+
+
+class _PrefetchAwareBatchDetector(_FakeBatchDetector):
+    def __init__(self, batch_event, size=(64, 64)):
+        super().__init__(size)
+        self.batch_event = batch_event
+        self.saw_prefetched_batch = False
+
+    def predict_batch(self, images_np, orig_sizes):
+        if self.batch_calls == 0:
+            # The window producer should realize batch 2 while this first GPU
+            # stand-in is busy. Without pipeline overlap this times out.
+            self.saw_prefetched_batch = self.batch_event.wait(timeout=1.0)
+        return super().predict_batch(images_np, orig_sizes)
+
+
+def test_predict_source_prefetches_next_window_batch_during_inference():
+    from kwcoco_detector_kit.predictors.pipeline import PredictionPipeline
+
+    batch_event = threading.Event()
+    base = _PrefetchAwareBatchDetector(batch_event, size=(64, 64))
+    pred = TiledPredictor(
+        base, overlap=0.0, keep_full=False, batch_size=2,
+    )
+    reader = _FakeArrayReader(
+        np.zeros((128, 128, 3), dtype=np.uint8),
+        batch_event=batch_event,
+    )
+    with PredictionPipeline(
+        source_workers=0,
+        source_prefetch=0,
+        window_prefetch=1,
+        postprocess_workers=0,
+    ) as pipeline:
+        raw = pred._infer_source(reader, pipeline=pipeline)
+        records = pred._merge_and_nms(raw)
+        assert pipeline.profile_dict()["window_read"]["max_pending"] <= 2
+    assert base.saw_prefetched_batch
+    assert len(records) == 4
 
 
 def test_small_image_defers_to_base():
@@ -162,6 +216,49 @@ def test_native_masks_are_reconstructed_in_source_coordinates():
     assert all(record["mask"].shape == (128, 128) for record in records)
     assert sum(int(record["mask"].sum()) for record in records) == 400
     assert any(record["mask"][67, 66] for record in records)
+
+
+def test_native_mask_canvas_is_allocated_only_for_nms_survivors(monkeypatch):
+    import kwcoco_detector_kit.predictors.tiled as tiled_mod
+
+    pred = TiledPredictor(
+        _FakeMaskDetector((64, 64)), overlap=0.0, keep_full=False, batch_size=2,
+    )
+    mask_a = np.ones((64, 64), dtype=bool)
+    mask_b = np.ones((64, 64), dtype=bool)
+    raw = {
+        "deferred": None,
+        "offsets": [(0, 0), (32, 0)],
+        "source_hw": (128, 128),
+        "window_dets": [
+            [{
+                "label": 0, "score": 0.9,
+                "bbox_xyxy": [40.0, 10.0, 50.0, 20.0], "mask": mask_a,
+            }],
+            [{
+                "label": 0, "score": 0.8,
+                "bbox_xyxy": [8.0, 10.0, 18.0, 20.0], "mask": mask_b,
+            }],
+        ],
+        "full_dets": None,
+    }
+
+    full_canvas_allocations = 0
+    real_zeros = tiled_mod.np.zeros
+
+    def counting_zeros(shape, *args, **kwargs):
+        nonlocal full_canvas_allocations
+        if tuple(shape) == (128, 128):
+            full_canvas_allocations += 1
+        return real_zeros(shape, *args, **kwargs)
+
+    monkeypatch.setattr(tiled_mod.np, "zeros", counting_zeros)
+    records = pred._merge_and_nms(raw)
+    assert len(records) == 1
+    assert records[0]["mask"].shape == (128, 128)
+    # The two crop detections map to the same source box. NMS keeps one, and
+    # only that surviving mask should ever be expanded to a full-source canvas.
+    assert full_canvas_allocations == 1
 
 
 def test_max_dets_caps_top_k_by_score():

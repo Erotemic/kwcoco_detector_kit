@@ -59,6 +59,24 @@ class _FakeMaskDetector(_FakeBatchDetector):
         }]
 
 
+class _FakeArrayReader:
+    """Minimal source-window reader used to exercise the no-cache path."""
+
+    def __init__(self, image):
+        self.image = image
+        self.source_hw = image.shape[:2]
+        self.window_reads = []
+        self.full_reads = 0
+
+    def read_window(self, x0, y0, x1, y1):
+        self.window_reads.append((x0, y0, x1, y1))
+        return self.image[y0:y1, x0:x1]
+
+    def read_full(self):
+        self.full_reads += 1
+        return self.image
+
+
 def test_window_offsets_translate_to_full_image():
     base = _FakeWindowDetector(size=(64, 64))
     pred = TiledPredictor(base, overlap=0.0, keep_full=False)
@@ -71,6 +89,26 @@ def test_window_offsets_translate_to_full_image():
     assert len(dets) == 4
     corners = sorted((d["bbox_xyxy"][0], d["bbox_xyxy"][1]) for d in dets)
     assert corners == [(2.0, 3.0), (2.0, 67.0), (66.0, 3.0), (66.0, 67.0)]
+
+
+def test_predict_source_uses_window_reader_without_full_decode():
+    base = _FakeBatchDetector(size=(64, 64))
+    pred = TiledPredictor(
+        base, overlap=0.0, keep_full=False, batch_size=2,
+    )
+    image = np.zeros((128, 128, 3), dtype=np.uint8)
+    reader = _FakeArrayReader(image)
+    dets = pred.predict_source(reader)
+    corners = sorted((d["bbox_xyxy"][0], d["bbox_xyxy"][1]) for d in dets)
+    assert corners == [(2.0, 3.0), (2.0, 67.0), (66.0, 3.0), (66.0, 67.0)]
+    assert reader.window_reads == [
+        (0, 0, 64, 64),
+        (64, 0, 128, 64),
+        (0, 64, 64, 128),
+        (64, 64, 128, 128),
+    ]
+    assert reader.full_reads == 0
+    assert pred.n_windows == 4
 
 
 def test_small_image_defers_to_base():

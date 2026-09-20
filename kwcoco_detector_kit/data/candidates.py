@@ -30,6 +30,21 @@ class CandidateConfig(kwconf.Config):
     src = kwconf.Value(None, required=True)
     dst = kwconf.Value(None, required=True)
     category_names = kwconf.Value("widget")
+    ignore_categories = kwconf.Value(
+        "", help="comma-separated source categories that block negative supervision"
+    )
+    uncategorized_annotation_policy = kwconf.Value(
+        "ignore", choices=["background", "ignore", "error"],
+        help="treatment of annotations whose category_id is missing/None",
+    )
+    default_non_target_policy = kwconf.Value(
+        "background", choices=["background", "ignore", "error"],
+        help="treatment of declared categories that are neither target nor explicit ignore",
+    )
+    unclassified_category_policy = kwconf.Value(
+        "ignore", choices=["background", "ignore", "error"],
+        help="treatment of annotations that reference an undeclared category",
+    )
     tile_size = kwconf.Value(320)
     oversize_factor = kwconf.Value(1.0)
     source_scales = kwconf.Value("1.0,0.66,0.4,0.25")
@@ -290,13 +305,18 @@ def enumerate_candidates(config):
     from kwcoco_detector_kit.data.tile_cache import (
         canonical_digest, make_tile_identity, sha256_file,
     )
+    from kwcoco_detector_kit.data.truth_semantics import (
+        TruthSemantics, annotation_has_geometry,
+    )
 
     src = Path(config.src).expanduser().resolve()
     dset = kwcoco.CocoDataset.coerce(str(src))
-    names = config.category_names
-    names = names if isinstance(names, (list, tuple)) else str(names).split(",")
-    names = {str(name).strip() for name in names if str(name).strip()}
-    target_cids = {cat["id"] for cat in dset.cats.values() if cat["name"] in names}
+    semantics = TruthSemantics.from_config(config)
+    names = set(semantics.target_categories)
+    declared_names = {str(cat.get("name")) for cat in dset.cats.values()}
+    missing_targets = sorted(names - declared_names)
+    if missing_targets:
+        raise ValueError(f"target categories not present in source dataset: {missing_targets!r}")
     base_tile = int(config.tile_size)
     disk_tile = max(1, int(round(base_tile * float(config.oversize_factor))))
     stride = max(1, int(round(disk_tile * float(config.stride_frac))))
@@ -305,7 +325,9 @@ def enumerate_candidates(config):
     min_area = float(config.min_gt_area_frac) * base_tile * base_tile
     source_fingerprint = str(config.source_dataset_fingerprint or sha256_file(src))
     policy = {
-        "category_names": sorted(names), "tile_size": base_tile,
+        "category_names": sorted(names),
+        "truth_semantics": semantics.to_dict(),
+        "tile_size": base_tile,
         "oversize_factor": float(config.oversize_factor),
         "source_scales": list(_parse_scales(config.source_scales)),
         "stride_frac": float(config.stride_frac),
@@ -328,11 +350,15 @@ def enumerate_candidates(config):
     for image in dset.images().objs:
         gid = image["id"]
         width, height = int(image["width"]), int(image["height"])
-        anns = [
-            ann for ann in dset.annots(gid=gid).objs
-            if ann.get("category_id") in target_cids
-            and (ann.get("bbox") is not None or ann.get("segmentation") is not None)
-        ]
+        source_anns = list(dset.annots(gid=gid).objs)
+        parts = semantics.partition_annotations(dset, source_anns)
+        anns = [ann for ann in parts["target"] if annotation_has_geometry(ann)]
+        ignored = semantics.partition_ignored_annotations(dset, parts["ignore"])
+        ignore_anns = ignored["region"]
+        # Uncategorized / undeclared ignored truth, and any ignored annotation
+        # without geometry, blocks the whole image from trusted negatives.
+        if ignored["image"]:
+            continue
         source_path = Path(dset.get_image_fpath(gid)).resolve()
         source_digest = source_digests.setdefault(str(source_path), sha256_file(source_path))
         for scale_name, requested_scale in _parse_scales(config.source_scales):
@@ -348,6 +374,18 @@ def enumerate_candidates(config):
                     unsafe = False
                     intersecting = kept = 0
                     kept_area = 0.0
+                    # Uncertain source truth is never eligible background.  It
+                    # is distinct from KDK's geometry-invalid target tile role.
+                    for ann in ignore_anns:
+                        geom = _clip_annotation_geometry(
+                            ann, source_dims=(height, width), scale=scale_xy,
+                            crop_xyxy=crop, output_dims=(disk_tile, disk_tile),
+                        )
+                        if geom is not None:
+                            unsafe = True
+                            break
+                    if unsafe:
+                        continue
                     for ann in anns:
                         geom = _clip_annotation_geometry(
                             ann, source_dims=(height, width), scale=scale_xy,
@@ -406,7 +444,7 @@ def enumerate_candidates(config):
                         "tile_model_input_size": [base_tile, base_tile],
                         "tile_role": "negative",
                         "negative_origin": (
-                            "zero_annotation_source" if not anns
+                            "zero_annotation_source" if not source_anns
                             else "safe_background_window"
                         ),
                         "policy_fingerprint": policy_fingerprint,

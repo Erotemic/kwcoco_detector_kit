@@ -79,6 +79,7 @@ class RFDETRSegPredictor:
 
         self._H, self._W = [int(v) for v in policy["input_hw"]]
         self._threshold = float(policy.get("predict_score_floor", 0.0))
+        self._num_classes = int(policy["num_classes"])
         self._model = RFDETRSeg2XLarge(
             pretrain_weights=str(checkpoint),
             num_classes=int(policy["num_classes"]),
@@ -91,8 +92,12 @@ class RFDETRSegPredictor:
     def eval_spatial_size(self):
         return self._H, self._W
 
+    def set_score_thresh(self, score_thresh):
+        """Push KDK's requested score floor into upstream mask postprocessing."""
+        self._threshold = float(score_thresh)
+
     @staticmethod
-    def _records(detections, orig_size, actual_hw):
+    def _records(detections, orig_size, actual_hw, num_classes=None):
         import cv2
         import numpy as np
 
@@ -106,6 +111,13 @@ class RFDETRSegPredictor:
         sy = target_h / float(actual_h)
         result = []
         for idx in range(len(xyxy)):
+            # RF-DETR detection/segmentation heads have num_classes + 1 logits;
+            # the final slot is the no-object/background sentinel.  Upstream's
+            # high-level predict() preserves that row and labels it
+            # "__background__".  It must not enter KDK prediction KWCoco as a
+            # detector class.
+            if num_classes is not None and int(labels[idx]) >= int(num_classes):
+                continue
             box = xyxy[idx].astype(float)
             box[[0, 2]] *= sx
             box[[1, 3]] *= sy
@@ -129,7 +141,9 @@ class RFDETRSegPredictor:
             image_np, threshold=self._threshold, shape=(self._H, self._W),
             include_source_image=False,
         )
-        return self._records(detections, orig_size, image_np.shape[:2])
+        return self._records(
+            detections, orig_size, image_np.shape[:2], num_classes=self._num_classes
+        )
 
     def predict_batch(self, images_np, orig_sizes):
         if not images_np:
@@ -139,7 +153,7 @@ class RFDETRSegPredictor:
             include_source_image=False,
         )
         return [
-            self._records(det, size, image.shape[:2])
+            self._records(det, size, image.shape[:2], num_classes=self._num_classes)
             for det, size, image in zip(detections, orig_sizes, images_np)
         ]
 
@@ -150,7 +164,7 @@ class RFDETRTrainer:
 
     name = "rfdetr"
     variants = VARIANTS
-    supports_onnx_export = False
+    supports_onnx_export = True
 
     def generate_config(
         self,
@@ -235,10 +249,28 @@ class RFDETRTrainer:
             },
             "runtime": {"num_gpus": int(num_gpus), "distributed": int(num_gpus) > 1},
             "policy": {
+                "variant": variant,
                 "input_hw": [h, w],
                 "num_classes": int(num_classes),
                 "category_names": category_names,
                 "predict_score_floor": float(extra.get("predict_score_floor", 0.0)),
+                "supports_boxes": True,
+                "supports_masks": True,
+                "framework": {"name": "rfdetr"},
+                "preprocess": {
+                    "resize": "bilinear_half_pixel_antialias_false",
+                    "scale": 1.0 / 255.0,
+                    "normalize_mean": [0.485, 0.456, 0.406],
+                    "normalize_std": [0.229, 0.224, 0.225],
+                },
+                "inference": {
+                    "mode": "windowed",
+                    "input_hw": [h, w],
+                    "window": [h, w],
+                    "overlap": 0.25,
+                    "nms_iou": 0.5,
+                    "supports_masks": True,
+                },
             },
         }
         cfg_fpath = gen_dpath / "rfdetr_train.json"

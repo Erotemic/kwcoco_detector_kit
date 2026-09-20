@@ -52,6 +52,13 @@ class ReviewMineConfig(kwconf.Config):
     make_previews = kwconf.Value(True, help="render static preview JPEGs and index.html")
     preview_max_dim = kwconf.Value(1000, help="maximum preview width/height")
     context_margin = kwconf.Value(0.20, help="fractional margin around the tile for previews")
+    ignore_categories = kwconf.Value(
+        None,
+        help=(
+            "optional comma-separated uncertain source categories for legacy "
+            "candidate indexes that predate truth_semantics metadata"
+        ),
+    )
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -350,6 +357,15 @@ def run(config):
         cat["id"] for cat in source_dset.dataset.get("categories", [])
         if cat.get("name") in target_names
     }
+    from kwcoco_detector_kit.data.truth_semantics import TruthSemantics
+    from kwcoco_detector_kit.data.truth_review import classify_prediction
+
+    semantics_mapping = dict(index.get("policy", {}).get("truth_semantics") or {})
+    if config.ignore_categories is not None:
+        semantics_mapping["ignore_categories"] = config.ignore_categories
+    semantics = TruthSemantics.from_mapping(
+        semantics_mapping, fallback_targets=sorted(target_names)
+    )
 
     per_source = max(0, int(config.per_source))
     source_counts = {}
@@ -382,6 +398,17 @@ def run(config):
                 for ann in target_anns
                 if (ann_box := _ann_ltrb(ann)) is not None
             )
+        truth_review = (
+            classify_prediction(source_dset, gid, source_bbox, semantics)
+            if source_bbox is not None
+            else {
+                "classification": "unexplained_prediction",
+                "best_target_iou": 0.0,
+                "overlapping_annotation_ids": [],
+                "overlapping_category_names": [],
+                "overlaps": [],
+            }
+        )
         sidecar = source_fpath.with_suffix(".json")
         item = {
             "rank": len(queue) + 1,
@@ -405,6 +432,10 @@ def run(config):
             "num_target_truth_on_source": len(target_anns),
             "num_target_truth_overlapping_prediction": int(overlapping),
             "target_truth_annotation_ids": [ann.get("id") for ann in target_anns],
+            "truth_classification": truth_review["classification"],
+            "overlapping_annotation_ids": truth_review["overlapping_annotation_ids"],
+            "overlapping_category_names": truth_review["overlapping_category_names"],
+            "best_target_iou": truth_review["best_target_iou"],
             "review_status": "unreviewed",
             "review_note": "",
         }

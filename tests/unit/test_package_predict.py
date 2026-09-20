@@ -73,11 +73,11 @@ def test_mock_tiny_package_zip_predict_roundtrip(synthetic_kwcoco, tmp_workdir, 
     )
 
     with open_package(package_zip) as (root, manifest):
-        assert manifest["schema"] == "kwcoco_detector_kit.package.v1"
+        assert manifest["schema"] == "kwcoco_detector_kit.package.v2"
         assert manifest["trainer"] == "mock_tiny"
         assert manifest["provenance"]["username"] == "alice"
         assert manifest["provenance"]["hostname"] == "node0"
-        assert manifest["artifacts"]["checkpoint"] == "weights/checkpoint.pth"
+        assert manifest["artifacts"]["checkpoint"] == "weights/best_stg2.pth"
         assert (root / manifest["artifacts"]["checkpoint"]).exists()
         assert not Path(manifest["artifacts"]["checkpoint"]).is_absolute()
         yaml.safe_dump(manifest)

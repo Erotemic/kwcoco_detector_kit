@@ -121,6 +121,7 @@ def export_onnx(
     category_names_source: Optional[str] = None,
     imputed: Optional[dict] = None,
     force: bool = False,
+    device: str = "cpu",
 ) -> Path:
     """Dispatch to the trainer-appropriate ONNX exporter.
 
@@ -137,6 +138,20 @@ def export_onnx(
     metadata field to a reason string (see ``write_modelspec``).
     """
     workdir = Path(workdir)
+    if trainer.name == "rfdetr":
+        return _export_rfdetr(
+            trainer=trainer,
+            workdir=workdir,
+            input_hw=input_hw,
+            out_fpath=out_fpath,
+            opset=opset,
+            score_thresh=score_thresh,
+            category_names=category_names,
+            category_names_source=category_names_source,
+            imputed=imputed,
+            force=force,
+            device=device,
+        )
     if trainer.name == "deimv2":
         return _export_deimv2(
             trainer=trainer,
@@ -331,6 +346,79 @@ def _rewrite_deimv2_includes(cfg: Path, repo: Path, dest_dir: Path) -> Path:
     out.write_text(fixed)
     print(f"  rewrote baked DEIMv2 include path -> {repo} (config: {out})")
     return out
+
+
+def _export_rfdetr(
+    *,
+    trainer,
+    workdir: Path,
+    input_hw: Tuple[int, int],
+    out_fpath: Optional[Path],
+    opset: int,
+    score_thresh: float,
+    category_names: Optional[Sequence[str]],
+    category_names_source: Optional[str] = None,
+    imputed: Optional[dict] = None,
+    force: bool,
+    device: str = "cpu",
+) -> Path:
+    """Use RF-DETR's native exporter, preserving the segmentation mask head."""
+    H, W = map(int, input_hw)
+    export_dpath = workdir / "export"
+    export_dpath.mkdir(parents=True, exist_ok=True)
+    out_fpath = Path(out_fpath) if out_fpath else export_dpath / f"rfdetr_seg_h{H}_w{W}.onnx"
+    if out_fpath.exists() and out_fpath.stat().st_size >= 262144 and not force:
+        print(f"  reusing existing RF-DETR ONNX export: {out_fpath}")
+        return out_fpath
+
+    predictor = trainer.build_predictor(workdir, device=str(device))
+    model = getattr(predictor, "_model", None)
+    if model is None or not callable(getattr(model, "export", None)):
+        raise RuntimeError("RF-DETR predictor does not expose the upstream export-capable model")
+    exported = Path(model.export(
+        output_dir=str(export_dpath),
+        opset_version=int(opset),
+        verbose=False,
+        shape=(H, W),
+        batch_size=1,
+        dynamic_batch=True,
+        format="onnx",
+        output_name=out_fpath.stem,
+    ))
+    if exported.resolve() != out_fpath.resolve():
+        out_fpath.parent.mkdir(parents=True, exist_ok=True)
+        import shutil
+        shutil.move(str(exported), str(out_fpath))
+
+    names, fingerprint, prov, imp = _modelspec_provenance(
+        trainer=trainer, workdir=workdir,
+        category_names=category_names, imputed=imputed,
+    )
+    write_modelspec(
+        out_fpath,
+        input_hw=(H, W),
+        normalize_mean=[0.485, 0.456, 0.406],
+        normalize_std=[0.229, 0.224, 0.225],
+        postprocess_score_thresh=float(score_thresh),
+        variant=_read_policy(workdir).get("variant", "seg_2xlarge"),
+        category_names=names,
+        candidate_kind="real",
+        category_names_source=category_names_source,
+        source_checkpoint=fingerprint,
+        provenance=prov,
+        imputed=imp,
+        extra_meta={
+            "opset": int(opset),
+            "contract": "rfdetr_raw_seg_v1",
+            "supports_boxes": True,
+            "supports_masks": True,
+            "input_name": "input",
+            "output_names": ["dets", "labels", "masks"],
+            "resize": "bilinear_half_pixel_antialias_false",
+            "background_class_id": -1,
+        },
+    )
+    return out_fpath
 
 
 def _export_deimv2(
@@ -547,6 +635,7 @@ class ExportOnnxConfig(kwconf.Config):
     force = kwconf.Value(False, isflag=True, help="re-export even if .onnx already exists")
     score_thresh = kwconf.Value(0.30, help="score threshold written into the modelspec")
     opset = kwconf.Value(DEFAULT_OPSET, help="ONNX opset version")
+    device = kwconf.Value("cpu", help="export device, e.g. cpu or cuda:0")
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -562,8 +651,10 @@ class ExportOnnxConfig(kwconf.Config):
         trainer_name = variant.split("_")[0] if variant else "deimv2"
         trainer = get_trainer(trainer_name)
 
-        H = int(policy.get("export_input_h", 640))
-        W = int(policy.get("export_input_w", 640))
+        input_hw = policy.get("input_hw") or [
+            policy.get("export_input_h", 640), policy.get("export_input_w", 640)
+        ]
+        H, W = map(int, input_hw)
 
         # Resolve category_names: CLI arg takes precedence, then policy.json.
         raw = config.category_names
@@ -599,6 +690,7 @@ class ExportOnnxConfig(kwconf.Config):
             score_thresh=float(config.score_thresh),
             opset=int(config.opset),
             force=bool(config.force),
+            device=str(config.device),
         )
         print(f"[export-onnx] wrote {out}")
 

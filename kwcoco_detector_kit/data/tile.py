@@ -87,10 +87,28 @@ class TileConfig(kwconf.Config):
     category_names = kwconf.Value(
         "widget",
         help=(
-            "comma-separated category names to keep (others dropped). Order "
-            "is preserved and assigned to output category_id 1, 2, ... so "
-            "downstream MSCOCO export can map class indices consistently."
+            "comma-separated positive detector categories. Order is preserved "
+            "and assigned to output category_id 1, 2, ..."
         ),
+    )
+    ignore_categories = kwconf.Value(
+        "",
+        help=(
+            "comma-separated uncertain source categories. Windows intersecting "
+            "these annotations are dropped rather than trained as background"
+        ),
+    )
+    uncategorized_annotation_policy = kwconf.Value(
+        "ignore", choices=["background", "ignore", "error"],
+        help="treatment of source annotations whose category_id is missing/None",
+    )
+    default_non_target_policy = kwconf.Value(
+        "background", choices=["background", "ignore", "error"],
+        help="treatment of declared non-target categories not listed in --ignore-categories",
+    )
+    unclassified_category_policy = kwconf.Value(
+        "ignore", choices=["background", "ignore", "error"],
+        help="treatment of source annotations referencing undeclared categories",
     )
     output_ext = kwconf.Value(".jpg", help="asset extension")
     jpeg_quality = kwconf.Value(90, help="JPEG quality if output_ext is .jpg")
@@ -581,6 +599,15 @@ def _dump_kwcoco(out: dict, dst_fpath: Path):
 # ---------------------------------------------------------------------------
 
 
+def _semantic_parts(config, src_dset, gid):
+    from kwcoco_detector_kit.data.truth_semantics import TruthSemantics
+
+    semantics = TruthSemantics.from_config(config)
+    return semantics, semantics.partition_annotations(
+        src_dset, list(src_dset.annots(gid=gid).objs)
+    )
+
+
 def _run_full_only(config, src_dset, dst_fpath, asset_dpath, target_cat_names, src_cid_to_new_cid, writer):
     """Resize each source image to ``full_dim``; warp annotations through the scale."""
     import ubelt as ub
@@ -602,11 +629,15 @@ def _run_full_only(config, src_dset, dst_fpath, asset_dpath, target_cat_names, s
             continue
         h, w = image.shape[:2]
         gid = coco_img.img["id"]
+        _semantics, parts = _semantic_parts(config, src_dset, gid)
         anns = [
-            ann for ann in src_dset.annots(gid=gid).objs
-            if ann.get("category_id") in src_cid_to_new_cid
-            and (ann.get("bbox") is not None or ann.get("segmentation") is not None)
+            ann for ann in parts["target"]
+            if ann.get("bbox") is not None or ann.get("segmentation") is not None
         ]
+        # full_only has no region-ignore representation. Conservatively omit
+        # a whole-image sample if any uncertain annotation is present.
+        if parts["ignore"]:
+            continue
         resized, scale = _resize_with_long_side(image, full_dim)
         stem = f"gid{gid:08d}_full"
         out_h, out_w = resized.shape[:2]
@@ -684,14 +715,17 @@ def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_names, sr
             continue
         h, w = image.shape[:2]
         gid = coco_img.img["id"]
+        semantics, parts = _semantic_parts(config, src_dset, gid)
         anns = [
-            ann for ann in src_dset.annots(gid=gid).objs
-            if ann.get("category_id") in src_cid_to_new_cid
-            and (ann.get("bbox") is not None or ann.get("segmentation") is not None)
+            ann for ann in parts["target"]
+            if ann.get("bbox") is not None or ann.get("segmentation") is not None
         ]
+        ignored = semantics.partition_ignored_annotations(src_dset, parts["ignore"])
+        ignore_anns = ignored["region"]
+        has_global_ignore = bool(ignored["image"])
 
         # full frame
-        if bool(config.keep_full):
+        if bool(config.keep_full) and not parts["ignore"]:
             full_resized, scale = _resize_with_long_side(image, full_dim)
             stem = f"gid{gid:08d}_full"
             out_h, out_w = full_resized.shape[:2]
@@ -743,6 +777,22 @@ def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_names, sr
                 continue
             tile_image = image[y0:y1, x0:x1]
             tile_resized, scale = _resize_with_long_side(tile_image, disk_tile_dim)
+            if has_global_ignore:
+                continue
+            blocked = False
+            for ann in ignore_anns:
+                geom = _clip_annotation_geometry(
+                    ann,
+                    source_dims=(h, w),
+                    scale=scale,
+                    crop_xyxy=(x0 * scale, y0 * scale, x1 * scale, y1 * scale),
+                    output_dims=tile_resized.shape[:2],
+                )
+                if geom is not None:
+                    blocked = True
+                    break
+            if blocked:
+                continue
             stem = f"gid{gid:08d}_tile{tile_idx:02d}_g{grid}"
             out_h, out_w = tile_resized.shape[:2]
             file_name, identity_meta = writer.write(
@@ -835,11 +885,19 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
             continue
         H, W = image_full.shape[:2]
         gid = coco_img.img["id"]
+        all_anns_src = list(src_dset.annots(gid=gid).objs)
+        semantics, parts = _semantic_parts(config, src_dset, gid)
         anns_src = [
-            ann for ann in src_dset.annots(gid=gid).objs
-            if ann.get("category_id") in src_cid_to_new_cid
-            and (ann.get("bbox") is not None or ann.get("segmentation") is not None)
+            ann for ann in parts["target"]
+            if ann.get("bbox") is not None or ann.get("segmentation") is not None
         ]
+        ignored = semantics.partition_ignored_annotations(src_dset, parts["ignore"])
+        ignore_anns = ignored["region"]
+        # Uncategorized / undeclared ignored truth, and any ignored annotation
+        # without geometry, blocks the whole image from detector supervision.
+        if ignored["image"]:
+            n_ignored += 1
+            continue
 
         for scale_name, scale_factor in scales:
             scaled_long = max(int(round(W * scale_factor)), int(round(H * scale_factor)))
@@ -872,6 +930,21 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
                     crop_xyxy = (
                         x0, y0, x0 + disk_tile_size, y0 + disk_tile_size,
                     )
+                    has_uncertain_truth = False
+                    for ann in ignore_anns:
+                        geom = _clip_annotation_geometry(
+                            ann,
+                            source_dims=(H, W),
+                            scale=actual_scale,
+                            crop_xyxy=crop_xyxy,
+                            output_dims=(disk_tile_size, disk_tile_size),
+                        )
+                        if geom is not None:
+                            has_uncertain_truth = True
+                            break
+                    if has_uncertain_truth:
+                        n_ignored += 1
+                        continue
                     for ann in anns_src:
                         geom = _clip_annotation_geometry(
                             ann,
@@ -977,7 +1050,7 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
                         **identity_meta,
                         **({
                             "negative_origin": (
-                                "zero_annotation_source" if not anns_src
+                                "zero_annotation_source" if not all_anns_src
                                 else "safe_background_window"
                             ),
                         } if role == "negative" else {}),
@@ -1029,7 +1102,9 @@ def _init_out(config, target_cat_names, mode_label):
             "mode": mode_label,
             "src": str(config.src),
             "config": {k: getattr(config, k) for k in [
-                "mode", "category_names", "output_ext", "jpeg_quality",
+                "mode", "category_names", "ignore_categories",
+                "uncategorized_annotation_policy", "default_non_target_policy",
+                "unclassified_category_policy", "output_ext", "jpeg_quality",
                 "cache_dpath", "source_dataset_fingerprint",
                 "oversize_factor", "min_keep_fraction",
                 "full_dim", "keep_full",

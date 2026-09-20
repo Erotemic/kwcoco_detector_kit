@@ -59,3 +59,14 @@ If review discovers missing truth, update the canonical annotation source first.
 Then regenerate the source KWCoco and every truth-dependent candidate/pool artifact
 before training on mined negatives. A candidate index only proves that a window was
 safe under the truth fingerprint used when that index was built.
+
+## Truth semantics and admission safety
+
+A mined high-score window is a hypothesis, not trusted background. Candidate
+indexes now embed `TruthSemantics`: explicit target classes are positive,
+configured uncertain classes block negative windows, and named non-target
+classes can remain background/distractor evidence. Review uses the same
+classification helper as source-space prediction review, so a mined detection
+can be identified as a known distractor, an uncertain-region overlap, or an
+unexplained prediction. Candidate indexes produced under a different truth
+policy must be rebuilt rather than reused.

@@ -137,6 +137,7 @@ def _register_subcommands():
     import kwcoco_detector_kit.data.mine as _mine
     import kwcoco_detector_kit.data.finalize_mine as _finalize_mine
     import kwcoco_detector_kit.data.review_mine as _review_mine
+    import kwcoco_detector_kit.data.truth_review as _truth_review
     import kwcoco_detector_kit.data.tile_store as _tile_store
     import kwcoco_detector_kit.data.stats as _stats
     import kwcoco_detector_kit.data.manifest as _manifest
@@ -163,6 +164,7 @@ def _register_subcommands():
     _register_module("mine", _mine)
     _register_module("mine-finalize", _finalize_mine)
     _register_module("mine-review", _review_mine)
+    _register_module("prediction-review", _truth_review)
     _register_module("convert-store", _tile_store)   # Phase 3
     _register_module("stats", _stats)                # Phase 3
     _register_module("data-manifest", _manifest)     # KCD-DATA-01

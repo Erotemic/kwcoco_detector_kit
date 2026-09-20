@@ -16,6 +16,38 @@ from __future__ import annotations
 import numpy as np
 
 
+def _preferred_cpu_nms_impl():
+    """Choose the fastest available CPU NMS implementation.
+
+    ``kwimage`` historically exposes the optional ``kwimage_ext`` CPU backend
+    under the compatibility name ``cython_cpu``.  The Rust-first
+    ``kwimage_ext`` wheels keep that shim, but deliberately do not implement
+    GPU NMS.  In particular, we must not use kwimage's ``impl="auto"`` here:
+    versions that only probe whether the GPU shim imports can select a
+    ``gpu_nms`` compatibility stub that raises ``NotImplementedError``.
+
+    Prediction postprocessing is already operating on NumPy boxes/scores, so
+    keeping NMS on the CPU also avoids an unnecessary CPU->GPU->CPU transfer.
+    """
+    import kwimage
+
+    available = set(kwimage.available_nms_impls())
+    for impl in ("cython_cpu", "cpu", "numpy"):
+        if impl in available:
+            return impl
+    # ``numpy`` is kwimage's built-in reference implementation and should be
+    # available even when optional acceleration packages are absent.
+    return "numpy"
+
+
+def _cpu_non_max_supress(dets, thresh):
+    """Run NMS without allowing kwimage to auto-select a GPU backend."""
+    return dets.non_max_supress(
+        thresh=float(thresh),
+        impl=_preferred_cpu_nms_impl(),
+    )
+
+
 def _resolve_category_name(label, label_mapping):
     """Map an integer/string label to a category name string.
 
@@ -53,7 +85,7 @@ def apply_box_filters(records, score_thresh, nms_thresh):
     dets = kwimage.Detections(boxes=boxes, scores=scores, classes=["object"])
     dets.data["record_idxs"] = np.arange(len(filtered))
     if nms_thresh is not None and float(nms_thresh) > 0:
-        dets = dets.non_max_supress(thresh=float(nms_thresh))
+        dets = _cpu_non_max_supress(dets, nms_thresh)
     keep = dets.data["record_idxs"].tolist()
     return [filtered[i] for i in keep]
 
@@ -191,7 +223,7 @@ def mask_records_to_anns(mask_records, post_cfg, label_mapping=None):
     dets = kwimage.Detections(boxes=boxes, scores=scores, classes=["object"])
     dets.data["record_idxs"] = np.arange(len(filtered))
     if nms_thresh is not None and float(nms_thresh) > 0:
-        dets = dets.non_max_supress(thresh=float(nms_thresh))
+        dets = _cpu_non_max_supress(dets, nms_thresh)
     kept = [filtered[i] for i in dets.data["record_idxs"].tolist()]
 
     anns = []

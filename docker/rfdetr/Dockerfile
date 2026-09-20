@@ -48,7 +48,7 @@ RUN test -f tpl/rf-detr/src/rfdetr/__init__.py || \
       (echo 'Initialize tpl/rf-detr before building' >&2; exit 1)
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install -e './tpl/rf-detr[train,loggers]' && \
-    uv pip install 'kwcoco>=0.8' 'kwimage>=0.11' 'kwimage_ext>=0.3.3' \
+    uv pip install 'kwcoco>=0.8' 'kwimage>=0.11' 'kwimage_ext>=0.3.2' \
       'kwutil>=0.3' 'ubelt>=1.4' 'kwconf>=0.11.0' \
       'opencv-python-headless>=4.8' 'pytest>=8' 'pytest-cov>=4'
 

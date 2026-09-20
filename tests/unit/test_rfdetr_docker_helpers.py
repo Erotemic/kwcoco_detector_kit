@@ -111,7 +111,7 @@ def test_rfdetr_runner_supports_external_data_mounts(tmp_path):
 
 def test_rfdetr_dockerfile_installs_prediction_fast_paths():
     text = (REPO / "docker" / "rfdetr" / "Dockerfile").read_text()
-    assert "kwimage_ext>=0.3.3" in text
+    assert "kwimage_ext>=0.3.2" in text
     assert "python -m kwcoco finish_install" in text
     assert "--with_gdal=True" in text
     assert "--with_cv2_headless=False" in text

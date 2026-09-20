@@ -139,3 +139,47 @@ def test_coerce_src_from_image_dir(tmp_path):
 
     dset = _coerce_src_kwcoco(img_dir)
     assert dset.n_images == 3
+
+
+@pytest.mark.requires_torch
+def test_nms_prefers_cpu_extension_over_gpu_stub(monkeypatch):
+    """Rust kwimage_ext exposes GPU compatibility stubs but no GPU NMS."""
+    import kwimage
+    from kwcoco_detector_kit.data import postprocess
+
+    monkeypatch.setattr(
+        kwimage,
+        "available_nms_impls",
+        lambda: ["numpy", "cython_gpu", "cython_cpu"],
+    )
+    assert postprocess._preferred_cpu_nms_impl() == "cython_cpu"
+
+
+@pytest.mark.requires_torch
+def test_postprocess_never_auto_selects_gpu_nms(monkeypatch):
+    import kwimage
+    from kwcoco_detector_kit.data.postprocess import apply_box_filters
+
+    monkeypatch.setattr(
+        kwimage,
+        "available_nms_impls",
+        lambda: ["numpy", "cython_gpu", "cython_cpu"],
+    )
+
+    seen = []
+    original = kwimage.Detections.non_max_supress
+
+    def wrapped(self, *args, **kwargs):
+        seen.append(kwargs.get("impl"))
+        # Use NumPy for the test itself so it does not depend on kwimage_ext.
+        kwargs["impl"] = "numpy"
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(kwimage.Detections, "non_max_supress", wrapped)
+    records = [
+        {"bbox_xyxy": [0, 0, 100, 100], "score": 0.9},
+        {"bbox_xyxy": [5, 5, 95, 95], "score": 0.8},
+    ]
+    kept = apply_box_filters(records, score_thresh=0.5, nms_thresh=0.5)
+    assert len(kept) == 1
+    assert seen == ["cython_cpu"]

@@ -8,6 +8,7 @@ Subcommands::
   merge           positive + negative -> training kwcoco for one round.
   mine            offline hard-negative mining.
   mine-finalize   verify mining shards and materialize the global top-K.
+  mine-review     build a source-linked human review queue from mining scores.
   train           Run one trainer-plugin cell.
   sweep           Run a Pareto sweep over a matrix of cells.
   recipe-run      Drive a single recipe.yaml end-to-end (sweep + manifest).
@@ -135,6 +136,7 @@ def _register_subcommands():
     import kwcoco_detector_kit.data.merge as _merge
     import kwcoco_detector_kit.data.mine as _mine
     import kwcoco_detector_kit.data.finalize_mine as _finalize_mine
+    import kwcoco_detector_kit.data.review_mine as _review_mine
     import kwcoco_detector_kit.data.tile_store as _tile_store
     import kwcoco_detector_kit.data.stats as _stats
     import kwcoco_detector_kit.data.manifest as _manifest
@@ -160,6 +162,7 @@ def _register_subcommands():
     _register_module("merge", _merge)
     _register_module("mine", _mine)
     _register_module("mine-finalize", _finalize_mine)
+    _register_module("mine-review", _review_mine)
     _register_module("convert-store", _tile_store)   # Phase 3
     _register_module("stats", _stats)                # Phase 3
     _register_module("data-manifest", _manifest)     # KCD-DATA-01

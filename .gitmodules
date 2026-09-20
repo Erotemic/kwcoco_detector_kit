@@ -30,3 +30,19 @@
 [submodule "stack/ndsampler"]
 	path = stack/ndsampler
 	url = https://gitlab.kitware.com/computer-vision/ndsampler.git
+[submodule "tpl/segment-anything-2"]
+	path = tpl/segment-anything-2
+	url = https://github.com/Erotemic/segment-anything-2.git
+	branch = shitspotter
+[submodule "tpl/MaskDINO"]
+	path = tpl/MaskDINO
+	url = https://github.com/Erotemic/MaskDINO.git
+	branch = shitspotter
+[submodule "tpl/YOLOX"]
+	path = tpl/YOLOX
+	url = https://github.com/Erotemic/YOLOX.git
+	branch = shitspotter
+[submodule "tpl/YOLO-v9"]
+	path = tpl/YOLO-v9
+	url = https://github.com/Erotemic/YOLO.git
+	branch = shitspotter

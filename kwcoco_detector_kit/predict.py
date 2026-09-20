@@ -213,6 +213,7 @@ def predict_kwcoco(
     overlap: Optional[float] = None,
     batch_size: int = 16,
     source_read_strategy: str = "auto",
+    prediction_scale=1.0,
     whole_image_pass: Optional[bool] = None,
     max_dets: Optional[int] = None,
     pipeline: bool = True,
@@ -359,7 +360,9 @@ def predict_kwcoco(
                 gid, coco_img = item
                 try:
                     reader = SourceWindowReader(
-                        coco_img, strategy=str(source_read_strategy)
+                        coco_img,
+                        strategy=str(source_read_strategy),
+                        prediction_scale=prediction_scale,
                     )
                     # Whole-image prediction and detector+segmenter pipelines
                     # need the full array anyway. Native tiled detectors keep
@@ -374,7 +377,7 @@ def predict_kwcoco(
             tiled_post_cfg = dict(post_cfg)
             tiled_post_cfg["nms_thresh"] = 0.0
 
-            def _finalize_source(gid, payload, arr):
+            def _finalize_source(gid, payload, arr, prediction_space):
                 try:
                     if tiled is not None:
                         raw = payload
@@ -389,16 +392,23 @@ def predict_kwcoco(
 
                     if segmenter is not None:
                         anns = detector_records_to_anns(
-                            arr, records, segmenter, ann_cfg, label_mapping
+                            arr, records, segmenter, ann_cfg, label_mapping,
+                            prediction_space=prediction_space,
                         )
                     elif records and all("mask" in record for record in records):
-                        anns = mask_records_to_anns(records, ann_cfg, label_mapping)
+                        anns = mask_records_to_anns(
+                            records, ann_cfg, label_mapping,
+                            prediction_space=prediction_space,
+                        )
                     else:
                         if manifest.get("capabilities", {}).get("supports_masks") and records:
                             raise RuntimeError(
                                 "model package advertises native masks but selected backend returned box-only records"
                             )
-                        anns = detector_records_to_bbox_anns(records, ann_cfg, label_mapping)
+                        anns = detector_records_to_bbox_anns(
+                            records, ann_cfg, label_mapping,
+                            prediction_space=prediction_space,
+                        )
                     return anns
                 except Exception as ex:
                     raise RuntimeError(
@@ -456,7 +466,7 @@ def predict_kwcoco(
                         pred_pipeline.wait_for_postprocess_capacity(reserve=1)
                     )
                     try:
-                        H, W = reader.source_hw
+                        H, W = reader.prediction_hw
                         if tiled is not None:
                             payload = tiled._infer_source(
                                 reader, (W, H), pipeline=pred_pipeline
@@ -490,12 +500,12 @@ def predict_kwcoco(
                         # bounded postprocess queue for whole-image predictors.
                         finalize_arr = None
                         pred_pipeline.submit_postprocess(
-                            gid, _finalize_source, gid, payload, finalize_arr
+                            gid, _finalize_source, gid, payload, finalize_arr, reader.space
                         )
                         _commit_ready(pred_pipeline.drain_postprocess_ready())
                     else:
                         post_started = time.perf_counter()
-                        anns = _finalize_source(gid, payload, arr)
+                        anns = _finalize_source(gid, payload, arr, reader.space)
                         inline_postprocess_seconds += time.perf_counter() - post_started
                         _commit_ready([(gid, anns)])
 
@@ -532,6 +542,7 @@ def predict_kwcoco(
                     "score_thresh": float(score_thresh),
                     "nms_thresh": float(nms_thresh),
                     "source_read_strategy": str(source_read_strategy),
+                    "prediction_scale": prediction_scale,
                     "source_read_strategy_counts": strategy_counts,
                     "whole_image_pass": bool(whole_image_pass),
                     "pipeline": bool(pipeline),
@@ -618,6 +629,15 @@ class PredictConfig(kwconf.Config):
     source_read_strategy = kwconf.Value(
         "auto", choices=["auto", "decode_once", "delayed_region"]
     )
+    prediction_scale = kwconf.Value(
+        1.0,
+        parser=float,
+        help=(
+            "linear source-image scale used for detector inference; 1.0 is "
+            "native resolution, 0.4 predicts on a 40% delayed-image view. "
+            "All output annotations are mapped back to native image space."
+        ),
+    )
     pipeline = kwconf.Value(
         True,
         isflag=True,
@@ -673,6 +693,7 @@ class PredictConfig(kwconf.Config):
             overlap=config.overlap,
             batch_size=int(config.batch_size),
             source_read_strategy=str(config.source_read_strategy),
+            prediction_scale=float(config.prediction_scale),
             whole_image_pass=config.whole_image_pass,
             max_dets=config.max_dets,
             pipeline=bool(config.pipeline),

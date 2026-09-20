@@ -65,3 +65,13 @@ Renamed from `PHONE_*` in the prior project; semantics preserved.
 ## Scale tiering
 
 `trainers/_tier.py` queries `torch.cuda.mem_get_info()` × world_size and the active GPU's PCIe link width. Auto-tier-detect picks the conservative tier; `--tier S/M/L/XL/cluster` overrides. The per-`(variant, input_hw, tier)` memory table lives in `trainers/deimv2.py:_BATCH_TABLE` — adding a new variant is one row of dict entries.
+
+### PredictionSpace
+
+Detector inference has an explicit `PredictionSpace` transform. Source KWCoco
+image coordinates remain canonical, while I/O and tiling may operate on a
+scaled delayed-image view. `SourceWindowReader` owns the native↔prediction
+transform, `TiledPredictor` works only in prediction coordinates, and
+postprocessing maps final boxes/polygons back to native image coordinates.
+This separation allows overview-aware coarse inference without contaminating
+KWCoco geometry with temporary detector resolution choices.

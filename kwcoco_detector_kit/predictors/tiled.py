@@ -275,7 +275,7 @@ class TiledPredictor:
         ``PredictionPipeline`` can prefetch the next bounded window batch; CUDA
         remains exclusively on the calling thread.
         """
-        H, W = map(int, reader.source_hw)
+        H, W = map(int, getattr(reader, "prediction_hw", reader.source_hw))
         if orig_size is None:
             orig_size = (W, H)
         win_h, win_w = self._window

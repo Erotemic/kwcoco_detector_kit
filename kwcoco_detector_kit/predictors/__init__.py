@@ -9,17 +9,20 @@ Trained-checkpoint inference adapters.
   source_window.SourceWindowReader
                                   No-cache source/window realization.
   pipeline.PredictionPipeline     Bounded I/O/GPU/CPU pipeline orchestration.
+  space.PredictionSpace           Explicit detector/native coordinate transform.
   tiled.TiledPredictor            Source-coordinate tiled inference/merge.
 """
 from kwcoco_detector_kit.predictors import _interface
 from kwcoco_detector_kit.predictors.onnx import OnnxPredictor
 from kwcoco_detector_kit.predictors.pipeline import PredictionPipeline
+from kwcoco_detector_kit.predictors.space import PredictionSpace
 from kwcoco_detector_kit.predictors.source_window import SourceWindowReader
 
 __all__ = [
     "_interface",
     "OnnxPredictor",
     "PredictionPipeline",
+    "PredictionSpace",
     "SourceWindowReader",
     "TiledPredictor",
 ]

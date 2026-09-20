@@ -212,3 +212,49 @@ Each ranked row is classified as `matched_target`, `known_distractor`,
 adjacent LabelMe path, prediction geometry/score, and overlapping source
 annotations. The review KWCoco uses a dedicated proposal category and is
 diagnostic only.
+
+## Prediction space versus native image space
+
+Prediction resolution is a first-class inference property.  KDK distinguishes
+between:
+
+- **native image space** — the coordinate system stored by the source KWCoco;
+  all output boxes and polygons are always written here; and
+- **prediction space** — the possibly downscaled delayed-image view tiled and
+  consumed by the detector.
+
+For example:
+
+```bash
+kwcoco-detector-kit predict \
+    --model=model.zip \
+    --src=train.kwcoco.zip \
+    --dst=train.scale04.pred.kwcoco.zip \
+    --device=cuda:0 \
+    --windowed=true \
+    --prediction-scale=0.4 \
+    --window=768 \
+    --overlap=0.10
+```
+
+A source image whose native size is `6000x4000` is viewed by the detector at
+approximately `2400x1600`; its 768-pixel detector windows therefore cover a much
+larger native field of view.  KDK tracks the exact realized transform after
+integer rounding and maps detections back to the original `6000x4000`
+coordinate system before writing KWCoco annotations.
+
+The scale operation is represented in the delayed-image graph *before* crops
+are finalized.  Region-readable TIFF/COG inputs can therefore let
+`delayed_image` optimize the scale/crop chain and use GDAL overviews when the
+asset provides them.  JPEG-like inputs still follow the decode-once policy:
+the source is decoded/resized once, windowed in memory, and discarded after
+that source image.
+
+For native-mask detectors, cross-window NMS occurs in prediction space.  Only
+surviving masks are polygonized, and their polygons are warped back to native
+image space; KDK does not allocate a native-resolution boolean canvas merely to
+write native-coordinate segmentation geometry.
+
+`--prediction-scale=1.0` is the native-resolution control.  The output profile
+records the requested prediction scale, allowing coarse and native passes to be
+compared without changing source truth or preparing a separate resized KWCoco.

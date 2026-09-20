@@ -183,3 +183,23 @@ def test_postprocess_never_auto_selects_gpu_nms(monkeypatch):
     kept = apply_box_filters(records, score_thresh=0.5, nms_thresh=0.5)
     assert len(kept) == 1
     assert seen == ["cython_cpu"]
+
+
+@pytest.mark.requires_torch
+def test_bbox_postprocess_maps_prediction_space_back_to_native():
+    from kwcoco_detector_kit.data.postprocess import detector_records_to_bbox_anns
+    from kwcoco_detector_kit.predictors.space import PredictionSpace
+
+    space = PredictionSpace.from_scale((100, 200), 0.5)
+    records = [{
+        "bbox_xyxy": [10.0, 5.0, 30.0, 25.0],
+        "score": 0.9,
+        "label": 0,
+    }]
+    anns = detector_records_to_bbox_anns(
+        records,
+        {"score_thresh": 0.1, "nms_thresh": 0.0},
+        label_mapping={0: "widget"},
+        prediction_space=space,
+    )
+    assert anns[0]["bbox"] == [20.0, 10.0, 40.0, 40.0]

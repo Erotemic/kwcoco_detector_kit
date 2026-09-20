@@ -62,6 +62,18 @@ def _resolve_category_name(label, label_mapping):
     return str(label)
 
 
+def _box_to_native_xyxy(box, prediction_space=None):
+    if prediction_space is None:
+        return list(map(float, box))
+    return prediction_space.box_to_native_xyxy(box)
+
+
+def _mpoly_to_native(mpoly, prediction_space=None):
+    if prediction_space is None:
+        return mpoly
+    return prediction_space.warp_multipolygon_to_native(mpoly)
+
+
 def apply_box_filters(records, score_thresh, nms_thresh):
     """Score-threshold then NMS over detector records.
 
@@ -90,7 +102,9 @@ def apply_box_filters(records, score_thresh, nms_thresh):
     return [filtered[i] for i in keep]
 
 
-def detector_records_to_bbox_anns(records, post_cfg, label_mapping=None):
+def detector_records_to_bbox_anns(
+    records, post_cfg, label_mapping=None, prediction_space=None
+):
     """Convert filtered detector records to bbox-only kwcoco annotation dicts.
 
     Args:
@@ -109,7 +123,9 @@ def detector_records_to_bbox_anns(records, post_cfg, label_mapping=None):
     )
     anns = []
     for r in kept:
-        x1, y1, x2, y2 = map(float, r["bbox_xyxy"])
+        x1, y1, x2, y2 = _box_to_native_xyxy(
+            r["bbox_xyxy"], prediction_space
+        )
         anns.append({
             "category_name": _resolve_category_name(r.get("label", 0), label_mapping),
             "bbox": [x1, y1, x2 - x1, y2 - y1],
@@ -118,7 +134,9 @@ def detector_records_to_bbox_anns(records, post_cfg, label_mapping=None):
     return anns
 
 
-def detector_records_to_anns(image, records, segmenter, post_cfg, label_mapping=None):
+def detector_records_to_anns(
+    image, records, segmenter, post_cfg, label_mapping=None, prediction_space=None
+):
     """Chain detector boxes through a segmenter to produce polygon annotations.
 
     Pipeline: filtered detector boxes → (optional) crop padding expand →
@@ -172,8 +190,13 @@ def detector_records_to_anns(image, records, segmenter, post_cfg, label_mapping=
         )
         if not len(mpoly.data):
             continue
-        x1, y1, x2, y2 = map(float, record["bbox_xyxy"])
-        px1, py1, px2, py2 = map(float, prompt_box)
+        mpoly = _mpoly_to_native(mpoly, prediction_space)
+        x1, y1, x2, y2 = _box_to_native_xyxy(
+            record["bbox_xyxy"], prediction_space
+        )
+        px1, py1, px2, py2 = _box_to_native_xyxy(
+            prompt_box, prediction_space
+        )
         anns.append({
             "category_name": _resolve_category_name(record.get("label", 0), label_mapping),
             "bbox": list(mpoly.box().to_coco()),
@@ -186,7 +209,9 @@ def detector_records_to_anns(image, records, segmenter, post_cfg, label_mapping=
     return anns
 
 
-def mask_records_to_anns(mask_records, post_cfg, label_mapping=None):
+def mask_records_to_anns(
+    mask_records, post_cfg, label_mapping=None, prediction_space=None
+):
     """Convert mask-producing backend records to kwcoco annotation dicts.
 
     For backends like MaskDINO that emit masks directly without a separate
@@ -236,6 +261,7 @@ def mask_records_to_anns(mask_records, post_cfg, label_mapping=None):
         )
         if not len(mpoly.data):
             continue
+        mpoly = _mpoly_to_native(mpoly, prediction_space)
         anns.append({
             "category_name": _resolve_category_name(record.get("label", 0), label_mapping),
             "bbox": list(mpoly.box().to_coco()),

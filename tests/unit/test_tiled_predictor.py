@@ -309,3 +309,25 @@ def test_per_class_nms_is_per_label():
     kept = _per_class_nms(dets, 0.5)
     # Different classes must NOT suppress each other.
     assert len(kept) == 2
+
+
+def test_predict_source_tiles_prediction_space_not_native_space():
+    """A coarse reader should grid the scaled view, not native dimensions."""
+    from kwcoco_detector_kit.predictors.space import PredictionSpace
+
+    base = _FakeBatchDetector(size=(32, 32))
+    pred = TiledPredictor(
+        base, window=(32, 32), overlap=0.0, keep_full=False, batch_size=2,
+    )
+    reader = _FakeArrayReader(np.zeros((64, 64, 3), dtype=np.uint8))
+    reader.source_hw = (128, 128)
+    reader.prediction_hw = (64, 64)
+    reader.space = PredictionSpace.from_scale(reader.source_hw, 0.5)
+
+    records = pred.predict_source(reader)
+    assert pred.n_windows == 4
+    assert len(records) == 4
+    # TiledPredictor intentionally returns prediction-space geometry. The
+    # writer/postprocess layer owns the explicit warp back to native space.
+    corners = sorted((r["bbox_xyxy"][0], r["bbox_xyxy"][1]) for r in records)
+    assert corners == [(2.0, 3.0), (2.0, 35.0), (34.0, 3.0), (34.0, 35.0)]

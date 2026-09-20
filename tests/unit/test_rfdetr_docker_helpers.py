@@ -76,3 +76,31 @@ def test_rfdetr_runner_gpu_override():
         KCD_RFDETR_GPU="1",
     )
     assert "--gpus device=1" in out
+
+
+def test_rfdetr_dockerfile_keeps_python_out_of_root_home():
+    text = (REPO / "docker" / "rfdetr" / "Dockerfile").read_text()
+    assert "UV_PYTHON_INSTALL_DIR=/opt/uv-python" in text
+    assert "uv python install --install-dir ${UV_PYTHON_INSTALL_DIR}" in text
+    assert 'kcd.runtime_uid_safe="1"' in text
+
+
+def test_rfdetr_runner_checks_uid_safe_image_label():
+    text = RUN.read_text()
+    assert "kcd.runtime_uid_safe" in text
+    assert "predates the UID-safe runtime contract" in text
+
+
+def test_rfdetr_runner_supports_external_data_mounts(tmp_path):
+    data_root = tmp_path / "external-data"
+    data_root.mkdir()
+    out = _run(
+        RUN,
+        "predict",
+        f"--src={data_root / 'dataset.kwcoco.zip'}",
+        f"--dst={data_root / 'pred.kwcoco.zip'}",
+        KCD_DOCKER_DRYRUN="1",
+        KCD_RFDETR_EXTRA_MOUNTS=str(data_root),
+    )
+    mount = f"--volume {data_root}:{data_root}"
+    assert mount in out

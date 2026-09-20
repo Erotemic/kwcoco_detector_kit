@@ -30,6 +30,7 @@ Environment:
   KCD_RFDETR_GPU         physical GPU exposed to Docker (default 0)
   KCD_RFDETR_AUTO_BUILD  build missing image automatically (default 1)
   KCD_RFDETR_SHM_SIZE    Docker --shm-size (default 8g)
+  KCD_RFDETR_EXTRA_MOUNTS newline-separated host paths mounted at identical paths
   KCD_RFDETR_CUDA_PROFILE auto|cu130|cu132 for `build`
 USAGE
 }
@@ -49,8 +50,26 @@ if [ "$subcommand" = "build" ]; then
     exec "$HERE/build_auto.sh"
 fi
 
+image_is_compatible() {
+    local marker
+    marker="$(docker image inspect \
+        --format '{{ index .Config.Labels "kcd.runtime_uid_safe" }}' \
+        "$IMAGE" 2>/dev/null || true)"
+    [ "$marker" = "1" ]
+}
+
 ensure_image() {
     if docker image inspect "$IMAGE" >/dev/null 2>&1; then
+        if image_is_compatible; then
+            return 0
+        fi
+        if [ "$AUTO_BUILD" != "1" ]; then
+            echo "RF-DETR image exists but predates the UID-safe runtime contract: $IMAGE" >&2
+            echo "Run: docker/rfdetr/kcd-rfdetr build" >&2
+            exit 1
+        fi
+        echo "RF-DETR image $IMAGE predates the UID-safe runtime contract; rebuilding it now." >&2
+        "$HERE/build_auto.sh"
         return 0
     fi
     if [ "$AUTO_BUILD" != "1" ]; then
@@ -87,6 +106,59 @@ run_base=(
     --volume "$REPO_ROOT:/opt/kwcoco_detector_kit"
     --workdir /opt/kwcoco_detector_kit
 )
+
+_mount_seen="|$HOME|$REPO_ROOT|"
+add_same_path_mount() {
+    local path="$1" existing
+    [ -n "$path" ] || return 0
+    case "$path" in
+        /*) ;;
+        *) echo "RF-DETR extra mount must be absolute: $path" >&2; exit 2 ;;
+    esac
+    while [ ! -e "$path" ]; do
+        existing="$(dirname "$path")"
+        if [ "$existing" = "$path" ]; then
+            echo "Could not find an existing parent for Docker path: $1" >&2
+            exit 2
+        fi
+        path="$existing"
+    done
+    if [ -f "$path" ]; then
+        path="$(dirname "$path")"
+    fi
+    path="$(readlink -f "$path")"
+    case "$_mount_seen" in
+        *"|$path|"*) return 0 ;;
+    esac
+    case "$path/" in
+        "$HOME/"*|"$REPO_ROOT/"*) return 0 ;;
+    esac
+    run_base+=(--volume "$path:$path")
+    _mount_seen="${_mount_seen}${path}|"
+}
+
+# Most KDK file arguments are --key=/absolute/path. Mount their existing parent
+# directories automatically. This keeps resolved /data/... paths usable without
+# requiring the caller to hand-maintain Docker -v arguments.
+for arg in "$@"; do
+    value=""
+    case "$arg" in
+        --*=/*) value="${arg#*=}" ;;
+        /*) value="$arg" ;;
+    esac
+    if [ -n "$value" ]; then
+        add_same_path_mount "$value"
+    fi
+done
+
+# KWCoco files can reference assets that are not themselves command-line args.
+# Higher-level workflows can provide those dataset roots explicitly.
+if [ -n "${KCD_RFDETR_EXTRA_MOUNTS:-}" ]; then
+    while IFS= read -r extra_mount; do
+        [ -n "$extra_mount" ] || continue
+        add_same_path_mount "$extra_mount"
+    done <<< "$KCD_RFDETR_EXTRA_MOUNTS"
+fi
 
 case "$subcommand" in
     image-info)

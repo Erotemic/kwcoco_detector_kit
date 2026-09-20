@@ -85,6 +85,11 @@ The wrapper:
 - exposes only that GPU, so it appears as `cuda:0` inside the container;
 - bind-mounts `$HOME` at the identical path so KWCoco asset paths and package
   provenance remain meaningful;
+- automatically bind-mounts absolute `--key=/path` CLI paths that resolve
+  outside `$HOME`, and accepts newline-separated `KCD_RFDETR_EXTRA_MOUNTS`
+  for KWCoco asset roots referenced from inside manifests;
+- uses a UID-safe Python installation under `/opt/uv-python`, so running as the
+  host uid/gid never depends on traversing `/root`;
 - mounts the current KDK checkout over the baked editable-install location so
   local source changes are actually exercised;
 - preserves the historical `bash -lc` RF-DETR image entrypoint used by existing

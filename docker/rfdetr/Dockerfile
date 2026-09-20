@@ -7,6 +7,7 @@ ARG PYTHON_VERSION=3.11
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/nightly/cu132
 ARG TORCH_PRE=1
 ENV VIRTUAL_ENV=/opt/venv
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
 ENV PATH=/opt/venv/bin:/root/.local/bin:${PATH}
 ENV UV_LINK_MODE=copy UV_PYTHON=/opt/venv/bin/python UV_COMPILE_BYTECODE=1
 ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -19,7 +20,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     curl -LsSf https://astral.sh/uv/install.sh | sh
 
 RUN --mount=type=cache,target=/root/.cache/uv \
+    uv python install --install-dir ${UV_PYTHON_INSTALL_DIR} ${PYTHON_VERSION} && \
     uv venv --seed --python ${PYTHON_VERSION} ${VIRTUAL_ENV} && \
+    test ! "$(readlink -f ${VIRTUAL_ENV}/bin/python)" = /root/* && \
     if [ "${TORCH_PRE}" = 1 ]; then \
       uv pip install --prerelease=allow --index-url ${TORCH_INDEX_URL} torch torchvision; \
     else \
@@ -40,6 +43,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY kwcoco_detector_kit ./kwcoco_detector_kit
 COPY tests ./tests
 RUN --mount=type=cache,target=/root/.cache/uv uv pip install --no-deps -e .
+RUN chmod -R a+rX ${UV_PYTHON_INSTALL_DIR} ${VIRTUAL_ENV}
 
 ARG RUN_TESTS=1
 RUN if [ "${RUN_TESTS}" = 1 ]; then \
@@ -55,7 +59,8 @@ RUN printf '{\n  "kit_sha": "%s",\n  "rfdetr_sha": "%s",\n  "dockerfile_sha256":
       "${KCD_KIT_SHA}" "${KCD_RFDETR_SHA}" "${KCD_DOCKERFILE_SHA}" "${KCD_BUILD_TIME}" \
       > /etc/kcd_provenance.json
 LABEL kcd.kit_sha="${KCD_KIT_SHA}" kcd.rfdetr_sha="${KCD_RFDETR_SHA}" \
-      kcd.dockerfile_sha256="${KCD_DOCKERFILE_SHA}" kcd.build_time="${KCD_BUILD_TIME}"
+      kcd.dockerfile_sha256="${KCD_DOCKERFILE_SHA}" kcd.build_time="${KCD_BUILD_TIME}" \
+      kcd.runtime_uid_safe="1"
 
 WORKDIR /workspace
 ENTRYPOINT ["/bin/bash", "-lc"]

@@ -440,8 +440,15 @@ class PredictConfig(kwconf.Config):
     score_thresh = kwconf.Value(None, parser=float)
     nms_thresh = kwconf.Value(None, parser=float)
     workdir = kwconf.Value(None, help="optional persistent materialized predictor workdir")
-    windowed = kwconf.Value(None, isflag=True, help="force tiled source-space prediction")
-    no_windowed = kwconf.Value(False, isflag=True, help="force whole-image prediction")
+    windowed = kwconf.Value(
+        None,
+        isflag=True,
+        help=(
+            "override package inference mode: --windowed=true forces tiled "
+            "source-space prediction; --windowed=false forces whole-image "
+            "prediction; omitted uses the package default"
+        ),
+    )
     window = kwconf.Value(None, help="window H,W or scalar; package default when omitted")
     overlap = kwconf.Value(None, parser=float)
     batch_size = kwconf.Value(16, parser=int, help="maximum realized windows per model batch")
@@ -461,8 +468,6 @@ class PredictConfig(kwconf.Config):
         if not model:
             raise ValueError("--model is required (or legacy --package)")
         windowed = config.windowed
-        if config.no_windowed:
-            windowed = False
         out = predict_kwcoco(
             model=model,
             src=config.src,

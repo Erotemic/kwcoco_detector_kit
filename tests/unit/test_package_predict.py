@@ -95,3 +95,23 @@ def test_mock_tiny_package_zip_predict_roundtrip(synthetic_kwcoco, tmp_workdir, 
     assert pred.n_images == kwcoco.CocoDataset.coerce(str(synthetic_kwcoco)).n_images
     assert pred.n_cats == 1
     assert pred.n_annots > 0
+
+
+def test_predict_config_windowed_key_value_boolean():
+    """The kwconf boolean is one tri-state option, not a --no-* twin."""
+    from kwcoco_detector_kit.predict import PredictConfig
+
+    common = [
+        "--model=dummy.zip",
+        "--src=src.kwcoco.zip",
+        "--dst=pred.kwcoco.zip",
+    ]
+
+    config = PredictConfig.cli(argv=common + ["--windowed=false"], strict=True)
+    assert config.windowed is False
+
+    config = PredictConfig.cli(argv=common + ["--windowed=true"], strict=True)
+    assert config.windowed is True
+
+    config = PredictConfig.cli(argv=common, strict=True)
+    assert config.windowed is None

@@ -174,6 +174,111 @@ def materialize_candidate_records(path, limit=None):
     return rows
 
 
+def candidate_source_scale_key(item):
+    """Return the semantic source/scale stratum for a virtual candidate."""
+    if "tile_source_gid" not in item:
+        raise KeyError("candidate is missing required tile_source_gid metadata")
+    scale = item.get("tile_scale_name")
+    if scale is None:
+        scale = tuple(item.get("tile_actual_scale_xy", []))
+    if scale in (None, ()):
+        raise KeyError("candidate is missing explicit scale metadata")
+    return item["tile_source_gid"], scale
+
+
+def selected_candidate_record_factory(index_or_path, max_candidates, seed=0,
+                                      strategy="stratified_by_image"):
+    """Build a repeatable bounded candidate selection.
+
+    The returned callable yields the same candidate records on every call.
+    Full-universe selections stay streaming. Finite selections retain only
+    ``O(number of source/scale groups + max_candidates)`` state and are
+    returned in source/scale locality order so materialization can reuse each
+    decoded/scaled source.
+    """
+    import hashlib
+    import heapq
+    import itertools
+
+    index = (
+        load_candidate_index(index_or_path)
+        if not isinstance(index_or_path, dict)
+        else index_or_path
+    )
+    max_candidates = int(max_candidates or 0)
+    if not max_candidates or max_candidates >= int(index["num_candidates"]):
+        return lambda: iter_candidate_records(index)
+
+    strategy = str(strategy)
+    if strategy == "first":
+        selected = list(itertools.islice(iter_candidate_records(index), max_candidates))
+    elif strategy == "random":
+        heap = []
+        for row in iter_candidate_records(index):
+            priority = int(hashlib.sha256(
+                f"{int(seed)}:{row['tile_id']}".encode()
+            ).hexdigest(), 16)
+            item = (-priority, row["tile_id"], row)
+            if len(heap) < max_candidates:
+                heapq.heappush(heap, item)
+            elif item > heap[0]:
+                heapq.heapreplace(heap, item)
+        selected = [item[2] for item in heap]
+    elif strategy == "stratified_by_image":
+        group_counts = {}
+        for row in iter_candidate_records(index):
+            key = candidate_source_scale_key(row)
+            group_counts[key] = group_counts.get(key, 0) + 1
+
+        def _group_priority(key):
+            payload = json.dumps(key, sort_keys=True, separators=(",", ":"))
+            return hashlib.sha256(f"{int(seed)}:{payload}".encode()).hexdigest()
+
+        active = sorted(group_counts, key=lambda key: (_group_priority(key), repr(key)))
+        quotas = {key: 0 for key in active}
+        remaining = max_candidates
+        while remaining and active:
+            next_active = []
+            for key in active:
+                if quotas[key] < group_counts[key]:
+                    quotas[key] += 1
+                    remaining -= 1
+                    if remaining == 0:
+                        break
+                if quotas[key] < group_counts[key]:
+                    next_active.append(key)
+            active = next_active
+
+        group_heaps = {}
+        for row in iter_candidate_records(index):
+            key = candidate_source_scale_key(row)
+            quota = quotas.get(key, 0)
+            if not quota:
+                continue
+            heap = group_heaps.setdefault(key, [])
+            priority = int(hashlib.sha256(
+                f"{int(seed)}:{row['tile_id']}".encode()
+            ).hexdigest(), 16)
+            item = (-priority, row["tile_id"], row)
+            if len(heap) < quota:
+                heapq.heappush(heap, item)
+            elif item > heap[0]:
+                heapq.heapreplace(heap, item)
+        selected = [
+            item[2]
+            for heap in group_heaps.values()
+            for item in heap
+        ]
+    else:
+        raise ValueError(f"unknown candidate_strategy: {strategy!r}")
+
+    selected.sort(key=lambda row: (
+        row["tile_source_gid"], tuple(row["tile_actual_scale_xy"]),
+        row["tile_scaled_extent_xyxy"], row["tile_id"],
+    ))
+    return lambda: iter(selected)
+
+
 def enumerate_candidates(config):
     """Enumerate every safe negative without decoding or encoding imagery."""
     import kwcoco

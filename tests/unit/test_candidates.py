@@ -265,3 +265,37 @@ def test_materialization_streams_bounded_crop_batches(tmp_path, monkeypatch):
     assert max(observed_batch_sizes) <= 4
     assert len(observed_batch_sizes) > 4
     assert all(Path(img["file_name"]).is_file() for img in out.images().objs)
+
+
+def test_public_candidate_selection_is_bounded_deterministic_and_stratified(tmp_path):
+    from kwcoco_detector_kit.data.candidates import (
+        CandidateConfig, enumerate_candidates, load_candidate_index,
+        selected_candidate_record_factory,
+    )
+
+    src = _odd_source(tmp_path)
+    index_path = tmp_path / "selection-index"
+    enumerate_candidates(CandidateConfig.cli(argv=False, data={
+        "src": str(src), "dst": str(index_path), "category_names": "widget",
+        "tile_size": 12, "source_scales": "1.0,0.5", "stride_frac": 0.5,
+        "min_source_scale_long_side": 1, "rows_per_shard": 7,
+    }))
+    index = load_candidate_index(index_path)
+    budget = min(12, index["num_candidates"])
+    factory = selected_candidate_record_factory(
+        index, budget, seed=17, strategy="stratified_by_image",
+    )
+    rows1 = list(factory())
+    rows2 = list(factory())
+    assert [r["tile_id"] for r in rows1] == [r["tile_id"] for r in rows2]
+    assert len(rows1) == budget
+    assert rows1 == sorted(rows1, key=lambda row: (
+        row["tile_source_gid"], tuple(row["tile_actual_scale_xy"]),
+        row["tile_scaled_extent_xyxy"], row["tile_id"],
+    ))
+    scales = {row["tile_scale_name"] for row in rows1}
+    if budget >= 2:
+        assert scales == {"s10", "s05"}
+
+    all_factory = selected_candidate_record_factory(index, 0, seed=17)
+    assert sum(1 for _ in all_factory()) == index["num_candidates"]

@@ -27,7 +27,8 @@ def _get_trainer():
 
 
 def _generate(trainer, tmp_path, src_kwcoco, *, variant, input_hw=(800, 800),
-              num_classes=1, batch_size=4, num_epochs=2, label_list=None):
+              num_classes=1, batch_size=4, num_epochs=2, label_list=None,
+              init_checkpoint=None, extra_overrides=None):
     workdir = tmp_path / "wd"
     workdir.mkdir(parents=True, exist_ok=True)
     cfg_fpath = trainer.generate_config(
@@ -41,9 +42,14 @@ def _generate(trainer, tmp_path, src_kwcoco, *, variant, input_hw=(800, 800),
         val_batch_size=int(batch_size),
         num_epochs=int(num_epochs),
         lr=1e-4, backbone_lr=1e-5, use_amp=True,
+        init_checkpoint=init_checkpoint,
         channels="r|g|b", scale_tier="L", num_gpus=1,
         data_format="kwcoco",
-        extra={"category_name": "widget", "label_list": label_list or ["widget"]},
+        extra={
+            "category_name": "widget",
+            "label_list": label_list or ["widget"],
+            **(extra_overrides or {}),
+        },
     )
     return workdir, cfg_fpath
 
@@ -125,6 +131,33 @@ def test_policy_json_records_input_hw_and_label_list(
     assert policy["export_input_w"] == 640
     assert policy["candidate_kind"] == "real"
     assert policy["label_list"] == ["alpha", "beta"]
+
+
+def test_generate_config_accepts_explicit_init_checkpoint(
+    synthetic_kwcoco, tmp_path,
+):
+    trainer = _get_trainer()
+    init_checkpoint = tmp_path / "pretrained.pth"
+    workdir, _ = _generate(
+        trainer, tmp_path, synthetic_kwcoco,
+        variant="opengroundingdino_swint",
+        init_checkpoint=init_checkpoint,
+    )
+    policy = json.loads((workdir / "policy.json").read_text())
+    assert policy["init_ckpt"] == str(init_checkpoint)
+
+
+def test_generate_config_rejects_conflicting_init_checkpoint_sources(
+    synthetic_kwcoco, tmp_path,
+):
+    trainer = _get_trainer()
+    with pytest.raises(ValueError, match="supplied both explicitly"):
+        _generate(
+            trainer, tmp_path, synthetic_kwcoco,
+            variant="opengroundingdino_swint",
+            init_checkpoint=tmp_path / "explicit.pth",
+            extra_overrides={"init_checkpoint": str(tmp_path / "legacy.pth")},
+        )
 
 
 def test_label_map_reflects_train_categories(synthetic_kwcoco, tmp_path):

@@ -59,6 +59,7 @@ class DetectorTrainer(Protocol):
         lr: float,
         backbone_lr: float,
         use_amp: bool,
+        init_checkpoint: str | Path | None,
         channels: str,
         scale_tier: str,
         num_gpus: int,

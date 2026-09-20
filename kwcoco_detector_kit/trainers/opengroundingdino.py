@@ -380,12 +380,26 @@ class OpenGroundingDINOTrainer:
         lr: float = 1e-4,
         backbone_lr: float = 1e-5,
         use_amp: bool = True,
+        init_checkpoint=None,
         channels: str = "r|g|b",
         scale_tier: str = "L",
         num_gpus: int = 1,
         data_format: str = "kwcoco",
         extra: Optional[dict] = None,
     ) -> Path:
+        extra = dict(extra or {})
+        legacy_init_checkpoint = extra.get("init_checkpoint")
+        if init_checkpoint is None:
+            init_checkpoint = legacy_init_checkpoint or None
+        elif (
+            legacy_init_checkpoint not in {None, ""}
+            and str(legacy_init_checkpoint) != str(init_checkpoint)
+        ):
+            raise ValueError(
+                "init_checkpoint was supplied both explicitly and via "
+                "extra['init_checkpoint'] with different values"
+            )
+
         if variant not in VARIANTS:
             raise KeyError(
                 f"unknown OpenGroundingDINO variant {variant!r}; "
@@ -397,8 +411,8 @@ class OpenGroundingDINOTrainer:
         gen_dpath = workdir / "generated_configs"
         gen_dpath.mkdir(parents=True, exist_ok=True)
 
-        category_names = list((extra or {}).get("category_names") or ["widget"])
-        label_list = (extra or {}).get("label_list", list(category_names))
+        category_names = list(extra.get("category_names") or ["widget"])
+        label_list = extra.get("label_list", list(category_names))
 
         # 1. kwcoco -> MSCOCO json for both splits
         from kwcoco_detector_kit.data.coco_export import export_mscoco
@@ -493,7 +507,7 @@ class OpenGroundingDINOTrainer:
 
         # 6. policy.json — same shape as DEIMv2's so eligibility.py joins.
         H, W = int(input_hw[0]), int(input_hw[1])
-        candidate_id = (extra or {}).get(
+        candidate_id = extra.get(
             "candidate_id",
             f"{variant}_{H}x{W}",
         )
@@ -516,7 +530,7 @@ class OpenGroundingDINOTrainer:
             "lr": float(lr),
             "backbone_lr": float(backbone_lr),
             "use_amp": bool(use_amp),
-            "init_ckpt": str((extra or {}).get("init_checkpoint", "")),
+            "init_ckpt": "" if init_checkpoint is None else str(init_checkpoint),
             "generated_train_cfg": str(gen_cfg_fpath),
             "effective_train_scales": [H],
             "effective_train_scale_min": H,

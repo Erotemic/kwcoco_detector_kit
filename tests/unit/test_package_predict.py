@@ -134,3 +134,202 @@ def test_predict_config_windowed_key_value_boolean():
     )
     assert config.checkpoint_every == 17
     assert config.checkpoint_seconds == 12.5
+
+@pytest.mark.requires_torch
+def test_predict_resume_after_prepare_failure(synthetic_kwcoco, tmp_workdir, tmp_path, monkeypatch):
+    """A mid-run source-preparation failure must leave resumable committed work."""
+    import json
+
+    import kwcoco
+
+    from kwcoco_detector_kit.export.package import build_model_package
+    from kwcoco_detector_kit.predict import _prediction_resume_paths, predict_kwcoco
+    from kwcoco_detector_kit.predictors.source_window import SourceWindowReader
+    from kwcoco_detector_kit.trainers._registry import get_trainer
+
+    trainer = get_trainer("mock_tiny")
+    cfg = trainer.generate_config(
+        train_kwcoco_fpath=str(synthetic_kwcoco),
+        vali_kwcoco_fpath=str(synthetic_kwcoco),
+        workdir=tmp_workdir,
+        variant="mock_tiny",
+        input_hw=(64, 64),
+        train_policy="fixed",
+        num_classes=1,
+        batch_size=2,
+        val_batch_size=2,
+        num_epochs=1,
+        lr=1e-2,
+        backbone_lr=1e-2,
+        use_amp=False,
+        channels="r|g|b",
+        scale_tier="S",
+        num_gpus=1,
+        data_format="kwcoco",
+        extra={"category_names": ["widget"], "score_thresh": 0.01},
+    )
+    trainer.launch(cfg, num_gpus=1)
+
+    package_zip = tmp_path / "resume_mock_tiny_package.zip"
+    build_model_package(
+        workdir=tmp_workdir,
+        out=package_zip,
+        trainer="mock_tiny",
+        variant="mock_tiny",
+        category_names=["widget"],
+        dataset_slug="synthetic",
+        experiment_slug="resume-unit",
+        train_kwcoco=str(synthetic_kwcoco),
+        vali_kwcoco=str(synthetic_kwcoco),
+        test_kwcoco=str(synthetic_kwcoco),
+        username="alice",
+        hostname="node0",
+    )
+
+    true = kwcoco.CocoDataset.coerce(str(synthetic_kwcoco))
+    source_gids = list(map(int, true.images()))
+    assert len(source_gids) >= 3, "resume regression needs at least three source images"
+
+    dst = tmp_path / "resume.pred.kwcoco.zip"
+    partial_fpath, state_fpath = _prediction_resume_paths(dst)
+
+    original_prepare = SourceWindowReader.prepare
+    prepare_calls = {"n": 0}
+
+    def fail_after_two(self, *args, **kwargs):
+        prepare_calls["n"] += 1
+        if prepare_calls["n"] == 3:
+            raise RuntimeError("intentional resume regression failure")
+        return original_prepare(self, *args, **kwargs)
+
+    monkeypatch.setattr(SourceWindowReader, "prepare", fail_after_two)
+    with pytest.raises(RuntimeError, match="failed to prepare gid"):
+        predict_kwcoco(
+            package=package_zip,
+            src=synthetic_kwcoco,
+            dst=dst,
+            device="cpu",
+            score_thresh=0.05,
+            pipeline=False,
+            resume=True,
+            checkpoint_every=1,
+            checkpoint_seconds=0,
+        )
+
+    assert partial_fpath.exists()
+    assert state_fpath.exists()
+    state = json.loads(state_fpath.read_text())
+    completed_before_resume = list(map(int, state["completed_gids"]))
+    assert completed_before_resume
+    assert len(completed_before_resume) < len(source_gids)
+
+    partial = kwcoco.CocoDataset.coerce(str(partial_fpath))
+    partial_annot_gids = {int(a["image_id"]) for a in partial.dataset.get("annotations", [])}
+    assert partial_annot_gids.issubset(set(completed_before_resume))
+
+    # Restore normal preparation and rerun the identical command. The resume
+    # identity must match, committed gids must be skipped, and success must
+    # clean up the transient checkpoint artifacts.
+    monkeypatch.setattr(SourceWindowReader, "prepare", original_prepare)
+    predict_kwcoco(
+        package=package_zip,
+        src=synthetic_kwcoco,
+        dst=dst,
+        device="cpu",
+        score_thresh=0.05,
+        pipeline=False,
+        resume=True,
+        checkpoint_every=1,
+        checkpoint_seconds=0,
+    )
+
+    final = kwcoco.CocoDataset.coerce(str(dst))
+    assert final.n_images == true.n_images
+    assert final.n_annots > 0
+    assert not partial_fpath.exists()
+    assert not state_fpath.exists()
+
+
+@pytest.mark.requires_torch
+def test_predict_resume_rejects_changed_identity(synthetic_kwcoco, tmp_workdir, tmp_path, monkeypatch):
+    """A partial run must never be resumed with different inference settings."""
+    from kwcoco_detector_kit.export.package import build_model_package
+    from kwcoco_detector_kit.predict import predict_kwcoco
+    from kwcoco_detector_kit.predictors.source_window import SourceWindowReader
+    from kwcoco_detector_kit.trainers._registry import get_trainer
+
+    trainer = get_trainer("mock_tiny")
+    cfg = trainer.generate_config(
+        train_kwcoco_fpath=str(synthetic_kwcoco),
+        vali_kwcoco_fpath=str(synthetic_kwcoco),
+        workdir=tmp_workdir,
+        variant="mock_tiny",
+        input_hw=(64, 64),
+        train_policy="fixed",
+        num_classes=1,
+        batch_size=2,
+        val_batch_size=2,
+        num_epochs=1,
+        lr=1e-2,
+        backbone_lr=1e-2,
+        use_amp=False,
+        channels="r|g|b",
+        scale_tier="S",
+        num_gpus=1,
+        data_format="kwcoco",
+        extra={"category_names": ["widget"], "score_thresh": 0.01},
+    )
+    trainer.launch(cfg, num_gpus=1)
+    package_zip = tmp_path / "identity_mock_tiny_package.zip"
+    build_model_package(
+        workdir=tmp_workdir,
+        out=package_zip,
+        trainer="mock_tiny",
+        variant="mock_tiny",
+        category_names=["widget"],
+        dataset_slug="synthetic",
+        experiment_slug="resume-unit",
+        train_kwcoco=str(synthetic_kwcoco),
+        vali_kwcoco=str(synthetic_kwcoco),
+        test_kwcoco=str(synthetic_kwcoco),
+        username="alice",
+        hostname="node0",
+    )
+
+    dst = tmp_path / "identity.pred.kwcoco.zip"
+    original_prepare = SourceWindowReader.prepare
+    calls = {"n": 0}
+
+    def fail_after_one(self, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("intentional resume identity failure")
+        return original_prepare(self, *args, **kwargs)
+
+    monkeypatch.setattr(SourceWindowReader, "prepare", fail_after_one)
+    with pytest.raises(RuntimeError, match="failed to prepare gid"):
+        predict_kwcoco(
+            package=package_zip,
+            src=synthetic_kwcoco,
+            dst=dst,
+            device="cpu",
+            score_thresh=0.05,
+            pipeline=False,
+            resume=True,
+            checkpoint_every=1,
+            checkpoint_seconds=0,
+        )
+
+    monkeypatch.setattr(SourceWindowReader, "prepare", original_prepare)
+    with pytest.raises(RuntimeError, match="resume checkpoint does not match this run"):
+        predict_kwcoco(
+            package=package_zip,
+            src=synthetic_kwcoco,
+            dst=dst,
+            device="cpu",
+            score_thresh=0.10,
+            pipeline=False,
+            resume=True,
+            checkpoint_every=1,
+            checkpoint_seconds=0,
+        )

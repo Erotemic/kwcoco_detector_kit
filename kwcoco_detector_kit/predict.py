@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import time
 from pathlib import Path
 from typing import Optional
@@ -42,7 +43,7 @@ def _sha256_file(fpath):
 
 
 def _prediction_resume_paths(dst: Path) -> tuple[Path, Path]:
-    """Return stable partial-dataset and resume-state paths for ``dst``."""
+    """Return legacy partial-dataset and authoritative resume-state paths."""
     text = str(dst)
     suffix = ".kwcoco.zip"
     if text.endswith(suffix):
@@ -55,15 +56,99 @@ def _prediction_resume_paths(dst: Path) -> tuple[Path, Path]:
     return partial, state
 
 
+def _prediction_resume_journal_dir(dst: Path) -> Path:
+    """Return the append-only checkpoint shard directory for ``dst``."""
+    text = str(dst)
+    suffix = ".kwcoco.zip"
+    if text.endswith(suffix):
+        stem = text[:-len(suffix)]
+        return Path(stem + ".partial.d")
+    return Path(text + ".partial.d")
+
+
 def _resume_identity_hash(identity: dict) -> str:
     payload = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(payload).hexdigest()
 
 
-def _write_json_atomic(path: Path, data: dict) -> None:
+def _coerce_jsonable(data):
+    """Convert common numpy/path values without changing ordinary JSON data."""
+    if isinstance(data, dict):
+        return {str(key): _coerce_jsonable(value) for key, value in data.items()}
+    if isinstance(data, (list, tuple)):
+        return [_coerce_jsonable(value) for value in data]
+    if isinstance(data, Path):
+        return str(data)
+    if isinstance(data, bytes):
+        return data.decode("utf8")
+    item = getattr(data, "item", None)
+    if callable(item):
+        try:
+            return _coerce_jsonable(item())
+        except (TypeError, ValueError):
+            pass
+    tolist = getattr(data, "tolist", None)
+    if callable(tolist):
+        try:
+            return _coerce_jsonable(tolist())
+        except (TypeError, ValueError):
+            pass
+    return data
+
+
+def _write_json_atomic(path: Path, data: dict, *, compact: bool = False) -> None:
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    if compact:
+        payload = json.dumps(
+            _coerce_jsonable(data), separators=(",", ":"), ensure_ascii=False
+        ) + "\n"
+    else:
+        payload = json.dumps(
+            _coerce_jsonable(data), indent=2, sort_keys=True, ensure_ascii=False
+        ) + "\n"
+    tmp.write_text(payload)
     tmp.replace(path)
+
+
+def _write_prediction_resume_shard(
+    journal_dpath: Path,
+    shard_index: int,
+    records: list[dict],
+) -> str:
+    """Atomically persist only prediction records new since the last checkpoint."""
+    journal_dpath.mkdir(parents=True, exist_ok=True)
+    name = f"shard-{int(shard_index):08d}.json"
+    payload = {
+        "schema": "kwcoco_detector_kit.predict_resume_shard.v1",
+        "records": records,
+    }
+    _write_json_atomic(journal_dpath / name, payload, compact=True)
+    return name
+
+
+def _replay_prediction_resume_shards(
+    pred,
+    journal_dpath: Path,
+    shard_names: list[str],
+    backend_name: str,
+    add_prediction_annotations,
+) -> set[int]:
+    """Replay durable per-image annotation shards into an in-memory KWCoco."""
+    replayed = set()
+    for name in shard_names:
+        shard_fpath = journal_dpath / name
+        if not shard_fpath.exists():
+            raise RuntimeError(f"prediction resume shard is missing: {shard_fpath}")
+        payload = json.loads(shard_fpath.read_text())
+        if payload.get("schema") != "kwcoco_detector_kit.predict_resume_shard.v1":
+            raise RuntimeError(f"unknown prediction resume shard schema: {shard_fpath}")
+        for item in payload.get("records", []):
+            gid = int(item["gid"])
+            add_prediction_annotations(pred, gid, item.get("anns", []), backend_name)
+            if gid in replayed:
+                raise RuntimeError(f"duplicate gid {gid} across prediction resume shards")
+            replayed.add(gid)
+    return replayed
 
 
 def _prune_partial_annotations(pred, completed_gids: set[int]) -> int:
@@ -396,27 +481,124 @@ def predict_kwcoco(
             }
             resume_identity_sha256 = _resume_identity_hash(resume_identity)
             partial_fpath, resume_state_fpath = _prediction_resume_paths(dst)
+            resume_journal_dpath = _prediction_resume_journal_dir(dst)
             completed_gids: set[int] = set()
             resumed_images = 0
+            resume_shards: list[str] = []
+            legacy_base_gids: set[int] = set()
+            pending_checkpoint_records: list[dict] = []
 
-            if resume and (partial_fpath.exists() or resume_state_fpath.exists()):
-                if not (partial_fpath.exists() and resume_state_fpath.exists()):
-                    raise RuntimeError(
-                        "incomplete prediction resume checkpoint; expected both "
-                        f"{partial_fpath} and {resume_state_fpath}"
-                    )
+            state = None
+            if resume and resume_state_fpath.exists():
                 state = json.loads(resume_state_fpath.read_text())
                 if state.get("identity_sha256") != resume_identity_sha256:
                     raise RuntimeError(
                         "prediction resume checkpoint does not match this run; "
-                        f"remove or relocate {partial_fpath} and {resume_state_fpath} "
-                        "before changing model/source/inference settings"
+                        f"remove or relocate {partial_fpath}, {resume_state_fpath}, and "
+                        f"{resume_journal_dpath} before changing model/source/inference settings"
                     )
-                import kwcoco
+                schema = state.get("schema")
+                if schema == "kwcoco_detector_kit.predict_resume.v1":
+                    # Compatibility with the original resume implementation,
+                    # which rewrote a whole partial KWCoco at every checkpoint.
+                    # Load that file once as an immutable base, then immediately
+                    # migrate state to v2 so all future checkpoints are shards.
+                    if not partial_fpath.exists():
+                        raise RuntimeError(
+                            "legacy prediction resume state requires its partial KWCoco: "
+                            f"{partial_fpath}"
+                        )
+                    import kwcoco
 
-                pred = kwcoco.CocoDataset.coerce(str(partial_fpath))
-                pred.fpath = str(dst)
-                completed_gids = {int(gid) for gid in state.get("completed_gids", [])}
+                    pred = kwcoco.CocoDataset.coerce(str(partial_fpath))
+                    pred.fpath = str(dst)
+                    completed_gids = {
+                        int(gid) for gid in state.get("completed_gids", [])
+                    }
+                    legacy_base_gids = set(completed_gids)
+                    pruned = _prune_partial_annotations(pred, legacy_base_gids)
+                    resume_shards = []
+                    migrated_state = {
+                        "schema": "kwcoco_detector_kit.predict_resume.v2",
+                        "identity": resume_identity,
+                        "identity_sha256": resume_identity_sha256,
+                        "completed_gids": sorted(completed_gids),
+                        "completed_images": len(completed_gids),
+                        "total_images": int(true.n_images),
+                        "legacy_base_partial": str(partial_fpath),
+                        "legacy_base_gids": sorted(legacy_base_gids),
+                        "journal_dir": str(resume_journal_dpath),
+                        "shards": resume_shards,
+                        "reason": "migrate-v1",
+                    }
+                    _write_json_atomic(resume_state_fpath, migrated_state)
+                    state = migrated_state
+                    print(
+                        "predict: migrated legacy full-KWCoco checkpoint to "
+                        "append-only resume shards; the legacy partial will no "
+                        "longer be rewritten",
+                        flush=True,
+                    )
+                    if pruned:
+                        print(
+                            f"predict: pruned {pruned} annotations newer than the "
+                            "authoritative legacy state",
+                            flush=True,
+                        )
+                elif schema == "kwcoco_detector_kit.predict_resume.v2":
+                    legacy_base = state.get("legacy_base_partial")
+                    legacy_base_gids = {
+                        int(gid) for gid in state.get("legacy_base_gids", [])
+                    }
+                    if legacy_base:
+                        legacy_path = Path(legacy_base)
+                        if not legacy_path.exists():
+                            raise RuntimeError(
+                                "prediction resume state references a missing legacy "
+                                f"base KWCoco: {legacy_path}"
+                            )
+                        import kwcoco
+
+                        pred = kwcoco.CocoDataset.coerce(str(legacy_path))
+                        pred.fpath = str(dst)
+                        _prune_partial_annotations(pred, legacy_base_gids)
+                    else:
+                        pred = _clone_for_predictions(true, dst)
+                    resume_shards = [str(name) for name in state.get("shards", [])]
+                    replayed_gids = _replay_prediction_resume_shards(
+                        pred,
+                        resume_journal_dpath,
+                        resume_shards,
+                        backend_name,
+                        add_prediction_annotations,
+                    )
+                    completed_gids = {
+                        int(gid) for gid in state.get("completed_gids", [])
+                    }
+                    duplicated_gids = legacy_base_gids & replayed_gids
+                    if duplicated_gids:
+                        raise RuntimeError(
+                            "prediction resume shards repeat gids already present in the "
+                            f"legacy base: {sorted(duplicated_gids)[:10]}"
+                        )
+                    durable_gids = legacy_base_gids | replayed_gids
+                    if durable_gids != completed_gids:
+                        raise RuntimeError(
+                            "prediction resume state/shards disagree about completed gids: "
+                            f"state={len(completed_gids)}, durable={len(durable_gids)}"
+                        )
+                    # Ignore/delete shard files that were atomically renamed but
+                    # never committed to the authoritative state before a crash.
+                    if resume_journal_dpath.exists():
+                        keep = set(resume_shards)
+                        for path in resume_journal_dpath.glob("shard-*.json"):
+                            if path.name not in keep:
+                                path.unlink()
+                else:
+                    raise RuntimeError(
+                        f"unknown prediction resume schema {schema!r} in {resume_state_fpath}"
+                    )
+
                 source_gids = {int(gid) for gid in true.images()}
                 unknown_completed = completed_gids - source_gids
                 if unknown_completed:
@@ -424,13 +606,16 @@ def predict_kwcoco(
                         "prediction resume state contains gids absent from the source: "
                         f"{sorted(unknown_completed)[:10]}"
                     )
-                pruned = _prune_partial_annotations(pred, completed_gids)
                 resumed_images = len(completed_gids)
                 print(
                     f"predict: resuming {resumed_images}/{true.n_images} finalized images "
-                    f"from {partial_fpath}"
-                    + (f"; pruned {pruned} uncommitted annotations" if pruned else ""),
+                    f"from incremental checkpoint state {resume_state_fpath}",
                     flush=True,
+                )
+            elif resume and partial_fpath.exists():
+                raise RuntimeError(
+                    "found a legacy partial KWCoco without its authoritative resume "
+                    f"state: {partial_fpath}"
                 )
             else:
                 pred = _clone_for_predictions(true, dst)
@@ -441,6 +626,9 @@ def predict_kwcoco(
             total_whole_infer = 0.0
             inline_postprocess_seconds = 0.0
             annotation_commit_seconds = 0.0
+            checkpoint_write_seconds = 0.0
+            checkpoint_bytes = 0
+            checkpoint_writes = 0
             committed_images = resumed_images
             session_committed_images = 0
             last_progress_report = 0.0
@@ -525,6 +713,11 @@ def predict_kwcoco(
             def _save_resume_checkpoint(*, reason: str, force: bool = False):
                 nonlocal last_checkpoint_images
                 nonlocal last_checkpoint_time
+                nonlocal pending_checkpoint_records
+                nonlocal resume_shards
+                nonlocal checkpoint_write_seconds
+                nonlocal checkpoint_bytes
+                nonlocal checkpoint_writes
                 if not resume:
                     return False
                 now = time.perf_counter()
@@ -538,28 +731,55 @@ def predict_kwcoco(
                 )
                 if not (force or due_images or due_time):
                     return False
-                partial_fpath.parent.mkdir(parents=True, exist_ok=True)
-                # KWCoco's path writer uses a temporary file on POSIX, so the
-                # partial dataset is atomically replaced. Write dataset first
-                # and state second; on a crash between them, resume treats the
-                # older state as authoritative and prunes the dataset suffix.
-                pred.dump(file=partial_fpath, temp_file=True)
+                if not pending_checkpoint_records:
+                    # There is nothing new to make durable. Reset the timer on
+                    # forced/time-based checks so they cannot spin repeatedly.
+                    if force or due_time:
+                        last_checkpoint_time = time.perf_counter()
+                    return False
+
+                checkpoint_started = time.perf_counter()
+                shard_name = _write_prediction_resume_shard(
+                    resume_journal_dpath,
+                    len(resume_shards),
+                    pending_checkpoint_records,
+                )
+                new_shards = [*resume_shards, shard_name]
                 state = {
-                    "schema": "kwcoco_detector_kit.predict_resume.v1",
+                    "schema": "kwcoco_detector_kit.predict_resume.v2",
                     "identity": resume_identity,
                     "identity_sha256": resume_identity_sha256,
                     "completed_gids": sorted(completed_gids),
                     "completed_images": len(completed_gids),
                     "total_images": int(true.n_images),
-                    "partial_prediction": str(partial_fpath),
+                    "legacy_base_partial": (
+                        str(partial_fpath) if legacy_base_gids else None
+                    ),
+                    "legacy_base_gids": sorted(legacy_base_gids),
+                    "journal_dir": str(resume_journal_dpath),
+                    "shards": new_shards,
                     "reason": str(reason),
                 }
+                # The shard is written first and the small state file second.
+                # If the process dies between them, the unreferenced shard is
+                # ignored and removed on restart. No previously durable shard
+                # or KWCoco file is ever rewritten.
                 _write_json_atomic(resume_state_fpath, state)
+                resume_shards = new_shards
+                pending_checkpoint_records = []
                 last_checkpoint_images = committed_images
-                last_checkpoint_time = now
+                # Measure the interval from checkpoint *completion*. The v1
+                # implementation used the pre-write timestamp, so once a full
+                # KWCoco dump exceeded checkpoint_seconds it immediately
+                # checkpointed again after every image.
+                last_checkpoint_time = time.perf_counter()
+                checkpoint_elapsed = last_checkpoint_time - checkpoint_started
+                checkpoint_write_seconds += checkpoint_elapsed
+                checkpoint_bytes += (resume_journal_dpath / shard_name).stat().st_size
+                checkpoint_writes += 1
                 print(
                     f"predict: checkpointed {committed_images}/{true.n_images} "
-                    f"to {partial_fpath}",
+                    f"as {shard_name} ({checkpoint_elapsed:.2f}s)",
                     flush=True,
                 )
                 return True
@@ -573,6 +793,10 @@ def predict_kwcoco(
                     commit_started = time.perf_counter()
                     add_prediction_annotations(pred, gid, anns, backend_name)
                     completed_gids.add(int(gid))
+                    pending_checkpoint_records.append({
+                        "gid": int(gid),
+                        "anns": anns,
+                    })
                     annotation_commit_seconds += time.perf_counter() - commit_started
                     committed_images += 1
                     session_committed_images += 1
@@ -683,6 +907,11 @@ def predict_kwcoco(
                     )
                 raise
 
+            # Make every completed image durable before constructing final
+            # provenance or performing the one full output serialization.
+            if resume:
+                _save_resume_checkpoint(reason="finalize", force=True)
+
             elapsed = time.perf_counter() - started
             info = {
                 "type": "kwcoco_detector_kit.predict",
@@ -716,6 +945,7 @@ def predict_kwcoco(
                     "postprocess_workers": int(postprocess_workers),
                     "postprocess_inflight": int(postprocess_inflight),
                     "resume": bool(resume),
+                    "resume_checkpoint_format": "append_shards_v2",
                     "checkpoint_every": int(checkpoint_every),
                     "checkpoint_seconds": float(checkpoint_seconds),
                     "resumed_images": int(resumed_images),
@@ -737,6 +967,9 @@ def predict_kwcoco(
                     "postprocess_work_seconds": pipeline_profile["postprocess"]["total_work_seconds"],
                     "postprocess_wait_seconds": pipeline_profile["postprocess"]["wait_seconds"],
                     "annotation_commit_seconds": annotation_commit_seconds,
+                    "checkpoint_write_seconds": checkpoint_write_seconds,
+                    "checkpoint_bytes": int(checkpoint_bytes),
+                    "checkpoint_writes": int(checkpoint_writes),
                     "source_images": int(true.n_images),
                     "resumed_images": int(resumed_images),
                     "source_images_processed_this_session": int(session_committed_images),
@@ -757,6 +990,8 @@ def predict_kwcoco(
             if resume:
                 partial_fpath.unlink(missing_ok=True)
                 resume_state_fpath.unlink(missing_ok=True)
+                if resume_journal_dpath.exists():
+                    shutil.rmtree(resume_journal_dpath)
             profile = {
                 "schema": "kwcoco_detector_kit.predict_profile.v1",
                 "prediction": str(dst),
@@ -845,7 +1080,7 @@ class PredictConfig(kwconf.Config):
         True,
         isflag=True,
         help=(
-            "resume from periodic partial KWCoco checkpoints after interruption; "
+            "resume from periodic incremental prediction checkpoints after interruption; "
             "use --resume=false to force a fresh pass"
         ),
     )

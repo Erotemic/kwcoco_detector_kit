@@ -276,15 +276,31 @@ For example, a native `768x1024` image requested at `0.4x` is realized by
 
 ### Resumable long prediction passes
 
-Long source-space passes are resumable by default. KDK periodically writes an
-atomic partial KWCoco plus an authoritative state file next to the requested
-destination. The default checkpoint policy is every 250 finalized source images
-or five minutes, whichever occurs first, and an exception / Ctrl-C forces a
-checkpoint of all committed images. A restart with the same package, source,
-and output-affecting inference settings skips completed gids. A changed model,
+Long source-space passes are resumable by default. Checkpointing is incremental:
+KDK writes only the per-image annotations completed since the previous
+checkpoint into an atomically replaced JSON shard, followed by a small
+authoritative state file. Previously durable shards are never rewritten. The
+full prediction KWCoco is serialized exactly once, after all source images have
+finished.
+
+The default checkpoint policy is every 250 finalized source images or five
+minutes, whichever occurs first, and an exception / Ctrl-C forces the current
+new-record shard to disk. The checkpoint timer is measured from completion of
+the previous checkpoint, so a slow storage write cannot trigger a checkpoint
+storm. A restart with the same package, source, and output-affecting inference
+settings replays the durable shards and skips completed gids. A changed model,
 source hash, scale, overlap, window, threshold, or backend refuses reuse rather
 than mixing predictions.
 
+Resume artifacts are a small `*.partial.json` state file and a
+`*.partial.d/` directory of immutable `shard-*.json` files. Runs created by the
+original whole-KWCoco checkpoint implementation are migrated automatically:
+the existing `*.partial.kwcoco.zip` is loaded once as an immutable base and is
+not rewritten again; new progress is journaled as shards. This preserves
+already-completed work from deployed v1 resume checkpoints.
+
 Use `--resume=false` for an intentionally fresh pass. The cadence can be tuned
-with `--checkpoint-every` and `--checkpoint-seconds`. Partial artifacts are
-removed only after the final destination KWCoco is successfully serialized.
+with `--checkpoint-every` and `--checkpoint-seconds`. Profile metadata records
+`checkpoint_writes`, `checkpoint_write_seconds`, and `checkpoint_bytes` so the
+checkpoint overhead is measurable. All temporary resume artifacts are removed
+only after the final destination KWCoco is successfully serialized.

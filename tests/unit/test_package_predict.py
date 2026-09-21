@@ -143,7 +143,12 @@ def test_predict_resume_after_prepare_failure(synthetic_kwcoco, tmp_workdir, tmp
     import kwcoco
 
     from kwcoco_detector_kit.export.package import build_model_package
-    from kwcoco_detector_kit.predict import _prediction_resume_paths, predict_kwcoco
+    from kwcoco_detector_kit.predict import (
+        _clone_for_predictions,
+        _prediction_resume_journal_dir,
+        _prediction_resume_paths,
+        predict_kwcoco,
+    )
     from kwcoco_detector_kit.predictors.source_window import SourceWindowReader
     from kwcoco_detector_kit.trainers._registry import get_trainer
 
@@ -216,20 +221,52 @@ def test_predict_resume_after_prepare_failure(synthetic_kwcoco, tmp_workdir, tmp
             checkpoint_seconds=0,
         )
 
-    assert partial_fpath.exists()
+    journal_dpath = _prediction_resume_journal_dir(dst)
+    assert not partial_fpath.exists(), "v2 checkpoints must not rewrite a whole KWCoco"
     assert state_fpath.exists()
+    assert journal_dpath.exists()
     state = json.loads(state_fpath.read_text())
+    assert state["schema"] == "kwcoco_detector_kit.predict_resume.v2"
+    assert state["shards"]
     completed_before_resume = list(map(int, state["completed_gids"]))
     assert completed_before_resume
     assert len(completed_before_resume) < len(source_gids)
 
-    partial = kwcoco.CocoDataset.coerce(str(partial_fpath))
-    partial_annot_gids = {int(a["image_id"]) for a in partial.dataset.get("annotations", [])}
-    assert partial_annot_gids.issubset(set(completed_before_resume))
+    shard_records = []
+    for shard_name in state["shards"]:
+        payload = json.loads((journal_dpath / shard_name).read_text())
+        shard_records.extend(payload["records"])
+    assert {int(r["gid"]) for r in shard_records} == set(completed_before_resume)
+
+    # Exercise compatibility with the already-deployed v1 checkpoint format:
+    # synthesize its one immutable partial KWCoco from the v2 shard, then make
+    # the state claim v1. The next run must migrate it once and never rewrite
+    # that KWCoco again.
+    from kwcoco_detector_kit.data.postprocess import add_prediction_annotations
+
+    legacy = _clone_for_predictions(true, partial_fpath)
+    for record in shard_records:
+        add_prediction_annotations(
+            legacy, int(record["gid"]), record["anns"], "mock_tiny:torch"
+        )
+    legacy.dump()
+    legacy_state = {
+        "schema": "kwcoco_detector_kit.predict_resume.v1",
+        "identity": state["identity"],
+        "identity_sha256": state["identity_sha256"],
+        "completed_gids": completed_before_resume,
+        "completed_images": len(completed_before_resume),
+        "total_images": len(source_gids),
+        "partial_prediction": str(partial_fpath),
+        "reason": "test-legacy-migration",
+    }
+    state_fpath.write_text(json.dumps(legacy_state, indent=2) + "\n")
+    import shutil
+    shutil.rmtree(journal_dpath)
 
     # Restore normal preparation and rerun the identical command. The resume
-    # identity must match, committed gids must be skipped, and success must
-    # clean up the transient checkpoint artifacts.
+    # identity must match, the v1 base must migrate to v2 shards, committed
+    # gids must be skipped, and success must clean up all checkpoint artifacts.
     monkeypatch.setattr(SourceWindowReader, "prepare", original_prepare)
     predict_kwcoco(
         package=package_zip,
@@ -248,6 +285,7 @@ def test_predict_resume_after_prepare_failure(synthetic_kwcoco, tmp_workdir, tmp
     assert final.n_annots > 0
     assert not partial_fpath.exists()
     assert not state_fpath.exists()
+    assert not journal_dpath.exists()
 
 
 @pytest.mark.requires_torch

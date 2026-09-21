@@ -70,6 +70,27 @@ class PredictionSpace:
             scale_xy=(sx, sy),
         )
 
+    def with_prediction_hw(self, prediction_hw):
+        """Return this space with dimensions adopted from the realized graph.
+
+        ``delayed_image`` defines the output canvas of a scale operation. Its
+        pixel-grid rounding is therefore authoritative for detector I/O. The
+        requested scale remains provenance; geometry uses the exact realized
+        dimensions.
+        """
+        pred_h, pred_w = map(int, prediction_hw)
+        native_h, native_w = self.native_hw
+        if pred_h <= 0 or pred_w <= 0:
+            raise ValueError(
+                f"prediction image dimensions must be positive: {prediction_hw!r}"
+            )
+        return type(self)(
+            native_hw=self.native_hw,
+            prediction_hw=(pred_h, pred_w),
+            requested_scale_xy=self.requested_scale_xy,
+            scale_xy=(pred_w / native_w, pred_h / native_h),
+        )
+
     @property
     def is_native(self) -> bool:
         return self.prediction_hw == self.native_hw

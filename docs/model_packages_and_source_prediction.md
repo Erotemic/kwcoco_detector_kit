@@ -258,3 +258,33 @@ write native-coordinate segmentation geometry.
 `--prediction-scale=1.0` is the native-resolution control.  The output profile
 records the requested prediction scale, allowing coarse and native passes to be
 compared without changing source truth or preparing a separate resized KWCoco.
+
+
+### Realized prediction-space dimensions
+
+`--prediction-scale` is a requested sampling scale, not a promise about integer
+canvas dimensions. `delayed_image` owns the scaled pixel grid and may choose a
+canvas extent that differs by one pixel from `round(native * scale)`. KDK reads
+the scaled delayed graph's realized `dsize` before planning windows and derives
+the exact prediction-to-native transform from that realized width/height. This
+keeps lazy regional reads, decode-once reads, boxes, and polygons on one
+coordinate contract.
+
+For example, a native `768x1024` image requested at `0.4x` is realized by
+`delayed_image` as `308x410`, not `307x410`. The exact affine is therefore
+`(308 / 768, 410 / 1024)` and the native inverse uses those ratios.
+
+### Resumable long prediction passes
+
+Long source-space passes are resumable by default. KDK periodically writes an
+atomic partial KWCoco plus an authoritative state file next to the requested
+destination. The default checkpoint policy is every 250 finalized source images
+or five minutes, whichever occurs first, and an exception / Ctrl-C forces a
+checkpoint of all committed images. A restart with the same package, source,
+and output-affecting inference settings skips completed gids. A changed model,
+source hash, scale, overlap, window, threshold, or backend refuses reuse rather
+than mixing predictions.
+
+Use `--resume=false` for an intentionally fresh pass. The cadence can be tuned
+with `--checkpoint-every` and `--checkpoint-seconds`. Partial artifacts are
+removed only after the final destination KWCoco is successfully serialized.

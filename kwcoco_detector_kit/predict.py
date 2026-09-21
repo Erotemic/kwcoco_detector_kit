@@ -41,6 +41,49 @@ def _sha256_file(fpath):
     return h.hexdigest()
 
 
+def _prediction_resume_paths(dst: Path) -> tuple[Path, Path]:
+    """Return stable partial-dataset and resume-state paths for ``dst``."""
+    text = str(dst)
+    suffix = ".kwcoco.zip"
+    if text.endswith(suffix):
+        stem = text[:-len(suffix)]
+        partial = Path(stem + ".partial" + suffix)
+        state = Path(stem + ".partial.json")
+    else:
+        partial = Path(text + ".partial.kwcoco.zip")
+        state = Path(text + ".partial.json")
+    return partial, state
+
+
+def _resume_identity_hash(identity: dict) -> str:
+    payload = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _write_json_atomic(path: Path, data: dict) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    tmp.replace(path)
+
+
+def _prune_partial_annotations(pred, completed_gids: set[int]) -> int:
+    """Drop annotations written after the last authoritative resume state.
+
+    The partial KWCoco is written before its state file. If a process dies
+    between those writes, the dataset may be newer than the state. Treat the
+    state as authoritative and prune that uncommitted suffix to make resume
+    idempotent.
+    """
+    stale_aids = [
+        ann["id"]
+        for ann in pred.dataset.get("annotations", [])
+        if int(ann["image_id"]) not in completed_gids
+    ]
+    if stale_aids:
+        pred.remove_annotations(stale_aids)
+    return len(stale_aids)
+
+
 def _load_labels(package_root: Path, manifest: dict) -> list[str]:
     artifacts = manifest.get("artifacts", {})
     labels_rel = artifacts.get("labels")
@@ -222,6 +265,9 @@ def predict_kwcoco(
     window_prefetch: int = 2,
     postprocess_workers: int = 1,
     postprocess_inflight: int = 2,
+    resume: bool = True,
+    checkpoint_every: int = 250,
+    checkpoint_seconds: float = 300.0,
 ) -> Path:
     """Run one self-describing model package over original source KWCoco.
 
@@ -330,17 +376,77 @@ def predict_kwcoco(
                 )
 
             true = _coerce_src_kwcoco(src)
-            pred = _clone_for_predictions(true, dst)
             backend_name = f"{manifest['trainer']}:{backend_used}"
+
+            resume_identity = {
+                "schema": "kwcoco_detector_kit.predict_resume_identity.v1",
+                "package_sha256": package_sha256,
+                "source_dataset_sha256": source_sha256,
+                "backend": backend_used,
+                "windowed": bool(windowed),
+                "window": list(resolved_window) if resolved_window else None,
+                "overlap": float(overlap),
+                "batch_size": int(batch_size),
+                "score_thresh": float(score_thresh),
+                "nms_thresh": float(nms_thresh),
+                "source_read_strategy": str(source_read_strategy),
+                "prediction_scale": prediction_scale,
+                "whole_image_pass": bool(whole_image_pass),
+                "max_dets": max_dets,
+            }
+            resume_identity_sha256 = _resume_identity_hash(resume_identity)
+            partial_fpath, resume_state_fpath = _prediction_resume_paths(dst)
+            completed_gids: set[int] = set()
+            resumed_images = 0
+
+            if resume and (partial_fpath.exists() or resume_state_fpath.exists()):
+                if not (partial_fpath.exists() and resume_state_fpath.exists()):
+                    raise RuntimeError(
+                        "incomplete prediction resume checkpoint; expected both "
+                        f"{partial_fpath} and {resume_state_fpath}"
+                    )
+                state = json.loads(resume_state_fpath.read_text())
+                if state.get("identity_sha256") != resume_identity_sha256:
+                    raise RuntimeError(
+                        "prediction resume checkpoint does not match this run; "
+                        f"remove or relocate {partial_fpath} and {resume_state_fpath} "
+                        "before changing model/source/inference settings"
+                    )
+                import kwcoco
+
+                pred = kwcoco.CocoDataset.coerce(str(partial_fpath))
+                pred.fpath = str(dst)
+                completed_gids = {int(gid) for gid in state.get("completed_gids", [])}
+                source_gids = {int(gid) for gid in true.images()}
+                unknown_completed = completed_gids - source_gids
+                if unknown_completed:
+                    raise RuntimeError(
+                        "prediction resume state contains gids absent from the source: "
+                        f"{sorted(unknown_completed)[:10]}"
+                    )
+                pruned = _prune_partial_annotations(pred, completed_gids)
+                resumed_images = len(completed_gids)
+                print(
+                    f"predict: resuming {resumed_images}/{true.n_images} finalized images "
+                    f"from {partial_fpath}"
+                    + (f"; pruned {pruned} uncommitted annotations" if pruned else ""),
+                    flush=True,
+                )
+            else:
+                pred = _clone_for_predictions(true, dst)
+
             strategy_counts = {}
             total_decode = 0.0
             total_window_read = 0.0
             total_whole_infer = 0.0
             inline_postprocess_seconds = 0.0
             annotation_commit_seconds = 0.0
-            committed_images = 0
+            committed_images = resumed_images
+            session_committed_images = 0
             last_progress_report = 0.0
+            last_checkpoint_images = committed_images
             started = time.perf_counter()
+            last_checkpoint_time = started
 
             from kwcoco_detector_kit.predictors.pipeline import PredictionPipeline
             from kwcoco_detector_kit.predictors.source_window import SourceWindowReader
@@ -354,6 +460,7 @@ def predict_kwcoco(
             source_items = (
                 (int(gid), true.coco_image(gid))
                 for gid in true.images()
+                if int(gid) not in completed_gids
             )
 
             def _prepare_source(item):
@@ -371,7 +478,7 @@ def predict_kwcoco(
                     return reader
                 except Exception as ex:
                     raise RuntimeError(
-                        f"predict: failed to prepare gid {gid}; refusing partial output"
+                        f"predict: failed to prepare gid {gid}; committed work will be checkpointed"
                     ) from ex
 
             tiled_post_cfg = dict(post_cfg)
@@ -412,18 +519,63 @@ def predict_kwcoco(
                     return anns
                 except Exception as ex:
                     raise RuntimeError(
-                        f"predict: failed postprocess gid {gid}; refusing partial output"
+                        f"predict: failed postprocess gid {gid}; committed work will be checkpointed"
                     ) from ex
+
+            def _save_resume_checkpoint(*, reason: str, force: bool = False):
+                nonlocal last_checkpoint_images
+                nonlocal last_checkpoint_time
+                if not resume:
+                    return False
+                now = time.perf_counter()
+                due_images = (
+                    int(checkpoint_every) > 0
+                    and committed_images - last_checkpoint_images >= int(checkpoint_every)
+                )
+                due_time = (
+                    float(checkpoint_seconds) > 0
+                    and now - last_checkpoint_time >= float(checkpoint_seconds)
+                )
+                if not (force or due_images or due_time):
+                    return False
+                partial_fpath.parent.mkdir(parents=True, exist_ok=True)
+                # KWCoco's path writer uses a temporary file on POSIX, so the
+                # partial dataset is atomically replaced. Write dataset first
+                # and state second; on a crash between them, resume treats the
+                # older state as authoritative and prunes the dataset suffix.
+                pred.dump(file=partial_fpath, temp_file=True)
+                state = {
+                    "schema": "kwcoco_detector_kit.predict_resume.v1",
+                    "identity": resume_identity,
+                    "identity_sha256": resume_identity_sha256,
+                    "completed_gids": sorted(completed_gids),
+                    "completed_images": len(completed_gids),
+                    "total_images": int(true.n_images),
+                    "partial_prediction": str(partial_fpath),
+                    "reason": str(reason),
+                }
+                _write_json_atomic(resume_state_fpath, state)
+                last_checkpoint_images = committed_images
+                last_checkpoint_time = now
+                print(
+                    f"predict: checkpointed {committed_images}/{true.n_images} "
+                    f"to {partial_fpath}",
+                    flush=True,
+                )
+                return True
 
             def _commit_ready(ready):
                 nonlocal annotation_commit_seconds
                 nonlocal committed_images
+                nonlocal session_committed_images
                 nonlocal last_progress_report
                 for gid, anns in ready:
                     commit_started = time.perf_counter()
                     add_prediction_annotations(pred, gid, anns, backend_name)
+                    completed_gids.add(int(gid))
                     annotation_commit_seconds += time.perf_counter() - commit_started
                     committed_images += 1
+                    session_committed_images += 1
                     now = time.perf_counter()
                     should_report = (
                         committed_images == 1
@@ -433,7 +585,7 @@ def predict_kwcoco(
                     )
                     if should_report:
                         wall = max(now - started, 1e-9)
-                        image_rate = committed_images / wall
+                        image_rate = session_committed_images / wall
                         window_text = ""
                         if tiled is not None and tiled.n_windows:
                             window_text = f", {tiled.n_windows / wall:.1f} windows/s"
@@ -443,81 +595,93 @@ def predict_kwcoco(
                             flush=True,
                         )
                         last_progress_report = now
+                _save_resume_checkpoint(reason="periodic")
 
             # CUDA is intentionally owned by this main thread. Source decode,
             # future window realization, and CPU merge/polygonization use
             # separate bounded worker pools so they can overlap without model
             # duplication or large multiprocessing IPC copies.
-            with PredictionPipeline(
-                source_workers=int(source_workers),
-                source_prefetch=int(source_prefetch),
-                window_prefetch=int(window_prefetch),
-                postprocess_workers=int(postprocess_workers),
-                postprocess_inflight=int(postprocess_inflight),
-            ) as pred_pipeline:
-                prepared_iter = pred_pipeline.iter_prepared_sources(
-                    source_items, _prepare_source
-                )
-                for (gid, _coco_img), reader in prepared_iter:
-                    # Bound memory before producing one more source's raw masks
-                    # / detections. Completed CPU results are committed in the
-                    # same order as source images regardless of worker timing.
-                    _commit_ready(
-                        pred_pipeline.wait_for_postprocess_capacity(reserve=1)
+            try:
+                with PredictionPipeline(
+                    source_workers=int(source_workers),
+                    source_prefetch=int(source_prefetch),
+                    window_prefetch=int(window_prefetch),
+                    postprocess_workers=int(postprocess_workers),
+                    postprocess_inflight=int(postprocess_inflight),
+                ) as pred_pipeline:
+                    prepared_iter = pred_pipeline.iter_prepared_sources(
+                        source_items, _prepare_source
                     )
-                    try:
-                        H, W = reader.prediction_hw
-                        if tiled is not None:
-                            payload = tiled._infer_source(
-                                reader, (W, H), pipeline=pred_pipeline
-                            )
-                            # Segmenter pipelines need pixels after detector
-                            # merge. They stay synchronous because the
-                            # segmenter may itself own CUDA.
-                            arr = reader.read_full() if segmenter is not None else None
-                        else:
-                            arr = reader.read_full()
-                            infer_started = time.perf_counter()
-                            payload = base_predictor.predict_image(arr, (W, H))
-                            total_whole_infer += time.perf_counter() - infer_started
-                    except Exception as ex:
-                        raise RuntimeError(
-                            f"predict: failed inference gid {gid}; refusing partial output"
-                        ) from ex
-
-                    strategy_counts[reader.strategy] = (
-                        strategy_counts.get(reader.strategy, 0) + 1
-                    )
-                    total_decode += reader.t_decode
-                    total_window_read += reader.t_window_read
-
-                    can_async_finalize = (
-                        pred_pipeline.async_postprocess and segmenter is None
-                    )
-                    if can_async_finalize:
-                        # Detector-only finalization does not need source
-                        # pixels. Avoid retaining a decoded whole image in the
-                        # bounded postprocess queue for whole-image predictors.
-                        finalize_arr = None
-                        pred_pipeline.submit_postprocess(
-                            gid, _finalize_source, gid, payload, finalize_arr, reader.space
+                    for (gid, _coco_img), reader in prepared_iter:
+                        # Bound memory before producing one more source's raw masks
+                        # / detections. Completed CPU results are committed in the
+                        # same order as source images regardless of worker timing.
+                        _commit_ready(
+                            pred_pipeline.wait_for_postprocess_capacity(reserve=1)
                         )
-                        _commit_ready(pred_pipeline.drain_postprocess_ready())
-                    else:
-                        post_started = time.perf_counter()
-                        anns = _finalize_source(gid, payload, arr, reader.space)
-                        inline_postprocess_seconds += time.perf_counter() - post_started
-                        _commit_ready([(gid, anns)])
+                        try:
+                            H, W = reader.prediction_hw
+                            if tiled is not None:
+                                payload = tiled._infer_source(
+                                    reader, (W, H), pipeline=pred_pipeline
+                                )
+                                # Segmenter pipelines need pixels after detector
+                                # merge. They stay synchronous because the
+                                # segmenter may itself own CUDA.
+                                arr = reader.read_full() if segmenter is not None else None
+                            else:
+                                arr = reader.read_full()
+                                infer_started = time.perf_counter()
+                                payload = base_predictor.predict_image(arr, (W, H))
+                                total_whole_infer += time.perf_counter() - infer_started
+                        except Exception as ex:
+                            raise RuntimeError(
+                                f"predict: failed inference gid {gid}; committed work will be checkpointed"
+                            ) from ex
 
-                _commit_ready(pred_pipeline.finish_postprocess())
-                pipeline_profile = pred_pipeline.profile_dict()
-                async_post_work = pipeline_profile["postprocess"]["work_seconds"]
-                pipeline_profile["postprocess"]["inline_work_seconds"] = (
-                    inline_postprocess_seconds
-                )
-                pipeline_profile["postprocess"]["total_work_seconds"] = (
-                    async_post_work + inline_postprocess_seconds
-                )
+                        strategy_counts[reader.strategy] = (
+                            strategy_counts.get(reader.strategy, 0) + 1
+                        )
+                        total_decode += reader.t_decode
+                        total_window_read += reader.t_window_read
+
+                        can_async_finalize = (
+                            pred_pipeline.async_postprocess and segmenter is None
+                        )
+                        if can_async_finalize:
+                            # Detector-only finalization does not need source
+                            # pixels. Avoid retaining a decoded whole image in the
+                            # bounded postprocess queue for whole-image predictors.
+                            finalize_arr = None
+                            pred_pipeline.submit_postprocess(
+                                gid, _finalize_source, gid, payload, finalize_arr, reader.space
+                            )
+                            _commit_ready(pred_pipeline.drain_postprocess_ready())
+                        else:
+                            post_started = time.perf_counter()
+                            anns = _finalize_source(gid, payload, arr, reader.space)
+                            inline_postprocess_seconds += time.perf_counter() - post_started
+                            _commit_ready([(gid, anns)])
+
+                    _commit_ready(pred_pipeline.finish_postprocess())
+                    pipeline_profile = pred_pipeline.profile_dict()
+                    async_post_work = pipeline_profile["postprocess"]["work_seconds"]
+                    pipeline_profile["postprocess"]["inline_work_seconds"] = (
+                        inline_postprocess_seconds
+                    )
+                    pipeline_profile["postprocess"]["total_work_seconds"] = (
+                        async_post_work + inline_postprocess_seconds
+                    )
+
+            except BaseException:
+                try:
+                    _save_resume_checkpoint(reason="exception", force=True)
+                except Exception as checkpoint_ex:
+                    print(
+                        f"predict: emergency resume checkpoint failed: {checkpoint_ex}",
+                        flush=True,
+                    )
+                raise
 
             elapsed = time.perf_counter() - started
             info = {
@@ -551,6 +715,10 @@ def predict_kwcoco(
                     "window_prefetch": int(window_prefetch),
                     "postprocess_workers": int(postprocess_workers),
                     "postprocess_inflight": int(postprocess_inflight),
+                    "resume": bool(resume),
+                    "checkpoint_every": int(checkpoint_every),
+                    "checkpoint_seconds": float(checkpoint_seconds),
+                    "resumed_images": int(resumed_images),
                 },
                 "pipeline": pipeline_profile,
                 "timing": {
@@ -570,8 +738,12 @@ def predict_kwcoco(
                     "postprocess_wait_seconds": pipeline_profile["postprocess"]["wait_seconds"],
                     "annotation_commit_seconds": annotation_commit_seconds,
                     "source_images": int(true.n_images),
+                    "resumed_images": int(resumed_images),
+                    "source_images_processed_this_session": int(session_committed_images),
                     "windows": getattr(tiled, "n_windows", None),
-                    "source_images_per_second": (true.n_images / elapsed) if elapsed > 0 else None,
+                    "source_images_per_second": (
+                        session_committed_images / elapsed if elapsed > 0 else None
+                    ),
                     "windows_per_second": (
                         getattr(tiled, "n_windows", 0) / elapsed
                         if elapsed > 0 and tiled is not None else None
@@ -582,6 +754,9 @@ def predict_kwcoco(
             _serialize_t0 = time.perf_counter()
             pred.dump()
             serialization_seconds = time.perf_counter() - _serialize_t0
+            if resume:
+                partial_fpath.unlink(missing_ok=True)
+                resume_state_fpath.unlink(missing_ok=True)
             profile = {
                 "schema": "kwcoco_detector_kit.predict_profile.v1",
                 "prediction": str(dst),
@@ -666,6 +841,20 @@ class PredictConfig(kwconf.Config):
         2, parser=int,
         help="bounded number of source results awaiting CPU postprocess",
     )
+    resume = kwconf.Value(
+        True,
+        isflag=True,
+        help=(
+            "resume from periodic partial KWCoco checkpoints after interruption; "
+            "use --resume=false to force a fresh pass"
+        ),
+    )
+    checkpoint_every = kwconf.Value(
+        250, parser=int, help="checkpoint partial predictions every N finalized images (0 disables)"
+    )
+    checkpoint_seconds = kwconf.Value(
+        300.0, parser=float, help="checkpoint partial predictions at least this often in seconds (0 disables)"
+    )
     whole_image_pass = kwconf.Value(
         None, isflag=True, help="include an additional whole-image pass; package default when omitted"
     )
@@ -702,6 +891,9 @@ class PredictConfig(kwconf.Config):
             window_prefetch=int(config.window_prefetch),
             postprocess_workers=int(config.postprocess_workers),
             postprocess_inflight=int(config.postprocess_inflight),
+            resume=bool(config.resume),
+            checkpoint_every=int(config.checkpoint_every),
+            checkpoint_seconds=float(config.checkpoint_seconds),
         )
         if config.create_labelme:
             from kwcoco_detector_kit.export.labelme import export_to_labelme

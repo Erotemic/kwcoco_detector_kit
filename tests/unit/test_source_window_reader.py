@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 
@@ -10,13 +12,23 @@ class _FakeDelayed:
         self.space_slice = space_slice
         self.scale_xy = scale_xy
 
+    @property
+    def dsize(self):
+        src_h, src_w = self.arr.shape[:2]
+        sx, sy = self.scale_xy
+        # delayed-image auto dsize fits the positive warped extent. This is
+        # intentionally not Python round(native * scale).
+        return (
+            max(1, int(math.ceil(src_w * sx))),
+            max(1, int(math.ceil(src_h * sy))),
+        )
+
     def _scaled(self):
         sx, sy = self.scale_xy
         if sx == 1.0 and sy == 1.0:
             return self.arr
         src_h, src_w = self.arr.shape[:2]
-        out_w = max(1, int(round(src_w * sx)))
-        out_h = max(1, int(round(src_h * sy)))
+        out_w, out_h = self.dsize
         ys = np.minimum((np.arange(out_h) / sy).astype(int), src_h - 1)
         xs = np.minimum((np.arange(out_w) / sx).astype(int), src_w - 1)
         return self.arr[ys[:, None], xs[None, :]]
@@ -108,7 +120,9 @@ def test_prepare_decodes_decode_once_but_keeps_region_source_lazy():
     tif = _FakeCocoImage(arr, ".tif")
     tif_reader = SourceWindowReader(tif, strategy="auto")
     tif_reader.prepare()
-    assert tif.counter == {"imdelay": 0, "scale": 0, "full": 0, "region": 0}
+    # Preparation constructs the delayed graph so its realized canvas can
+    # define prediction space, but it still performs no pixel decode.
+    assert tif.counter == {"imdelay": 1, "scale": 0, "full": 0, "region": 0}
     tif_reader.read_window(0, 0, 16, 16)
     assert tif.counter == {"imdelay": 1, "scale": 0, "full": 0, "region": 1}
 
@@ -130,3 +144,26 @@ def test_prediction_scale_is_applied_before_delayed_region_crop():
     # without forcing a full prediction-space image.
     assert tif.counter == {"imdelay": 1, "scale": 1, "full": 0, "region": 1}
     assert reader.full_decode_count == 0
+
+
+def test_prediction_space_adopts_delayed_realized_canvas():
+    from kwcoco_detector_kit.predictors.source_window import SourceWindowReader
+
+    # This is the exact edge case seen in the 0.4x ShitSpotter pass. Python
+    # round(768 * .4) is 307, but delayed-image's auto canvas is 308 wide.
+    arr = np.zeros((1024, 768, 3), dtype=np.uint8)
+    jpg = _FakeCocoImage(arr, ".jpg")
+    reader = SourceWindowReader(jpg, strategy="auto", prediction_scale=0.4)
+    reader.prepare()
+
+    assert reader.prediction_hw == (410, 308)
+    assert reader.read_full().shape[:2] == (410, 308)
+    assert np.allclose(
+        reader.space.scale_xy,
+        (308 / 768, 410 / 1024),
+    )
+    # Geometry is still mapped to native source-image coordinates using the
+    # exact realized scale, not the requested scalar.
+    pred_box = [0, 0, 308, 410]
+    native_box = reader.space.box_to_native_xyxy(pred_box)
+    assert np.allclose(native_box, [0, 0, 768, 1024])

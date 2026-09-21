@@ -103,10 +103,13 @@ class SourceWindowReader:
     def prepare(self, *, force_full=False):
         """Prepare this source on an I/O worker before GPU consumption.
 
-        JPEG-like ``decode_once`` sources are finalized here so decode/resize
-        overlaps inference on an earlier source image. Region-readable sources
-        stay lazy unless a caller explicitly needs the whole image.
+        The scaled delayed graph is constructed here even for lazy regional
+        readers. Its realized canvas size is authoritative for prediction
+        space, which avoids duplicating delayed-image's pixel-grid rounding in
+        KDK. JPEG-like ``decode_once`` sources are then finalized so
+        decode/resize overlaps inference on an earlier source image.
         """
+        self._ensure_prediction_delayed()
         if force_full or self.strategy == "decode_once":
             self.read_full()
         return self
@@ -123,6 +126,19 @@ class SourceWindowReader:
                 req_sx, req_sy = self.space.requested_scale_xy
                 scale = req_sx if req_sx == req_sy else (req_sx, req_sy)
                 delayed = delayed.scale(scale)
+            # Delayed-image owns the scaled pixel grid. In particular, its
+            # auto canvas uses geometric extent rounding that can differ by a
+            # pixel from Python round(native * scale). Adopt that dsize and
+            # derive the exact native/prediction affine from it.
+            dsize = getattr(delayed, "dsize", None)
+            if dsize is None or any(v is None for v in dsize):
+                prepare = getattr(delayed, "prepare", None)
+                if callable(prepare):
+                    prepare()
+                    dsize = getattr(delayed, "dsize", None)
+            if dsize is not None and not any(v is None for v in dsize):
+                pred_w, pred_h = map(int, dsize)
+                self.space = self.space.with_prediction_hw((pred_h, pred_w))
             self._prediction_delayed = delayed
         return self._prediction_delayed
 
@@ -138,10 +154,16 @@ class SourceWindowReader:
             expected = self.prediction_hw
             actual = tuple(map(int, full.shape[:2]))
             if actual != expected:
-                raise RuntimeError(
-                    "delayed-image prediction scale produced an unexpected shape: "
-                    f"expected={expected}, actual={actual}, space={self.space.to_dict()}"
-                )
+                # A backend may only resolve its exact output extent during
+                # finalization. The realized pixels remain authoritative as
+                # long as no windows have been consumed yet.
+                if self.region_read_count:
+                    raise RuntimeError(
+                        "prediction-space shape changed after regional reads: "
+                        f"expected={expected}, actual={actual}, "
+                        f"space={self.space.to_dict()}"
+                    )
+                self.space = self.space.with_prediction_hw(actual)
             self._full = full
             self.t_decode += time.perf_counter() - t0
             self.full_decode_count += 1

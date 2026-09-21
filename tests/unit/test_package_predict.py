@@ -124,3 +124,13 @@ def test_predict_config_windowed_key_value_boolean():
 
     config = PredictConfig.cli(argv=common + ["--prediction-scale=0.4"], strict=True)
     assert config.prediction_scale == 0.4
+
+    config = PredictConfig.cli(argv=common + ["--resume=false"], strict=True)
+    assert config.resume is False
+
+    config = PredictConfig.cli(
+        argv=common + ["--checkpoint-every=17", "--checkpoint-seconds=12.5"],
+        strict=True,
+    )
+    assert config.checkpoint_every == 17
+    assert config.checkpoint_seconds == 12.5

@@ -80,18 +80,27 @@ def classify_prediction(
         if role == "target":
             best_target_iou = max(best_target_iou, row["iou"])
 
+    # Missing-truth review must be conservative: an "unexplained" proposal
+    # is useful only when it is spatially disjoint from all localized truth.
+    # A low-IoU prediction that merely grazes an existing target is not a
+    # missing-object candidate, even though it does not satisfy the configured
+    # target match threshold.
+    has_spatial_truth_overlap = bool(overlaps)
     if best_target_iou >= float(target_iou_thresh):
         classification = "matched_target"
     elif "ignore" in roles_seen or has_unlocalized_ignore:
         classification = "uncertain_region"
     elif "background" in roles_seen:
         classification = "known_distractor"
+    elif "target" in roles_seen:
+        classification = "overlapping_target"
     else:
         classification = "unexplained_prediction"
 
     return {
         "classification": classification,
         "best_target_iou": float(best_target_iou),
+        "has_spatial_truth_overlap": has_spatial_truth_overlap,
         "overlapping_annotation_ids": [r["annotation_id"] for r in overlaps],
         "overlapping_category_names": [r["category_name"] for r in overlaps],
         "overlaps": overlaps,
@@ -219,8 +228,9 @@ def build_prediction_review(config):
     tsv_fields = [
         "rank", "score", "classification", "source_gid", "source_fpath",
         "labelme_json", "labelme_json_exists", "prediction_ann_id",
-        "prediction_bbox_xyxy", "overlapping_annotation_ids",
-        "overlapping_category_names", "best_target_iou", "review_status", "review_note",
+        "prediction_bbox_xyxy", "has_spatial_truth_overlap",
+        "overlapping_annotation_ids", "overlapping_category_names",
+        "best_target_iou", "review_status", "review_note",
     ]
     with open(dst_dpath / "review_queue.tsv", "w", newline="", encoding="utf8") as file:
         writer = csv.DictWriter(file, fieldnames=tsv_fields, delimiter="\t", extrasaction="ignore")

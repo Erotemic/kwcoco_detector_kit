@@ -19,18 +19,9 @@ def _make_semantic_dataset(tmp_path):
     dset.add_annotation(image_id=gid, category_id=cids["leaf"], bbox=[32, 0, 16, 16])
     dset.add_annotation(image_id=gid, category_id=cids["unknown"], bbox=[0, 32, 16, 16])
     dset.add_annotation(image_id=gid, category_id=cids["ignore"], bbox=[32, 32, 16, 16])
-
-    # KWCoco requires image ``file_name`` values to be unique.  Use a second
-    # physical asset for the uncategorized-annotation case rather than
-    # registering the same path twice under different image records.
-    uncategorized_fpath = tmp_path / "uncategorized.png"
-    kwimage.imwrite(str(uncategorized_fpath), image)
-    gid2 = dset.add_image(
-        file_name=str(uncategorized_fpath),
-        width=64,
-        height=64,
-        name="uncategorized",
-    )
+    fpath2 = tmp_path / "uncategorized.png"
+    kwimage.imwrite(str(fpath2), image)
+    gid2 = dset.add_image(file_name=str(fpath2), width=64, height=64, name="uncategorized")
     dset.add_annotation(image_id=gid2, category_id=None, bbox=[16, 16, 16, 16])
     dset.dump()
     return dset, gid, gid2
@@ -111,7 +102,18 @@ def test_truth_review_classification(tmp_path):
     assert classify_prediction(dset, gid, [0, 0, 16, 16], sem)["classification"] == "matched_target"
     assert classify_prediction(dset, gid, [32, 0, 48, 16], sem)["classification"] == "known_distractor"
     assert classify_prediction(dset, gid, [0, 32, 16, 48], sem)["classification"] == "uncertain_region"
-    assert classify_prediction(dset, gid, [48, 16, 63, 31], sem)["classification"] == "unexplained_prediction"
+
+    # Any positive-area overlap with an existing target excludes a proposal
+    # from missing-truth review, even when IoU is below the match threshold.
+    grazing = classify_prediction(dset, gid, [15, 0, 31, 16], sem)
+    assert grazing["best_target_iou"] < 0.5
+    assert grazing["classification"] == "overlapping_target"
+    assert grazing["has_spatial_truth_overlap"] is True
+
+    unexplained = classify_prediction(dset, gid, [48, 16, 63, 31], sem)
+    assert unexplained["classification"] == "unexplained_prediction"
+    assert unexplained["has_spatial_truth_overlap"] is False
+    assert unexplained["overlaps"] == []
 
 def test_positive_overlapping_uncertain_region_is_dropped(tmp_path):
     import kwcoco

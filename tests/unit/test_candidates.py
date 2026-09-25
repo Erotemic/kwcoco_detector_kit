@@ -362,6 +362,7 @@ def test_candidate_selection_is_stable_across_truth_only_rekey(tmp_path):
                 "tile_actual_scale_xy": [1.0, 1.0],
                 "tile_scaled_extent_xyxy": [idx, 0, idx + 1, 1],
             })
+        writer.close()
         return load_candidate_index(root)
 
     first = build(tmp_path / "truth1", "truth1")

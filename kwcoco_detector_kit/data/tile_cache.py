@@ -302,6 +302,13 @@ class TileMaterializationCache:
         image_fpath, sidecar_fpath = self.paths(key, suffix)
         image_fpath.parent.mkdir(parents=True, exist_ok=True)
         with self._lock(image_fpath):
+            # SIGKILL can leave tokenized temporary files behind.  They were
+            # never canonical and are safe to remove while holding this
+            # entry's lock.
+            for stale in image_fpath.parent.glob(image_fpath.name + ".*.tmp"):
+                stale.unlink(missing_ok=True)
+            for stale in sidecar_fpath.parent.glob(sidecar_fpath.name + ".*.tmp"):
+                stale.unlink(missing_ok=True)
             if image_fpath.exists() or sidecar_fpath.exists():
                 try:
                     return self.validate(

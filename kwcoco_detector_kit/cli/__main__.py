@@ -5,6 +5,7 @@ Subcommands::
 
   demo-data       Generate a synthetic kwcoco bundle (vidshapes-style).
   tile            kwcoco -> tile-augmented kwcoco (3 modes).
+  tile-cache-migrate  Adopt legacy cached tiles into raster-addressed keys.
   merge           positive + negative -> training kwcoco for one round.
   mine            offline hard-negative mining.
   mine-finalize   verify mining shards and materialize the global top-K.
@@ -131,6 +132,7 @@ def _register_module(name, module):
 # Register each module's CLI under its kebab-case command name.
 def _register_subcommands():
     import kwcoco_detector_kit.data.tile as _tile
+    import kwcoco_detector_kit.data.tile_cache_migrate as _tile_cache_migrate
     import kwcoco_detector_kit.data.tile_corpus as _tile_corpus
     import kwcoco_detector_kit.data.balance_scale as _balance_scale
     import kwcoco_detector_kit.data.merge as _merge
@@ -158,6 +160,7 @@ def _register_subcommands():
     import kwcoco_detector_kit.monitoring.log_health as _run_health
 
     _register_module("tile", _tile)
+    _register_module("tile-cache-migrate", _tile_cache_migrate)
     _register_module("tile-corpus", _tile_corpus)
     _register_module("balance-scale", _balance_scale)
     _register_module("merge", _merge)

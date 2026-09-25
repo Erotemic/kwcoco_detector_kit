@@ -398,6 +398,170 @@ def test_stable_source_dataset_fingerprint_reuses_regenerated_selection(tmp_path
     assert first.dataset["info"][0]["source_dataset_fingerprint"] == "canonical-dataset-v1"
 
 
+
+def test_annotation_only_refresh_reuses_raster_without_source_decode(tmp_path, monkeypatch):
+    """Fresh truth gets fresh semantics while the immutable raster is reused."""
+    import kwimage
+
+    from kwcoco_detector_kit.data import tile as tile_mod
+
+    asset = tmp_path / "source.png"
+    pixels = np.arange(64 * 64 * 3, dtype=np.uint32).reshape(64, 64, 3)
+    kwimage.imwrite(asset, (pixels % 251).astype(np.uint8))
+
+    source1 = kwcoco.CocoDataset()
+    source1.fpath = tmp_path / "truth1.kwcoco.zip"
+    cid = source1.add_category(name="widget")
+    gid = source1.add_image(file_name=str(asset), width=64, height=64)
+    aid = source1.add_annotation(
+        image_id=gid, category_id=cid, bbox=[8, 8, 16, 16], area=256,
+    )
+    source1.dump()
+
+    cache_dpath = tmp_path / "cache"
+    common = {
+        "mode": "multiscale",
+        "category_names": "widget",
+        "progress": False,
+        "tile_size": 64,
+        "source_scales": "1.0",
+        "stride_frac": 1.0,
+        "min_gt_area_frac": 0.0001,
+        "min_source_scale_long_side": 1,
+        "keep_negative": False,
+        "cache_dpath": str(cache_dpath),
+    }
+    first = _tile_run(source1.fpath, tmp_path / "tiles1.kwcoco.zip", **common)
+    assert first.n_images == 1
+    first_img = first.images().objs[0]
+    first_ann = first.annots().objs[0]
+    first_stats = first.dataset["info"][0]["tile_cache_stats"]
+    assert first_stats["misses"] == 1
+    assert first_stats["encoded"] == 1
+    assert first_stats["source_decodes"] == 1
+
+    source2 = source1.copy()
+    source2.anns[aid]["bbox"] = [24, 24, 16, 16]
+    source2.anns[aid]["area"] = 256
+    source2.fpath = tmp_path / "truth2.kwcoco.zip"
+    source2.dump()
+
+    def forbidden_decode(*args, **kwargs):
+        raise AssertionError("warm annotation-only refresh must not decode source pixels")
+
+    monkeypatch.setattr(tile_mod, "_read_image_rgb", forbidden_decode)
+    second = _tile_run(source2.fpath, tmp_path / "tiles2.kwcoco.zip", **common)
+    assert second.n_images == 1
+    second_img = second.images().objs[0]
+    second_ann = second.annots().objs[0]
+    second_stats = second.dataset["info"][0]["tile_cache_stats"]
+
+    assert first_img["tile_id"] != second_img["tile_id"]
+    assert first_img["tile_raster_id"] == second_img["tile_raster_id"]
+    assert first_img["tile_materialization_id"] == second_img["tile_materialization_id"]
+    assert first_img["file_name"] == second_img["file_name"]
+    assert first_ann["bbox"] != second_ann["bbox"]
+    assert second_ann["bbox"] == [24.0, 24.0, 16.0, 16.0]
+    assert second_stats["hits"] == 1
+    assert second_stats["misses"] == 0
+    assert second_stats["encoded"] == 0
+    assert second_stats["source_decodes"] == 0
+
+
+def test_truth_refresh_recomputes_role_while_reusing_raster(tmp_path, monkeypatch):
+    import kwimage
+
+    from kwcoco_detector_kit.data import tile as tile_mod
+
+    asset = tmp_path / "source-role.png"
+    pixels = np.arange(64 * 128 * 3, dtype=np.uint32).reshape(64, 128, 3)
+    kwimage.imwrite(asset, (pixels % 251).astype(np.uint8))
+
+    source1 = kwcoco.CocoDataset()
+    source1.fpath = tmp_path / "role-truth1.kwcoco.zip"
+    cid = source1.add_category(name="widget")
+    gid = source1.add_image(file_name=str(asset), width=128, height=64)
+    aid = source1.add_annotation(
+        image_id=gid, category_id=cid, bbox=[8, 8, 16, 16], area=256,
+    )
+    source1.dump()
+
+    common = {
+        "mode": "multiscale", "category_names": "widget", "progress": False,
+        "tile_size": 64, "source_scales": "1.0", "stride_frac": 1.0,
+        "min_gt_area_frac": 0.0001, "min_source_scale_long_side": 1,
+        "keep_negative": True, "cache_dpath": str(tmp_path / "role-cache"),
+    }
+    first = _tile_run(source1.fpath, tmp_path / "role-tiles1.kwcoco.zip", **common)
+    first_by_extent = {
+        tuple(img["tile_scaled_extent_xyxy"]): img
+        for img in first.images().objs
+    }
+    assert first_by_extent[(0, 0, 64, 64)]["tile_role"] == "positive"
+    assert first_by_extent[(64, 0, 128, 64)]["tile_role"] == "negative"
+
+    source2 = source1.copy()
+    source2.anns[aid]["bbox"] = [72, 8, 16, 16]
+    source2.fpath = tmp_path / "role-truth2.kwcoco.zip"
+    source2.dump()
+
+    def forbidden_decode(*args, **kwargs):
+        raise AssertionError("role-only refresh must reuse warm raster pixels")
+
+    monkeypatch.setattr(tile_mod, "_read_image_rgb", forbidden_decode)
+    second = _tile_run(source2.fpath, tmp_path / "role-tiles2.kwcoco.zip", **common)
+    second_by_extent = {
+        tuple(img["tile_scaled_extent_xyxy"]): img
+        for img in second.images().objs
+    }
+    assert second_by_extent[(0, 0, 64, 64)]["tile_role"] == "negative"
+    assert second_by_extent[(64, 0, 128, 64)]["tile_role"] == "positive"
+    for extent, before in first_by_extent.items():
+        after = second_by_extent[extent]
+        assert before["tile_id"] != after["tile_id"]
+        assert before["tile_raster_id"] == after["tile_raster_id"]
+        assert before["file_name"] == after["file_name"]
+    stats = second.dataset["info"][0]["tile_cache_stats"]
+    assert stats["hits"] == 2
+    assert stats["misses"] == 0
+    assert stats["encoded"] == 0
+    assert stats["source_decodes"] == 0
+
+
+def test_changed_source_bytes_invalidate_raster_cache(tmp_path):
+    import kwimage
+
+    asset = tmp_path / "source.png"
+    kwimage.imwrite(asset, np.zeros((64, 64, 3), dtype=np.uint8))
+    source = kwcoco.CocoDataset()
+    source.fpath = tmp_path / "truth.kwcoco.zip"
+    cid = source.add_category(name="widget")
+    gid = source.add_image(file_name=str(asset), width=64, height=64)
+    source.add_annotation(
+        image_id=gid, category_id=cid, bbox=[8, 8, 16, 16], area=256,
+    )
+    source.dump()
+
+    common = {
+        "mode": "multiscale", "category_names": "widget", "progress": False,
+        "tile_size": 64, "source_scales": "1.0", "stride_frac": 1.0,
+        "min_gt_area_frac": 0.0001, "min_source_scale_long_side": 1,
+        "keep_negative": False, "cache_dpath": str(tmp_path / "cache"),
+    }
+    first = _tile_run(source.fpath, tmp_path / "tiles1.kwcoco.zip", **common)
+    first_img = first.images().objs[0]
+
+    kwimage.imwrite(asset, np.full((64, 64, 3), 255, dtype=np.uint8))
+    second = _tile_run(source.fpath, tmp_path / "tiles2.kwcoco.zip", **common)
+    second_img = second.images().objs[0]
+    stats = second.dataset["info"][0]["tile_cache_stats"]
+    assert first_img["tile_raster_id"] != second_img["tile_raster_id"]
+    assert first_img["tile_materialization_id"] != second_img["tile_materialization_id"]
+    assert stats["hits"] == 0
+    assert stats["misses"] == 1
+    assert stats["encoded"] == 1
+
+
 # ---------------------------------------------------------------------------
 # Category filter — only the target category gets emitted
 # ---------------------------------------------------------------------------

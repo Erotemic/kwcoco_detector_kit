@@ -201,6 +201,15 @@ def candidate_source_scale_key(item):
     return item["tile_source_gid"], scale
 
 
+def candidate_sampling_identity(item):
+    """Stable identity for deterministic selection among currently legal rows.
+
+    Candidate legality remains truth-dependent, but an unchanged legal raster
+    should keep its seeded sampling priority across annotation-only rebuilds.
+    """
+    return item.get("tile_raster_id") or item.get("raster_identity") or item["tile_id"]
+
+
 def selected_candidate_record_factory(index_or_path, max_candidates, seed=0,
                                       strategy="stratified_by_image"):
     """Build a repeatable bounded candidate selection.
@@ -230,15 +239,16 @@ def selected_candidate_record_factory(index_or_path, max_candidates, seed=0,
     elif strategy == "random":
         heap = []
         for row in iter_candidate_records(index):
+            sample_id = candidate_sampling_identity(row)
             priority = int(hashlib.sha256(
-                f"{int(seed)}:{row['tile_id']}".encode()
+                f"{int(seed)}:{sample_id}".encode()
             ).hexdigest(), 16)
-            item = (-priority, row["tile_id"], row)
+            item = (-priority, sample_id, row["tile_id"], row)
             if len(heap) < max_candidates:
                 heapq.heappush(heap, item)
             elif item > heap[0]:
                 heapq.heapreplace(heap, item)
-        selected = [item[2] for item in heap]
+        selected = [item[3] for item in heap]
     elif strategy == "stratified_by_image":
         group_counts = {}
         for row in iter_candidate_records(index):
@@ -271,16 +281,17 @@ def selected_candidate_record_factory(index_or_path, max_candidates, seed=0,
             if not quota:
                 continue
             heap = group_heaps.setdefault(key, [])
+            sample_id = candidate_sampling_identity(row)
             priority = int(hashlib.sha256(
-                f"{int(seed)}:{row['tile_id']}".encode()
+                f"{int(seed)}:{sample_id}".encode()
             ).hexdigest(), 16)
-            item = (-priority, row["tile_id"], row)
+            item = (-priority, sample_id, row["tile_id"], row)
             if len(heap) < quota:
                 heapq.heappush(heap, item)
             elif item > heap[0]:
                 heapq.heapreplace(heap, item)
         selected = [
-            item[2]
+            item[3]
             for heap in group_heaps.values()
             for item in heap
         ]
@@ -303,7 +314,7 @@ def enumerate_candidates(config):
         _clip_annotation_geometry, _grid_positions, _parse_scales,
     )
     from kwcoco_detector_kit.data.tile_cache import (
-        canonical_digest, make_tile_identity, sha256_file,
+        canonical_digest, make_raster_identity, make_tile_identity, sha256_file,
     )
     from kwcoco_detector_kit.data.truth_semantics import (
         TruthSemantics, annotation_has_geometry,
@@ -344,6 +355,7 @@ def enumerate_candidates(config):
         "source_dataset_fingerprint": source_fingerprint,
         "policy": policy, "policy_fingerprint": policy_fingerprint,
         "tile_identity_schema_version": 2,
+        "raster_identity_schema_version": 1,
     }
     writer = _CandidateIndexWriter(dst, base_manifest, config.rows_per_shard)
 
@@ -426,9 +438,18 @@ def enumerate_candidates(config):
                         actual_scale=scale_xy,
                         scaled_extent_xyxy=crop,
                     )
+                    raster = make_raster_identity(
+                        source_asset_digest=source_digest,
+                        extent_xyxy=source_extent,
+                        actual_scale=scale_xy,
+                        scaled_extent_xyxy=crop,
+                        realization="resize_source_then_crop",
+                    )
                     record = {
                         **tile,
                         "tile_identity": tile["tile_id"],
+                        "tile_raster_id": raster["raster_id"],
+                        "raster_identity": raster["raster_id"],
                         "tile_source_gid": gid,
                         "tile_scale_name": scale_name,
                         "tile_scale_factor": float(requested_scale),
@@ -531,18 +552,54 @@ def realize_candidate_arrays(index, records):
     return result
 
 
+def _candidate_materialization(row, jpeg_quality):
+    """Build the truth-independent raster/materialization identity for a row."""
+    from kwcoco_detector_kit.data.tile import _TILE_WRITER_VERSION
+    from kwcoco_detector_kit.data.tile_cache import (
+        make_materialization_identity,
+        make_raster_identity,
+    )
+
+    raster_id = row.get("tile_raster_id") or row.get("raster_identity")
+    if raster_id is None:
+        raster = make_raster_identity(
+            source_asset_digest=row["source_asset_digest"],
+            extent_xyxy=row["source_extent_xyxy"],
+            actual_scale=row["actual_scale_xy"],
+            scaled_extent_xyxy=row.get("scaled_extent_xyxy"),
+            channels=row.get("channels", "r|g|b"),
+            realization="resize_source_then_crop",
+        )
+        raster_id = raster["raster_id"]
+    material = make_materialization_identity(
+        raster_id=raster_id,
+        output_width=row["output_width"],
+        output_height=row["output_height"],
+        interpolation="area",
+        padding=row["padding"],
+        orientation="normalized",
+        color_space="rgb",
+        codec="jpg",
+        quality=jpeg_quality,
+        writer_version=_TILE_WRITER_VERSION,
+    )
+    return str(raster_id), material
+
+
 def materialize_candidates(index_path, records, *, cache_dpath, jpeg_quality=90,
                            batch_size=16):
-    """Stream selected candidates into the existing cache with bounded crops."""
+    """Materialize selected candidates, realizing pixels only for cache misses.
+
+    Candidate legality and ``tile_id`` remain tied to the current truth.  The
+    cache lookup instead uses ``tile_raster_id``, so a rebuilt candidate index
+    can reuse an unchanged crop even when the source KWCoco fingerprint changed.
+    """
     import cv2
     import itertools
     import kwcoco
     import numpy as np
 
-    from kwcoco_detector_kit.data.tile_cache import (
-        TileMaterializationCache, make_materialization_identity,
-    )
-    from kwcoco_detector_kit.data.tile import _TILE_WRITER_VERSION
+    from kwcoco_detector_kit.data.tile_cache import TileMaterializationCache
 
     index = load_candidate_index(index_path) if not isinstance(index_path, dict) else index_path
     records = iter(records)
@@ -557,34 +614,96 @@ def materialize_candidates(index_path, records, *, cache_dpath, jpeg_quality=90,
                 row for row in iter_candidate_records(index)
                 if row["tile_id"] in wanted
             )
+
     cache = TileMaterializationCache(cache_dpath)
     out = kwcoco.CocoDataset()
     out.add_category(name="background_candidate")
-    for rows, arrays, error in iter_realized_candidate_batches(
-        index, records, batch_size=batch_size,
-    ):
-        if error is not None:
-            raise error
-        for row, array in zip(rows, arrays):
-            arr = np.ascontiguousarray(array)
-            material = make_materialization_identity(
-                tile_id=row["tile_id"], output_width=row["output_width"],
-                output_height=row["output_height"], interpolation="area",
-                padding=row["padding"], orientation="normalized",
-                color_space="rgb", codec="jpg", quality=jpeg_quality,
-                writer_version=_TILE_WRITER_VERSION,
-            )
-            ok, encoded = cv2.imencode(
-                ".jpg", arr[..., ::-1], [cv2.IMWRITE_JPEG_QUALITY, int(jpeg_quality)]
-            )
-            if not ok:
-                raise IOError(f"failed to encode candidate {row['tile_id']}")
-            path, _ = cache.publish_bytes(material, encoded.tobytes(), suffix="jpg")
-            out.add_image(
-                file_name=str(path), width=row["output_width"], height=row["output_height"],
-                tile_materialization_id=material["materialization_id"],
-                materialization_identity=material["materialization_id"], **row,
-            )
+    stats = {
+        "hits": 0,
+        "misses": 0,
+        "encoded": 0,
+        "published": 0,
+        "source_scale_realizations": 0,
+    }
+
+    def add_output(row, raster_id, material, path):
+        image_data = dict(row)
+        image_data.setdefault("tile_raster_id", raster_id)
+        image_data.setdefault("raster_identity", raster_id)
+        image_data.update({
+            "file_name": str(path),
+            "width": row["output_width"],
+            "height": row["output_height"],
+            "tile_materialization_id": material["materialization_id"],
+            "materialization_identity": material["materialization_id"],
+        })
+        out.add_image(**image_data)
+
+    # Selection factories intentionally return source/scale-locality order.
+    # A locality group is bounded by the windows for one image at one scale,
+    # so retaining one group lets us probe all cache entries before deciding
+    # whether the source/scale must be decoded at all.
+    for _locality, group in groupby(records, key=_candidate_locality_key):
+        group_rows = list(group)
+        resolved = {}
+        missing_rows = []
+        planned = {}
+        for idx, row in enumerate(group_rows):
+            raster_id, material = _candidate_materialization(row, jpeg_quality)
+            planned[idx] = (raster_id, material)
+            path = cache.lookup(material, suffix="jpg")
+            if path is None:
+                stats["misses"] += 1
+                missing_rows.append(row)
+            else:
+                stats["hits"] += 1
+                resolved[row["tile_id"]] = (raster_id, material, path)
+
+        if missing_rows:
+            def realization_hook(_gid, _scale_xy):
+                stats["source_scale_realizations"] += 1
+
+            for rows, arrays, error in iter_realized_candidate_batches(
+                index,
+                iter(missing_rows),
+                batch_size=batch_size,
+                realization_hook=realization_hook,
+            ):
+                if error is not None:
+                    raise error
+                for row, array in zip(rows, arrays):
+                    raster_id, material = _candidate_materialization(row, jpeg_quality)
+                    arr = np.ascontiguousarray(array)
+                    ok, encoded = cv2.imencode(
+                        ".jpg",
+                        arr[..., ::-1],
+                        [cv2.IMWRITE_JPEG_QUALITY, int(jpeg_quality)],
+                    )
+                    if not ok:
+                        raise IOError(f"failed to encode candidate {row['tile_id']}")
+                    stats["encoded"] += 1
+                    path, created = cache.publish_bytes(
+                        material, encoded.tobytes(), suffix="jpg",
+                    )
+                    if created:
+                        stats["published"] += 1
+                    resolved[row["tile_id"]] = (raster_id, material, path)
+
+        for idx, row in enumerate(group_rows):
+            raster_id, material, path = resolved[row["tile_id"]]
+            expected_raster_id, expected_material = planned[idx]
+            if raster_id != expected_raster_id or material != expected_material:
+                raise AssertionError("candidate materialization plan changed during realization")
+            add_output(row, raster_id, material, path)
+
+    out.dataset.setdefault("info", []).append({
+        "name": "kwcoco_detector_kit.data.candidates.materialize",
+        "source_dataset_fingerprint": index.get("source_dataset_fingerprint"),
+        "candidate_content_digest": index.get("candidate_content_digest"),
+        "cache_dpath": str(Path(cache_dpath).expanduser().resolve()),
+        "jpeg_quality": int(jpeg_quality),
+        "cache_stats": stats,
+    })
     return out
 
 

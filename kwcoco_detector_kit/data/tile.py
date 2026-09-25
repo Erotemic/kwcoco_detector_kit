@@ -47,6 +47,11 @@ Multi-scale tiles additionally carry::
   ``tile_scale_name``              e.g. "s10", "s07", "s04", "s02"
   ``tile_scale_factor``            float, e.g. 1.0, 0.66, 0.40, 0.25
   ``tile_actual_scale_xy``         [sx, sy] — realized resize after integer rounding
+  ``tile_scaled_extent_xyxy``      crop extent in the realized scaled source
+
+When ``cache_dpath`` is enabled, emitted images also carry a truth-dependent
+``tile_id`` and a truth-independent ``tile_raster_id``. The latter addresses
+immutable pixels and is what encoded cache materializations are keyed from.
 
 Quadrant tiles additionally carry::
 
@@ -309,6 +314,14 @@ class _TileWriter:
             else self.source_manifest_sha256
         )
         self._source_digests = {}
+        self._cache_stats = {
+            "hits": 0,
+            "misses": 0,
+            "encoded": 0,
+            "published": 0,
+            "source_hashes": 0,
+            "source_decodes": 0,
+        }
         cache_dpath = getattr(config, "cache_dpath", None)
         if cache_dpath:
             from kwcoco_detector_kit.data.tile_cache import TileMaterializationCache
@@ -325,23 +338,29 @@ class _TileWriter:
         if digest is None:
             digest = sha256_file(source_fpath)
             self._source_digests[source_fpath] = digest
+            self._cache_stats["source_hashes"] += 1
         return source_fpath, digest
 
-    def write(self, image, *, coco_img, stem, extent_xyxy, scale,
-              requested_scale=None, scaled_extent_xyxy=None,
-              interpolation="area", padding="none"):
-        """Materialize one image and return ``(file_name, identity_metadata)``."""
-        import numpy as np
-
-        ext = str(self.config.output_ext)
+    def prepare(
+        self,
+        *,
+        coco_img,
+        extent_xyxy,
+        scale,
+        output_width,
+        output_height,
+        requested_scale=None,
+        scaled_extent_xyxy=None,
+        interpolation="area",
+        padding="none",
+        realization="resize_source_then_crop",
+    ):
+        """Build control/raster/materialization identities without pixels."""
         if self.cache is None:
-            asset_fpath = self.asset_dpath / (stem + ext)
-            _imwrite(asset_fpath, image, ext, int(self.config.jpeg_quality))
-            return str(asset_fpath.relative_to(self.dst_fpath.parent)), {}
-
-        import cv2
+            raise RuntimeError("prepare() is only meaningful with cache_dpath")
         from kwcoco_detector_kit.data.tile_cache import (
             make_materialization_identity,
+            make_raster_identity,
             make_tile_identity,
         )
 
@@ -356,16 +375,116 @@ class _TileWriter:
             actual_scale=scale,
             scaled_extent_xyxy=scaled_extent_xyxy,
         )
-        h, w = image.shape[:2]
+        raster = make_raster_identity(
+            source_asset_digest=source_digest,
+            extent_xyxy=extent_xyxy,
+            actual_scale=scale,
+            scaled_extent_xyxy=scaled_extent_xyxy,
+            realization=realization,
+        )
+        ext = str(self.config.output_ext)
         codec = ext.lower().lstrip(".")
         codec = "jpg" if codec == "jpeg" else codec
         material = make_materialization_identity(
-            tile_id=tile["tile_id"], output_width=w, output_height=h,
-            interpolation=interpolation, padding=padding,
-            orientation="normalized", color_space="rgb", codec=codec,
+            raster_id=raster["raster_id"],
+            output_width=output_width,
+            output_height=output_height,
+            interpolation=interpolation,
+            padding=padding,
+            orientation="normalized",
+            color_space="rgb",
+            codec=codec,
             quality=int(self.config.jpeg_quality) if codec == "jpg" else None,
             writer_version=_TILE_WRITER_VERSION,
         )
+        return {
+            "tile": tile,
+            "raster": raster,
+            "materialization": material,
+            "source_digest": source_digest,
+            "codec": codec,
+        }
+
+    def lookup(self, plan):
+        """Return a validated cache path for ``plan`` without realizing pixels."""
+        if self.cache is None:
+            return None
+        path = self.cache.lookup(
+            plan["materialization"], suffix=plan["codec"],
+        )
+        if path is None:
+            self._cache_stats["misses"] += 1
+        else:
+            self._cache_stats["hits"] += 1
+        return path
+
+    @staticmethod
+    def _identity_meta(plan):
+        tile = plan["tile"]
+        raster = plan["raster"]
+        material = plan["materialization"]
+        return {
+            "tile_id": tile["tile_id"],
+            "tile_identity": tile["tile_id"],
+            "tile_raster_id": raster["raster_id"],
+            "raster_identity": raster["raster_id"],
+            "tile_materialization_id": material["materialization_id"],
+            "materialization_identity": material["materialization_id"],
+            "tile_source_asset_sha256": plan["source_digest"],
+        }
+
+    def cached_result(self, plan, cache_fpath):
+        """Return manifest fields for an already validated cache hit."""
+        return str(cache_fpath), self._identity_meta(plan)
+
+    def write(
+        self,
+        image,
+        *,
+        coco_img,
+        stem,
+        extent_xyxy,
+        scale,
+        requested_scale=None,
+        scaled_extent_xyxy=None,
+        interpolation="area",
+        padding="none",
+        realization="resize_source_then_crop",
+        plan=None,
+        cache_checked=False,
+    ):
+        """Materialize one image and return ``(file_name, identity_metadata)``."""
+        import numpy as np
+
+        ext = str(self.config.output_ext)
+        if self.cache is None:
+            asset_fpath = self.asset_dpath / (stem + ext)
+            _imwrite(asset_fpath, image, ext, int(self.config.jpeg_quality))
+            return str(asset_fpath.relative_to(self.dst_fpath.parent)), {}
+
+        import cv2
+
+        h, w = image.shape[:2]
+        if plan is None:
+            plan = self.prepare(
+                coco_img=coco_img,
+                extent_xyxy=extent_xyxy,
+                scale=scale,
+                output_width=w,
+                output_height=h,
+                requested_scale=requested_scale,
+                scaled_extent_xyxy=scaled_extent_xyxy,
+                interpolation=interpolation,
+                padding=padding,
+                realization=realization,
+            )
+        material = plan["materialization"]
+        codec = plan["codec"]
+        if not cache_checked:
+            cache_fpath = self.lookup(plan)
+            if cache_fpath is not None:
+                return self.cached_result(plan, cache_fpath)
+
         rgb = np.ascontiguousarray(image)
         encoded_input = rgb[..., ::-1] if rgb.ndim == 3 and rgb.shape[2] == 3 else rgb
         params = []
@@ -374,17 +493,21 @@ class _TileWriter:
         ok, encoded = cv2.imencode("." + codec, encoded_input, params)
         if not ok:
             raise IOError(f"failed to encode cached tile {stem!r} as {codec}")
-        cache_fpath, _created = self.cache.publish_bytes(
+        self._cache_stats["encoded"] += 1
+        cache_fpath, created = self.cache.publish_bytes(
             material, encoded.tobytes(), suffix=codec,
         )
-        identity_meta = {
-            "tile_id": tile["tile_id"],
-            "tile_identity": tile["tile_id"],
-            "tile_materialization_id": material["materialization_id"],
-            "materialization_identity": material["materialization_id"],
-            "tile_source_asset_sha256": source_digest,
-        }
-        return str(cache_fpath), identity_meta
+        if created:
+            self._cache_stats["published"] += 1
+        return self.cached_result(plan, cache_fpath)
+
+    def note_source_decode(self):
+        if self.cache is not None:
+            self._cache_stats["source_decodes"] += 1
+
+    def stamp_cache_stats(self, out):
+        if self.cache is not None:
+            out["info"][0]["tile_cache_stats"] = dict(self._cache_stats)
 
 
 def _clip_bbox_xywh(bbox, x0, y0, x1, y1, min_keep_fraction):
@@ -551,7 +674,7 @@ def _annotation_from_geometry(ann, geom, *, image_id, category_id, ann_id, src_d
 # in a way that downstream consumers can detect (e.g. new passthrough field,
 # new stamping logic). Mixed into the universal-tile cache fingerprint so
 # the launcher gets a fresh hash and rebuilds the bundle.
-_TILE_WRITER_VERSION = 3
+_TILE_WRITER_VERSION = 4
 
 
 def _normalize_image_rgb(arr):
@@ -624,6 +747,7 @@ def _run_full_only(config, src_dset, dst_fpath, asset_dpath, target_cat_names, s
     for coco_img in iterator:
         try:
             image = _read_image_rgb(coco_img)
+            writer.note_source_decode()
         except Exception as ex:
             print(f"  warn: failed to read {coco_img.img.get('file_name')}: {ex}")
             continue
@@ -644,6 +768,7 @@ def _run_full_only(config, src_dset, dst_fpath, asset_dpath, target_cat_names, s
         file_name, identity_meta = writer.write(
             resized, coco_img=coco_img, stem=stem,
             extent_xyxy=(0, 0, w, h), scale=scale,
+            realization="source_resize",
         )
         out["images"].append({
             "id": next_gid,
@@ -682,6 +807,7 @@ def _run_full_only(config, src_dset, dst_fpath, asset_dpath, target_cat_names, s
         out["images"][-1]["tile_num_kept_anns"] = kept_count
         next_gid += 1
 
+    writer.stamp_cache_stats(out)
     _dump_kwcoco(out, dst_fpath)
     n_imgs = len(out["images"])
     n_anns = len(out["annotations"])
@@ -710,6 +836,7 @@ def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_names, sr
     for coco_img in iterator:
         try:
             image = _read_image_rgb(coco_img)
+            writer.note_source_decode()
         except Exception as ex:
             print(f"  warn: failed to read {coco_img.img.get('file_name')}: {ex}")
             continue
@@ -732,6 +859,7 @@ def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_names, sr
             file_name, identity_meta = writer.write(
                 full_resized, coco_img=coco_img, stem=stem,
                 extent_xyxy=(0, 0, w, h), scale=scale,
+                realization="source_resize",
             )
             out["images"].append({
                 "id": next_gid,
@@ -798,6 +926,7 @@ def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_names, sr
             file_name, identity_meta = writer.write(
                 tile_resized, coco_img=coco_img, stem=stem,
                 extent_xyxy=(x0, y0, x1, y1), scale=scale,
+                realization="crop_source_then_resize",
             )
             out["images"].append({
                 "id": next_gid,
@@ -841,6 +970,7 @@ def _run_quadrant(config, src_dset, dst_fpath, asset_dpath, target_cat_names, sr
             out["images"][-1]["tile_num_kept_anns"] = kept
             next_gid += 1
 
+    writer.stamp_cache_stats(out)
     _dump_kwcoco(out, dst_fpath)
     n_imgs = len(out["images"])
     n_anns = len(out["annotations"])
@@ -878,13 +1008,47 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
     coco_imgs = list(src_dset.images().coco_images)
     iterator = ub.ProgIter(coco_imgs, desc="tile.multiscale", enabled=bool(config.progress))
     for coco_img in iterator:
-        try:
-            image_full = _read_image_rgb(coco_img)
-        except Exception as ex:
-            print(f"  warn: failed to read {coco_img.img.get('file_name')}: {ex}")
-            continue
-        H, W = image_full.shape[:2]
         gid = coco_img.img["id"]
+        # KWCoco dimensions are enough to enumerate window geometry.  With a
+        # cache enabled this lets us prove a hit from source bytes + geometry
+        # before decoding or resizing the source image.  If dimensions are
+        # absent, retain the historical fallback of reading the source once.
+        raw_h = coco_img.img.get("height")
+        raw_w = coco_img.img.get("width")
+        have_metadata_dims = (
+            raw_h is not None and raw_w is not None
+            and int(raw_h) > 0 and int(raw_w) > 0
+        )
+        image_full = None
+        try:
+            if writer.cache is None or not have_metadata_dims:
+                image_full = _read_image_rgb(coco_img)
+                writer.note_source_decode()
+                H, W = image_full.shape[:2]
+                if writer.cache is not None:
+                    writer._source_identity(coco_img)
+            else:
+                H, W = int(raw_h), int(raw_w)
+                # Hashing source bytes is still required for correctness, but
+                # a warm cache need not decode those bytes into pixels.
+                writer._source_identity(coco_img)
+        except Exception as ex:
+            print(f"  warn: failed to read/hash {coco_img.img.get('file_name')}: {ex}")
+            continue
+
+        def ensure_image_full():
+            nonlocal image_full
+            if image_full is None:
+                image_full = _read_image_rgb(coco_img)
+                writer.note_source_decode()
+                got_hw = image_full.shape[:2]
+                if got_hw != (H, W):
+                    raise ValueError(
+                        f"source image dimensions {got_hw} disagree with KWCoco "
+                        f"metadata {(H, W)} for gid={gid}"
+                    )
+            return image_full
+
         all_anns_src = list(src_dset.annots(gid=gid).objs)
         semantics, parts = _semantic_parts(config, src_dset, gid)
         anns_src = [
@@ -900,12 +1064,14 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
             continue
 
         for scale_name, scale_factor in scales:
-            scaled_long = max(int(round(W * scale_factor)), int(round(H * scale_factor)))
-            if scaled_long < min_long_side:
+            scaled_w = max(1, int(round(W * scale_factor)))
+            scaled_h = max(1, int(round(H * scale_factor)))
+            if max(scaled_w, scaled_h) < min_long_side:
                 continue
-            scaled_img, actual_scale_xy = _resize_image_to_scale(image_full, scale_factor)
+            actual_scale_xy = (scaled_w / float(W), scaled_h / float(H))
             actual_scale = tuple(actual_scale_xy)
-            sH, sW = scaled_img.shape[:2]
+            sW, sH = scaled_w, scaled_h
+            scaled_img = None
 
             xs = _grid_positions(sW, disk_tile_size, stride)
             ys = _grid_positions(sH, disk_tile_size, stride)
@@ -914,14 +1080,9 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
                 for y0 in ys:
                     x1 = min(x0 + disk_tile_size, sW)
                     y1 = min(y0 + disk_tile_size, sH)
-                    crop = scaled_img[y0:y1, x0:x1]
                     was_padded = (
-                        crop.shape[0] < disk_tile_size or crop.shape[1] < disk_tile_size
+                        y1 - y0 < disk_tile_size or x1 - x0 < disk_tile_size
                     )
-                    if crop.shape[0] < disk_tile_size or crop.shape[1] < disk_tile_size:
-                        pad = np.zeros((disk_tile_size, disk_tile_size, 3), dtype=crop.dtype)
-                        pad[:crop.shape[0], :crop.shape[1]] = crop
-                        crop = pad
 
                     kept_anns = []
                     total_kept_area = 0.0
@@ -1018,18 +1179,59 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
                         [[x0, y0, x0 + disk_tile_size, y0 + disk_tile_size]], "ltrb"
                     ).warp(source_from_scaled).to_ltrb().data[0]
                     src_x0, src_y0, src_x1, src_y1 = map(lambda v: int(round(v)), source_box)
+                    padding = "zero_bottom_right" if was_padded else "none"
 
                     stem = (f"gid{gid:08d}_{scale_name}"
                             f"_x{x0:05d}_y{y0:05d}_{role}")
-                    file_name, identity_meta = writer.write(
-                        crop, coco_img=coco_img, stem=stem,
-                        extent_xyxy=(src_x0, src_y0, src_x1, src_y1),
-                        scale=actual_scale,
-                        requested_scale=scale_factor,
-                        scaled_extent_xyxy=(x0, y0, x0 + disk_tile_size, y0 + disk_tile_size),
-                        interpolation="area",
-                        padding="zero_bottom_right" if was_padded else "none",
-                    )
+                    plan = None
+                    cache_fpath = None
+                    if writer.cache is not None:
+                        plan = writer.prepare(
+                            coco_img=coco_img,
+                            extent_xyxy=(src_x0, src_y0, src_x1, src_y1),
+                            scale=actual_scale,
+                            requested_scale=scale_factor,
+                            scaled_extent_xyxy=(
+                                x0, y0, x0 + disk_tile_size, y0 + disk_tile_size,
+                            ),
+                            output_width=disk_tile_size,
+                            output_height=disk_tile_size,
+                            interpolation="area",
+                            padding=padding,
+                            realization="resize_source_then_crop",
+                        )
+                        cache_fpath = writer.lookup(plan)
+
+                    if cache_fpath is not None:
+                        file_name, identity_meta = writer.cached_result(plan, cache_fpath)
+                    else:
+                        if scaled_img is None:
+                            scaled_img = _resize_image_to_dsize(
+                                ensure_image_full(), (scaled_w, scaled_h)
+                            )
+                        crop = scaled_img[y0:y1, x0:x1]
+                        if was_padded:
+                            pad = np.zeros(
+                                (disk_tile_size, disk_tile_size, 3), dtype=crop.dtype
+                            )
+                            pad[:crop.shape[0], :crop.shape[1]] = crop
+                            crop = pad
+                        file_name, identity_meta = writer.write(
+                            crop,
+                            coco_img=coco_img,
+                            stem=stem,
+                            extent_xyxy=(src_x0, src_y0, src_x1, src_y1),
+                            scale=actual_scale,
+                            requested_scale=scale_factor,
+                            scaled_extent_xyxy=(
+                                x0, y0, x0 + disk_tile_size, y0 + disk_tile_size,
+                            ),
+                            interpolation="area",
+                            padding=padding,
+                            realization="resize_source_then_crop",
+                            plan=plan,
+                            cache_checked=plan is not None,
+                        )
 
                     out["images"].append({
                         "id": next_gid,
@@ -1042,6 +1244,10 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
                         "tile_scale_factor": float(scale_factor),
                         "tile_actual_scale_xy": [float(v) for v in actual_scale_xy],
                         "tile_extent_xyxy_in_source": [src_x0, src_y0, src_x1, src_y1],
+                        "tile_scaled_extent_xyxy": [
+                            int(x0), int(y0),
+                            int(x0 + disk_tile_size), int(y0 + disk_tile_size),
+                        ],
                         "tile_role": role,
                         "tile_num_kept_anns": len(kept_anns),
                         "tile_num_intersecting_anns": int(num_intersecting),
@@ -1077,6 +1283,7 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
         "ignore": n_ignored,
         "dropped_negative": n_neg_dropped,
     }
+    writer.stamp_cache_stats(out)
     _dump_kwcoco(out, dst_fpath)
     print(
         f"tile.multiscale: wrote {len(out['images'])} tiles "
@@ -1085,6 +1292,13 @@ def _run_multiscale(config, src_dset, dst_fpath, asset_dpath, target_cat_names, 
     )
     print(f"  annotations: {len(out['annotations'])}")
     print(f"  scales: " + ", ".join(f"{n}={s}" for n, s in scales))
+    if writer.cache is not None:
+        stats = out["info"][0]["tile_cache_stats"]
+        print(
+            "  cache: "
+            f"hits={stats['hits']} misses={stats['misses']} "
+            f"encoded={stats['encoded']} source_decodes={stats['source_decodes']}"
+        )
     print(f"  -> {dst_fpath}")
 
 

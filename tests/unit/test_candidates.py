@@ -72,6 +72,79 @@ def test_virtual_candidates_match_eager_pixels_and_identity(tmp_path):
     assert np.array_equal(kwimage.imread(got["file_name"]), kwimage.imread(expected["file_name"]))
 
 
+
+def test_virtual_candidate_cache_reuses_raster_after_truth_change(tmp_path, monkeypatch):
+    from kwcoco_detector_kit.data import candidates
+
+    src1 = _odd_source(tmp_path)
+    dset1 = kwcoco.CocoDataset.coerce(src1)
+    index1_path = tmp_path / "index1"
+    common = {
+        "category_names": "widget", "tile_size": 24,
+        "source_scales": "1.0", "stride_frac": 1.0,
+        "negative_safety_margin": 0, "min_gt_area_frac": 0.0001,
+        "min_source_scale_long_side": 1,
+    }
+    candidates.enumerate_candidates(candidates.CandidateConfig.cli(argv=False, data={
+        "src": str(src1), "dst": str(index1_path), **common,
+    }))
+    index1 = candidates.load_candidate_index(index1_path)
+    rows1 = list(candidates.iter_candidate_records(index1))
+    by_raster1 = {row["tile_raster_id"]: row for row in rows1}
+    assert by_raster1
+
+    dset2 = dset1.copy()
+    ann = next(iter(dset2.anns.values()))
+    polygon2 = kwimage.Polygon(
+        exterior=np.array([[14, 14], [22, 14], [22, 22], [14, 22]])
+    )
+    ann["segmentation"] = polygon2.to_coco(style="new")
+    ann["bbox"] = [14, 14, 8, 8]
+    ann["area"] = 64
+    src2 = tmp_path / "source_truth2.kwcoco.zip"
+    dset2.fpath = src2
+    dset2.dump()
+    index2_path = tmp_path / "index2"
+    candidates.enumerate_candidates(candidates.CandidateConfig.cli(argv=False, data={
+        "src": str(src2), "dst": str(index2_path), **common,
+    }))
+    index2 = candidates.load_candidate_index(index2_path)
+    rows2 = list(candidates.iter_candidate_records(index2))
+    by_raster2 = {row["tile_raster_id"]: row for row in rows2}
+    common_rasters = sorted(set(by_raster1) & set(by_raster2))
+    assert common_rasters
+    raster_id = common_rasters[0]
+    row1 = by_raster1[raster_id]
+    row2 = by_raster2[raster_id]
+    assert row1["tile_id"] != row2["tile_id"]
+
+    cache = tmp_path / "cache"
+    first = candidates.materialize_candidates(
+        index1, [row1], cache_dpath=cache, jpeg_quality=90,
+    )
+    first_img = first.images().objs[0]
+
+    def forbidden_realization(*args, **kwargs):
+        raise AssertionError("warm raster cache hit must not realize source pixels")
+
+    monkeypatch.setattr(candidates, "_realize_scaled_source", forbidden_realization)
+    second = candidates.materialize_candidates(
+        index2, [row2], cache_dpath=cache, jpeg_quality=90,
+    )
+    second_img = second.images().objs[0]
+    stats = second.dataset["info"][-1]["cache_stats"]
+    assert first_img["tile_raster_id"] == second_img["tile_raster_id"]
+    assert first_img["tile_materialization_id"] == second_img["tile_materialization_id"]
+    assert first_img["file_name"] == second_img["file_name"]
+    assert stats == {
+        "hits": 1,
+        "misses": 0,
+        "encoded": 0,
+        "published": 0,
+        "source_scale_realizations": 0,
+    }
+
+
 def test_stratification_ignores_opaque_filenames_and_covers_scales():
     from kwcoco_detector_kit.data.mine import stratified_candidate_ids
 
@@ -265,6 +338,47 @@ def test_materialization_streams_bounded_crop_batches(tmp_path, monkeypatch):
     assert max(observed_batch_sizes) <= 4
     assert len(observed_batch_sizes) > 4
     assert all(Path(img["file_name"]).is_file() for img in out.images().objs)
+
+
+def test_candidate_selection_is_stable_across_truth_only_rekey(tmp_path):
+    from kwcoco_detector_kit.data.candidates import (
+        _CandidateIndexWriter, load_candidate_index,
+        selected_candidate_record_factory,
+    )
+
+    def build(root, truth_prefix):
+        writer = _CandidateIndexWriter(root, {
+            "source_kwcoco": f"{truth_prefix}.kwcoco.zip",
+            "source_dataset_fingerprint": truth_prefix,
+            "policy": {},
+            "policy_fingerprint": "policy",
+        }, rows_per_shard=3)
+        for idx in range(12):
+            writer.write({
+                "tile_id": f"{truth_prefix}-{idx:02d}",
+                "tile_raster_id": f"raster-{idx:02d}",
+                "tile_source_gid": 1 + (idx // 6),
+                "tile_scale_name": "s10" if idx % 2 == 0 else "s05",
+                "tile_actual_scale_xy": [1.0, 1.0],
+                "tile_scaled_extent_xyxy": [idx, 0, idx + 1, 1],
+            })
+        return load_candidate_index(root)
+
+    first = build(tmp_path / "truth1", "truth1")
+    second = build(tmp_path / "truth2", "truth2")
+    for strategy in ["random", "stratified_by_image"]:
+        selected1 = list(selected_candidate_record_factory(
+            first, 6, seed=17, strategy=strategy,
+        )())
+        selected2 = list(selected_candidate_record_factory(
+            second, 6, seed=17, strategy=strategy,
+        )())
+        assert {row["tile_raster_id"] for row in selected1} == {
+            row["tile_raster_id"] for row in selected2
+        }
+        assert {row["tile_id"] for row in selected1} != {
+            row["tile_id"] for row in selected2
+        }
 
 
 def test_public_candidate_selection_is_bounded_deterministic_and_stratified(tmp_path):

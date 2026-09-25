@@ -9,25 +9,41 @@ import numpy as np
 import pytest
 
 
-def _identities(source_digest="a" * 64, quality=91):
+def _identities(
+    source_digest="a" * 64,
+    quality=91,
+    dataset_fingerprint="dataset-v1",
+    extent_xyxy=(10, 20, 74, 84),
+    actual_scale=1.0,
+    channels="r|g|b",
+):
     from kwcoco_detector_kit.data.tile_cache import (
         make_materialization_identity,
+        make_raster_identity,
         make_tile_identity,
     )
     tile = make_tile_identity(
-        dataset_fingerprint="dataset-v1",
+        dataset_fingerprint=dataset_fingerprint,
         source_asset_digest=source_digest,
         source_image_id=7,
         source_asset_name="images/example.jpg",
-        extent_xyxy=[10, 20, 74, 84],
-        scale=1.0,
+        extent_xyxy=extent_xyxy,
+        scale=actual_scale,
+        channels=channels,
+    )
+    raster = make_raster_identity(
+        source_asset_digest=source_digest,
+        extent_xyxy=extent_xyxy,
+        actual_scale=actual_scale,
+        channels=channels,
+        realization="resize_source_then_crop",
     )
     material = make_materialization_identity(
-        tile_id=tile["tile_id"], output_width=64, output_height=64,
+        raster_id=raster["raster_id"], output_width=64, output_height=64,
         interpolation="area", padding="none", orientation="normalized",
-        color_space="rgb", codec="jpg", quality=quality, writer_version=3,
+        color_space="rgb", codec="jpg", quality=quality, writer_version=4,
     )
-    return tile, material
+    return tile, raster, material
 
 
 def _jpeg_bytes():
@@ -37,19 +53,41 @@ def _jpeg_bytes():
     return encoded.tobytes()
 
 
-def test_source_bytes_and_codec_settings_change_separate_identities():
-    tile1, mat1 = _identities(source_digest="a" * 64, quality=91)
-    tile2, mat2 = _identities(source_digest="b" * 64, quality=91)
-    tile3, mat3 = _identities(source_digest="a" * 64, quality=80)
+def test_truth_identity_is_separate_from_raster_and_materialization_identity():
+    tile1, raster1, mat1 = _identities(dataset_fingerprint="truth-v1")
+    tile2, raster2, mat2 = _identities(dataset_fingerprint="truth-v2")
     assert tile1["tile_id"] != tile2["tile_id"]
+    assert raster1["raster_id"] == raster2["raster_id"]
+    assert mat1["materialization_id"] == mat2["materialization_id"]
+
+
+def test_source_bytes_and_codec_settings_change_separate_identities():
+    tile1, raster1, mat1 = _identities(source_digest="a" * 64, quality=91)
+    tile2, raster2, mat2 = _identities(source_digest="b" * 64, quality=91)
+    tile3, raster3, mat3 = _identities(source_digest="a" * 64, quality=80)
+    assert tile1["tile_id"] != tile2["tile_id"]
+    assert raster1["raster_id"] != raster2["raster_id"]
     assert mat1["materialization_id"] != mat2["materialization_id"]
     assert tile1["tile_id"] == tile3["tile_id"]
+    assert raster1["raster_id"] == raster3["raster_id"]
     assert mat1["materialization_id"] != mat3["materialization_id"]
+
+
+def test_raster_geometry_scale_and_channels_invalidate_identity():
+    _, base, _ = _identities()
+    _, moved, _ = _identities(extent_xyxy=(11, 20, 75, 84))
+    _, scaled, _ = _identities(actual_scale=0.5)
+    _, channels, _ = _identities(channels="gray")
+    ids = {
+        base["raster_id"], moved["raster_id"], scaled["raster_id"],
+        channels["raster_id"],
+    }
+    assert len(ids) == 4
 
 
 def test_cache_publish_reuse_and_encoded_digest(tmp_path):
     from kwcoco_detector_kit.data.tile_cache import TileMaterializationCache, sha256_file
-    _, material = _identities()
+    _, _, material = _identities()
     cache = TileMaterializationCache(tmp_path)
     path1, created1 = cache.publish_bytes(material, _jpeg_bytes(), suffix="jpg")
     path2, created2 = cache.publish_bytes(material, _jpeg_bytes(), suffix="jpg")
@@ -58,22 +96,55 @@ def test_cache_publish_reuse_and_encoded_digest(tmp_path):
     assert path1 == path2
     sidecar = json.loads(path1.with_suffix(".jpg.json").read_text())
     assert sidecar["encoded_sha256"] == sha256_file(path1)
+    assert cache.lookup(material, suffix="jpg") == path1
+
+
+def test_cache_lookup_verifies_bytes_without_redecoding(tmp_path, monkeypatch):
+    from kwcoco_detector_kit.data.tile_cache import TileMaterializationCache
+
+    _, _, material = _identities()
+    cache = TileMaterializationCache(tmp_path)
+    path, _ = cache.publish_bytes(material, _jpeg_bytes(), suffix="jpg")
+
+    def forbidden_decode(*args, **kwargs):
+        raise AssertionError("warm lookup must not decode previously validated bytes")
+
+    monkeypatch.setattr(cv2, "imread", forbidden_decode)
+    assert cache.lookup(material, suffix="jpg") == path
+
+
+def test_cache_adopts_previously_validated_bytes_without_reencoding(tmp_path):
+    from kwcoco_detector_kit.data.tile_cache import TileMaterializationCache
+
+    _, _, material = _identities()
+    legacy = tmp_path / "legacy.jpg"
+    legacy.write_bytes(_jpeg_bytes())
+    import hashlib
+    digest = hashlib.sha256(legacy.read_bytes()).hexdigest()
+    cache = TileMaterializationCache(tmp_path / "cache")
+    path, created = cache.adopt_validated_file(
+        material, legacy, suffix="jpg", encoded_sha256=digest,
+    )
+    assert created is True
+    assert cache.lookup(material, suffix="jpg") == path
+    assert path.read_bytes() == legacy.read_bytes()
 
 
 def test_cache_detects_corruption(tmp_path):
     from kwcoco_detector_kit.data.tile_cache import CacheCorruptionError, TileMaterializationCache
-    _, material = _identities()
+    _, _, material = _identities()
     cache = TileMaterializationCache(tmp_path)
     path, _ = cache.publish_bytes(material, _jpeg_bytes(), suffix="jpg")
     path.write_bytes(b"broken")
     with pytest.raises(CacheCorruptionError, match="digest mismatch"):
         cache.validate(material, suffix="jpg")
+    assert cache.lookup(material, suffix="jpg") is None
 
 
 @pytest.mark.parametrize("missing", ["image", "sidecar"])
 def test_cache_repairs_partial_canonical_pair(tmp_path, missing):
     from kwcoco_detector_kit.data.tile_cache import TileMaterializationCache
-    _, material = _identities()
+    _, _, material = _identities()
     cache = TileMaterializationCache(tmp_path)
     path, _ = cache.publish_bytes(material, _jpeg_bytes(), suffix="jpg")
     sidecar = path.with_suffix(".jpg.json")
@@ -86,7 +157,7 @@ def test_cache_repairs_partial_canonical_pair(tmp_path, missing):
 
 def test_cache_quarantines_corruption_and_rebuilds(tmp_path):
     from kwcoco_detector_kit.data.tile_cache import TileMaterializationCache
-    _, material = _identities()
+    _, _, material = _identities()
     cache = TileMaterializationCache(tmp_path)
     path, _ = cache.publish_bytes(material, _jpeg_bytes(), suffix="jpg")
     path.write_bytes(b"broken")
@@ -98,7 +169,7 @@ def test_cache_quarantines_corruption_and_rebuilds(tmp_path):
 
 def test_unpublished_temp_file_does_not_poison_cache(tmp_path):
     from kwcoco_detector_kit.data.tile_cache import TileMaterializationCache
-    _, material = _identities()
+    _, _, material = _identities()
     cache = TileMaterializationCache(tmp_path)
     final, _ = cache.paths(material["materialization_id"], "jpg")
     final.parent.mkdir(parents=True)
@@ -111,7 +182,7 @@ def test_unpublished_temp_file_does_not_poison_cache(tmp_path):
 def test_concurrent_duplicate_publish_has_one_winner(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
     from kwcoco_detector_kit.data.tile_cache import TileMaterializationCache
-    _, material = _identities()
+    _, _, material = _identities()
     cache = TileMaterializationCache(tmp_path)
     payload = _jpeg_bytes()
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -125,7 +196,7 @@ def test_concurrent_duplicate_publish_has_one_winner(tmp_path):
 
 def test_killed_lock_holder_does_not_wedge_cache(tmp_path):
     from kwcoco_detector_kit.data.tile_cache import TileMaterializationCache
-    _, material = _identities()
+    _, _, material = _identities()
     cache = TileMaterializationCache(tmp_path, lock_timeout=2)
     image_path, _ = cache.paths(material["materialization_id"], "jpg")
     image_path.parent.mkdir(parents=True)
@@ -149,7 +220,7 @@ def test_killed_lock_holder_does_not_wedge_cache(tmp_path):
 
 def test_concurrent_subprocess_publish_converges(tmp_path):
     from pathlib import Path
-    _, material = _identities()
+    _, _, material = _identities()
     material_path = tmp_path / "material.json"
     payload_path = tmp_path / "payload.jpg"
     material_path.write_text(json.dumps(material))

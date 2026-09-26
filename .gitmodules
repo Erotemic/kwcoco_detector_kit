@@ -46,3 +46,6 @@
 	path = tpl/YOLO-v9
 	url = https://github.com/Erotemic/YOLO.git
 	branch = shitspotter
+[submodule "tpl/sam3"]
+	path = tpl/sam3
+	url = https://github.com/Erotemic/sam3.git

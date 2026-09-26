@@ -420,12 +420,18 @@ def test_candidate_enumeration_resumes_from_image_checkpoint(tmp_path, monkeypat
     from kwcoco_detector_kit.data import candidates
 
     image = np.zeros((48, 52, 3), dtype=np.uint8)
-    asset = tmp_path / "shared.png"
-    kwimage.imwrite(asset, image)
+    shared_asset = tmp_path / "shared.png"
+    kwimage.imwrite(shared_asset, image)
+    shared_bytes = shared_asset.read_bytes()
     dset = kwcoco.CocoDataset()
     dset.fpath = tmp_path / "multi.kwcoco.zip"
     dset.add_category(name="widget")
     for idx in range(6):
+        # KWCoco requires image file_name values to be unique.  Give each
+        # source record a distinct path while preserving identical bytes so
+        # the resume test still exercises repeated raster content.
+        asset = tmp_path / f"source-{idx}.png"
+        asset.write_bytes(shared_bytes)
         dset.add_image(
             file_name=str(asset), width=52, height=48, cohort=f"c{idx}",
         )

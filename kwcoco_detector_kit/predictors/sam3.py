@@ -60,11 +60,19 @@ def _ensure_sam3_importable() -> Path | None:
 
 
 def _coerce_numpy(value):
-    """Detach a torch-like value to NumPy without importing torch for tests."""
+    """Detach a torch-like value to NumPy without importing torch for tests.
+
+    PyTorch does not expose ``bfloat16`` tensors through ``Tensor.numpy()``.
+    SAM3 commonly returns BF16 scores/boxes while running under CUDA autocast,
+    so convert just that dtype to float32 before crossing the NumPy boundary.
+    Boolean masks and ordinary floating/integer tensors retain their dtype.
+    """
     if hasattr(value, "detach"):
         value = value.detach()
     if hasattr(value, "cpu"):
         value = value.cpu()
+    if str(getattr(value, "dtype", "")) == "torch.bfloat16":
+        value = value.float()
     if hasattr(value, "numpy"):
         value = value.numpy()
     return np.asarray(value)

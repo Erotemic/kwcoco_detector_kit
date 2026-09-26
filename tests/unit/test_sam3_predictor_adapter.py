@@ -46,3 +46,16 @@ def test_sam3_admission_review_defaults_preserve_uncertain_truth():
     assert 'default_non_target_policy = kwconf.Value(' in source
     assert '"background", choices=["background", "ignore", "error"]' in source
     assert '"true": str(src)' in source
+
+
+def test_coerce_numpy_accepts_torch_bfloat16():
+    import numpy as np
+    import pytest
+
+    torch = pytest.importorskip("torch")
+    from kwcoco_detector_kit.predictors.sam3 import _coerce_numpy
+
+    value = torch.tensor([0.25, 0.75], dtype=torch.bfloat16)
+    got = _coerce_numpy(value)
+    assert got.dtype == np.float32
+    np.testing.assert_allclose(got, [0.25, 0.75], rtol=0, atol=1e-3)

@@ -58,6 +58,7 @@ class MergeConfig(kwconf.Config):
 def run(config):
     import kwcoco
     import numpy as np
+    import ubelt as ub
 
     pos_fpath = Path(str(config.pos_kwcoco)).expanduser().resolve()
     neg_fpath = Path(str(config.neg_kwcoco)).expanduser().resolve()
@@ -94,7 +95,12 @@ def run(config):
     }
     neg_gid_set = set(neg_gids)
     bad_negatives = []
-    for img in neg_dset.images().objs:
+    for img in ub.ProgIter(
+        neg_dset.images().objs,
+        total=neg_dset.n_images,
+        desc="merge validate negatives",
+        verbose=3,
+    ):
         if img["id"] not in neg_gid_set:
             continue
         reasons = []
@@ -145,7 +151,12 @@ def run(config):
     # Same treatment for the negatives block below.
     pos_set = set(pos_gids)
     src_gid_to_new_gid: dict = {}
-    for img in pos_dset.images().objs:
+    for img in ub.ProgIter(
+        pos_dset.images().objs,
+        total=pos_dset.n_images,
+        desc="merge copy positives",
+        verbose=3,
+    ):
         if img["id"] not in pos_set:
             continue
         new_img = {k: v for k, v in img.items() if k != "id"}
@@ -157,7 +168,12 @@ def run(config):
         src_gid_to_new_gid[("pos", img["id"])] = new_gid
 
     pos_cats_by_id = {c["id"]: c for c in pos_dset.dataset.get("categories", [])}
-    for ann in pos_dset.dataset.get("annotations", []):
+    for ann in ub.ProgIter(
+        pos_dset.dataset.get("annotations", []),
+        total=pos_dset.n_annots,
+        desc="merge copy annotations",
+        verbose=3,
+    ):
         src_gid = ann.get("image_id")
         if src_gid not in pos_set:
             continue
@@ -183,7 +199,12 @@ def run(config):
 
     # negatives — images only, no annotations
     neg_set = set(neg_gids_picked)
-    for img in neg_dset.images().objs:
+    for img in ub.ProgIter(
+        neg_dset.images().objs,
+        total=neg_dset.n_images,
+        desc="merge copy negatives",
+        verbose=3,
+    ):
         if img["id"] not in neg_set:
             continue
         new_img = {k: v for k, v in img.items() if k != "id"}

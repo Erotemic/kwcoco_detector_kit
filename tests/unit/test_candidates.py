@@ -414,3 +414,78 @@ def test_public_candidate_selection_is_bounded_deterministic_and_stratified(tmp_
 
     all_factory = selected_candidate_record_factory(index, 0, seed=17)
     assert sum(1 for _ in all_factory()) == index["num_candidates"]
+
+
+def test_candidate_enumeration_resumes_from_image_checkpoint(tmp_path, monkeypatch):
+    from kwcoco_detector_kit.data import candidates
+
+    image = np.zeros((48, 52, 3), dtype=np.uint8)
+    asset = tmp_path / "shared.png"
+    kwimage.imwrite(asset, image)
+    dset = kwcoco.CocoDataset()
+    dset.fpath = tmp_path / "multi.kwcoco.zip"
+    dset.add_category(name="widget")
+    for idx in range(6):
+        dset.add_image(
+            file_name=str(asset), width=52, height=48, cohort=f"c{idx}",
+        )
+    dset.dump()
+
+    common = {
+        "src": str(dset.fpath),
+        "category_names": "widget",
+        "tile_size": 16,
+        "source_scales": "1.0,0.5",
+        "stride_frac": 1.0,
+        "min_source_scale_long_side": 1,
+        "rows_per_shard": 7,
+        "checkpoint_images": 2,
+        "progress": False,
+    }
+
+    interrupted = tmp_path / "interrupted"
+    original_atomic = candidates._atomic_json
+    tripped = {"value": False}
+
+    def interrupt_after_durable_receipt(data, path):
+        original_atomic(data, path)
+        if Path(path).name == ".candidate-build-resume.json" and not tripped["value"]:
+            tripped["value"] = True
+            raise RuntimeError("simulated process interruption")
+
+    monkeypatch.setattr(candidates, "_atomic_json", interrupt_after_durable_receipt)
+    with pytest.raises(RuntimeError, match="simulated process interruption"):
+        candidates.enumerate_candidates(candidates.CandidateConfig.cli(argv=False, data={
+            **common, "dst": str(interrupted),
+        }))
+    receipt = json.loads((interrupted / ".candidate-build-resume.json").read_text())
+    assert len(receipt["completed_image_ids"]) == 2
+
+    monkeypatch.setattr(candidates, "_atomic_json", original_atomic)
+    candidates.enumerate_candidates(candidates.CandidateConfig.cli(argv=False, data={
+        **common, "dst": str(interrupted),
+    }))
+    assert not (interrupted / ".candidate-build-resume.json").exists()
+
+    clean = tmp_path / "clean"
+    candidates.enumerate_candidates(candidates.CandidateConfig.cli(argv=False, data={
+        **common, "dst": str(clean), "resume": False,
+    }))
+    resumed_rows = list(candidates.iter_candidate_records(interrupted))
+    clean_rows = list(candidates.iter_candidate_records(clean))
+    assert resumed_rows == clean_rows
+    assert candidates.load_candidate_index(interrupted)["candidate_content_digest"] == \
+        candidates.load_candidate_index(clean)["candidate_content_digest"]
+
+    # A completed build is itself idempotent and should not touch its shards.
+    mtimes = {
+        path.name: path.stat().st_mtime_ns
+        for path in interrupted.glob("candidates-*.jsonl")
+    }
+    candidates.enumerate_candidates(candidates.CandidateConfig.cli(argv=False, data={
+        **common, "dst": str(interrupted),
+    }))
+    assert mtimes == {
+        path.name: path.stat().st_mtime_ns
+        for path in interrupted.glob("candidates-*.jsonl")
+    }

@@ -56,22 +56,31 @@ class CandidateConfig(kwconf.Config):
     source_dataset_fingerprint = kwconf.Value(None)
     context_fields = kwconf.Value("video_id,date_captured,sensor_coarse,cohort,context")
     rows_per_shard = kwconf.Value(10000)
+    progress = kwconf.Value(True, help="show source-image progress")
+    resume = kwconf.Value(True, help="resume an interrupted candidate build")
+    checkpoint_images = kwconf.Value(
+        10,
+        help="checkpoint resumable candidate state after this many completed images",
+    )
 
 
 class _CandidateIndexWriter:
     """Bounded-memory JSONL shard writer; manifest publication is the commit."""
 
-    def __init__(self, root, base_manifest, rows_per_shard):
+    def __init__(self, root, base_manifest, rows_per_shard, *, resume_state=None):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.base_manifest = base_manifest
         self.rows_per_shard = max(1, int(rows_per_shard))
-        self.shards = []
-        self.total = 0
+        self.shards = list((resume_state or {}).get("shards", []))
+        self.total = int((resume_state or {}).get("num_candidates", 0))
         self._file = None
         self._hasher = None
         self._count = 0
         self._tmp = None
+        self._final = None
+        if resume_state:
+            self._restore_active_shard(resume_state.get("active_shard"))
 
     def _open(self):
         index = len(self.shards)
@@ -82,6 +91,39 @@ class _CandidateIndexWriter:
         import hashlib
         self._hasher = hashlib.sha256()
         self._count = 0
+
+    def _restore_active_shard(self, active):
+        if not active:
+            return
+        import hashlib
+
+        final = self.root / active["final_name"]
+        tmp = self.root / active["tmp_name"]
+        committed_bytes = int(active["num_bytes"])
+        source = tmp if tmp.exists() else final
+        if not source.exists():
+            raise RuntimeError(f"candidate resume shard is missing: {source}")
+        if source == final:
+            restored_tmp = self.root / f".{final.name}.{os.getpid()}.resume.tmp"
+            os.replace(final, restored_tmp)
+            tmp = restored_tmp
+        with open(tmp, "r+b") as file:
+            file.truncate(committed_bytes)
+        hasher = hashlib.sha256()
+        count = 0
+        with open(tmp, "rb") as file:
+            for line in file:
+                hasher.update(line)
+                count += 1
+        if count != int(active["num_candidates"]):
+            raise RuntimeError("candidate resume shard row-count mismatch")
+        if hasher.hexdigest() != active["sha256"]:
+            raise RuntimeError("candidate resume shard digest mismatch")
+        self._final = final
+        self._tmp = tmp
+        self._file = open(tmp, "ab")
+        self._hasher = hasher
+        self._count = count
 
     def write(self, row):
         if self._file is None:
@@ -108,6 +150,25 @@ class _CandidateIndexWriter:
         self._file = self._tmp = self._hasher = None
         self._count = 0
 
+    def checkpoint_state(self):
+        """Return a durable restart point without forcing a shard boundary."""
+        active = None
+        if self._file is not None:
+            self._file.flush()
+            os.fsync(self._file.fileno())
+            active = {
+                "tmp_name": self._tmp.name,
+                "final_name": self._final.name,
+                "num_bytes": self._tmp.stat().st_size,
+                "num_candidates": self._count,
+                "sha256": self._hasher.hexdigest(),
+            }
+        return {
+            "shards": list(self.shards),
+            "num_candidates": int(self.total),
+            "active_shard": active,
+        }
+
     def close(self):
         self._close_shard()
         manifest = {
@@ -126,6 +187,79 @@ def canonical_candidate_shard_digest(shards):
         {"sha256": row["sha256"], "num_candidates": row["num_candidates"]}
         for row in shards
     ])
+
+
+def _candidate_build_fingerprint(base_manifest):
+    from kwcoco_detector_kit.data.tile_cache import canonical_digest
+    return canonical_digest({
+        key: base_manifest[key]
+        for key in [
+            "source_kwcoco", "source_dataset_fingerprint", "policy_fingerprint",
+            "tile_identity_schema_version", "raster_identity_schema_version",
+        ]
+    })
+
+
+def _validate_candidate_shards(root, shards):
+    import hashlib
+
+    root = Path(root)
+    for shard in shards:
+        path = root / shard["name"]
+        if not path.is_file():
+            raise RuntimeError(f"candidate resume shard is missing: {path}")
+        hasher = hashlib.sha256()
+        count = 0
+        with open(path, "rb") as file:
+            for line in file:
+                hasher.update(line)
+                count += 1
+        if count != int(shard["num_candidates"]):
+            raise RuntimeError(f"candidate resume row-count mismatch: {path}")
+        if hasher.hexdigest() != shard["sha256"]:
+            raise RuntimeError(f"candidate resume digest mismatch: {path}")
+
+
+def _reset_candidate_build(root):
+    root = Path(root)
+    for path in root.glob("candidates-*.jsonl"):
+        path.unlink()
+    for pattern in [".candidates-*.tmp", ".candidates-*.resume.tmp", ".candidates-*.jsonl.*.tmp"]:
+        for path in root.glob(pattern):
+            path.unlink()
+    for name in ["manifest.json", ".candidate-build-resume.json"]:
+        path = root / name
+        if path.exists():
+            path.unlink()
+
+
+def _load_candidate_resume(root, build_fingerprint):
+    root = Path(root)
+    receipt_path = root / ".candidate-build-resume.json"
+    if not receipt_path.is_file():
+        return None
+    receipt = json.loads(receipt_path.read_text())
+    if receipt.get("build_fingerprint") != build_fingerprint:
+        return None
+    state = receipt["writer_state"]
+    _validate_candidate_shards(root, state.get("shards", []))
+
+    # Roll back any files written after the last durable image checkpoint.
+    keep = {row["name"] for row in state.get("shards", [])}
+    active = state.get("active_shard")
+    if active:
+        keep.add(active["final_name"])
+        keep.add(active["tmp_name"])
+    for path in root.glob("candidates-*.jsonl"):
+        if path.name not in keep:
+            path.unlink()
+    for path in root.glob(".candidates-*.tmp"):
+        if path.name not in keep:
+            path.unlink()
+    for path in root.glob(".candidates-*.resume.tmp"):
+        if path.name not in keep:
+            path.unlink()
+    return receipt
 
 
 def load_candidate_index(path):
@@ -211,7 +345,7 @@ def candidate_sampling_identity(item):
 
 
 def selected_candidate_record_factory(index_or_path, max_candidates, seed=0,
-                                      strategy="stratified_by_image"):
+                                      strategy="stratified_by_image", progress=False):
     """Build a repeatable bounded candidate selection.
 
     The returned callable yields the same candidate records on every call.
@@ -223,6 +357,7 @@ def selected_candidate_record_factory(index_or_path, max_candidates, seed=0,
     import hashlib
     import heapq
     import itertools
+    import ubelt as ub
 
     index = (
         load_candidate_index(index_or_path)
@@ -233,12 +368,21 @@ def selected_candidate_record_factory(index_or_path, max_candidates, seed=0,
     if not max_candidates or max_candidates >= int(index["num_candidates"]):
         return lambda: iter_candidate_records(index)
 
+    def _records(desc):
+        return ub.ProgIter(
+            iter_candidate_records(index),
+            total=int(index["num_candidates"]),
+            desc=desc,
+            enabled=bool(progress),
+            verbose=3,
+        )
+
     strategy = str(strategy)
     if strategy == "first":
-        selected = list(itertools.islice(iter_candidate_records(index), max_candidates))
+        selected = list(itertools.islice(_records("candidate select:first"), max_candidates))
     elif strategy == "random":
         heap = []
-        for row in iter_candidate_records(index):
+        for row in _records("candidate select:random"):
             sample_id = candidate_sampling_identity(row)
             priority = int(hashlib.sha256(
                 f"{int(seed)}:{sample_id}".encode()
@@ -251,7 +395,7 @@ def selected_candidate_record_factory(index_or_path, max_candidates, seed=0,
         selected = [item[3] for item in heap]
     elif strategy == "stratified_by_image":
         group_counts = {}
-        for row in iter_candidate_records(index):
+        for row in _records("candidate stratify:count"):
             key = candidate_source_scale_key(row)
             group_counts[key] = group_counts.get(key, 0) + 1
 
@@ -275,7 +419,7 @@ def selected_candidate_record_factory(index_or_path, max_candidates, seed=0,
             active = next_active
 
         group_heaps = {}
-        for row in iter_candidate_records(index):
+        for row in _records("candidate stratify:select"):
             key = candidate_source_scale_key(row)
             quota = quotas.get(key, 0)
             if not quota:
@@ -309,6 +453,7 @@ def enumerate_candidates(config):
     """Enumerate every safe negative without decoding or encoding imagery."""
     import kwcoco
     import kwimage
+    import ubelt as ub
 
     from kwcoco_detector_kit.data.tile import (
         _clip_annotation_geometry, _grid_positions, _parse_scales,
@@ -357,10 +502,83 @@ def enumerate_candidates(config):
         "tile_identity_schema_version": 2,
         "raster_identity_schema_version": 1,
     }
-    writer = _CandidateIndexWriter(dst, base_manifest, config.rows_per_shard)
+    dst.mkdir(parents=True, exist_ok=True)
+    build_fingerprint = _candidate_build_fingerprint(base_manifest)
 
-    for image in dset.images().objs:
+    # A valid final manifest is the commit record for the whole build.  Reusing
+    # it makes the public operation idempotent and avoids re-walking millions of
+    # windows when an overnight orchestrator is restarted.
+    final_manifest = dst / "manifest.json"
+    if final_manifest.is_file():
+        try:
+            prior = load_candidate_index(dst)
+        except Exception:
+            prior = None
+        if prior is not None and (
+            prior.get("source_kwcoco") == base_manifest["source_kwcoco"]
+            and prior.get("source_dataset_fingerprint") == source_fingerprint
+            and prior.get("policy_fingerprint") == policy_fingerprint
+        ):
+            print(
+                f"reuse complete candidate index: {dst} "
+                f"({prior['num_candidates']:,} candidates)"
+            )
+            return dst
+        _reset_candidate_build(dst)
+
+    receipt = None
+    if bool(config.resume):
+        receipt = _load_candidate_resume(dst, build_fingerprint)
+    if receipt is None:
+        # Stale/incompatible partial state must never be mixed into a new
+        # truth/policy build.
+        if any(dst.glob("candidates-*.jsonl")) or any(dst.glob(".candidates-*.tmp")) or (
+            dst / ".candidate-build-resume.json"
+        ).exists():
+            _reset_candidate_build(dst)
+        completed_image_ids = []
+        writer_state = None
+    else:
+        completed_image_ids = list(receipt.get("completed_image_ids", []))
+        writer_state = receipt["writer_state"]
+        print(
+            f"resume candidate index: {dst} from "
+            f"{len(completed_image_ids):,}/{dset.n_images:,} completed images; "
+            f"{writer_state['num_candidates']:,} candidates committed"
+        )
+
+    writer = _CandidateIndexWriter(
+        dst, base_manifest, config.rows_per_shard, resume_state=writer_state,
+    )
+    completed = set(map(int, completed_image_ids))
+    checkpoint_images = max(1, int(config.checkpoint_images))
+    since_checkpoint = 0
+    resume_path = dst / ".candidate-build-resume.json"
+
+    def checkpoint():
+        _atomic_json({
+            "schema_version": 1,
+            "build_fingerprint": build_fingerprint,
+            "completed_image_ids": completed_image_ids,
+            "writer_state": writer.checkpoint_state(),
+        }, resume_path)
+
+    images = list(dset.images().objs)
+    pending = [image for image in images if int(image["id"]) not in completed]
+    prog = ub.ProgIter(
+        pending,
+        total=len(pending),
+        desc="candidates source images",
+        enabled=bool(config.progress),
+        verbose=3,
+    )
+    for image in prog:
         gid = image["id"]
+        if hasattr(prog, "set_extra"):
+            prog.set_extra(
+                f"gid={gid} candidates={writer.total:,} "
+                f"committed_images={len(completed_image_ids):,}"
+            )
         width, height = int(image["width"]), int(image["height"])
         source_anns = list(dset.annots(gid=gid).objs)
         parts = semantics.partition_annotations(dset, source_anns)
@@ -370,109 +588,125 @@ def enumerate_candidates(config):
         # Uncategorized / undeclared ignored truth, and any ignored annotation
         # without geometry, blocks the whole image from trusted negatives.
         if ignored["image"]:
-            continue
-        source_path = Path(dset.get_image_fpath(gid)).resolve()
-        source_digest = source_digests.setdefault(str(source_path), sha256_file(source_path))
-        for scale_name, requested_scale in _parse_scales(config.source_scales):
-            scaled_w = max(1, int(round(width * requested_scale)))
-            scaled_h = max(1, int(round(height * requested_scale)))
-            if max(scaled_w, scaled_h) < int(config.min_source_scale_long_side):
-                continue
-            scale_xy = (scaled_w / width, scaled_h / height)
-            source_from_scaled = kwimage.Affine.scale(scale_xy).inv()
-            for y0 in _grid_positions(scaled_h, disk_tile, stride):
-                for x0 in _grid_positions(scaled_w, disk_tile, stride):
-                    crop = (x0, y0, x0 + disk_tile, y0 + disk_tile)
-                    unsafe = False
-                    intersecting = kept = 0
-                    kept_area = 0.0
-                    # Uncertain source truth is never eligible background.  It
-                    # is distinct from KDK's geometry-invalid target tile role.
-                    for ann in ignore_anns:
-                        geom = _clip_annotation_geometry(
-                            ann, source_dims=(height, width), scale=scale_xy,
-                            crop_xyxy=crop, output_dims=(disk_tile, disk_tile),
-                        )
-                        if geom is not None:
-                            unsafe = True
-                            break
-                    if unsafe:
-                        continue
-                    for ann in anns:
-                        geom = _clip_annotation_geometry(
-                            ann, source_dims=(height, width), scale=scale_xy,
-                            crop_xyxy=crop, output_dims=(disk_tile, disk_tile),
-                        )
-                        if geom is None:
-                            if margin:
-                                margin_geom = _clip_annotation_geometry(
-                                    ann, source_dims=(height, width), scale=scale_xy,
-                                    crop_xyxy=(x0 - margin, y0 - margin,
-                                               x0 + disk_tile + margin,
-                                               y0 + disk_tile + margin),
-                                    output_dims=(disk_tile + 2 * margin,
-                                                 disk_tile + 2 * margin),
-                                )
-                                unsafe |= margin_geom is not None
+            pass
+        else:
+            source_path = Path(dset.get_image_fpath(gid)).resolve()
+            source_digest = source_digests.setdefault(str(source_path), sha256_file(source_path))
+            for scale_name, requested_scale in _parse_scales(config.source_scales):
+                scaled_w = max(1, int(round(width * requested_scale)))
+                scaled_h = max(1, int(round(height * requested_scale)))
+                if max(scaled_w, scaled_h) < int(config.min_source_scale_long_side):
+                    continue
+                scale_xy = (scaled_w / width, scaled_h / height)
+                source_from_scaled = kwimage.Affine.scale(scale_xy).inv()
+                for y0 in _grid_positions(scaled_h, disk_tile, stride):
+                    for x0 in _grid_positions(scaled_w, disk_tile, stride):
+                        crop = (x0, y0, x0 + disk_tile, y0 + disk_tile)
+                        unsafe = False
+                        intersecting = kept = 0
+                        kept_area = 0.0
+                        # Uncertain source truth is never eligible background.  It
+                        # is distinct from KDK's geometry-invalid target tile role.
+                        for ann in ignore_anns:
+                            geom = _clip_annotation_geometry(
+                                ann, source_dims=(height, width), scale=scale_xy,
+                                crop_xyxy=crop, output_dims=(disk_tile, disk_tile),
+                            )
+                            if geom is not None:
+                                unsafe = True
+                                break
+                        if unsafe:
                             continue
-                        intersecting += 1
-                        if geom.visible_fraction < min_keep:
-                            unsafe = True
-                        else:
-                            kept += 1
-                            kept_area += geom.area
-                    if intersecting or unsafe:
-                        # Positives and ignores belong to eager supervised tiling.
-                        continue
-                    source_box = kwimage.Boxes([crop], "ltrb").warp(
-                        source_from_scaled
-                    ).to_ltrb().data[0]
-                    source_extent = [int(round(v)) for v in source_box]
-                    tile = make_tile_identity(
-                        dataset_fingerprint=source_fingerprint,
-                        source_asset_digest=source_digest,
-                        source_image_id=gid,
-                        source_asset_name=str(image.get("file_name", source_path.name)),
-                        extent_xyxy=source_extent,
-                        requested_scale=requested_scale,
-                        actual_scale=scale_xy,
-                        scaled_extent_xyxy=crop,
-                    )
-                    raster = make_raster_identity(
-                        source_asset_digest=source_digest,
-                        extent_xyxy=source_extent,
-                        actual_scale=scale_xy,
-                        scaled_extent_xyxy=crop,
-                        realization="resize_source_then_crop",
-                    )
-                    record = {
-                        **tile,
-                        "tile_identity": tile["tile_id"],
-                        "tile_raster_id": raster["raster_id"],
-                        "raster_identity": raster["raster_id"],
-                        "tile_source_gid": gid,
-                        "tile_scale_name": scale_name,
-                        "tile_scale_factor": float(requested_scale),
-                        "tile_actual_scale_xy": [float(v) for v in scale_xy],
-                        "tile_scaled_extent_xyxy": list(crop),
-                        "tile_extent_xyxy_in_source": source_extent,
-                        "output_width": disk_tile, "output_height": disk_tile,
-                        "padding": (
-                            "zero_bottom_right"
-                            if x0 + disk_tile > scaled_w or y0 + disk_tile > scaled_h
-                            else "none"
-                        ),
-                        "tile_model_input_size": [base_tile, base_tile],
-                        "tile_role": "negative",
-                        "negative_origin": (
-                            "zero_annotation_source" if not source_anns
-                            else "safe_background_window"
-                        ),
-                        "policy_fingerprint": policy_fingerprint,
-                        "context": {key: image[key] for key in context_fields if key in image},
-                    }
-                    writer.write(record)
-    writer.close()
+                        for ann in anns:
+                            geom = _clip_annotation_geometry(
+                                ann, source_dims=(height, width), scale=scale_xy,
+                                crop_xyxy=crop, output_dims=(disk_tile, disk_tile),
+                            )
+                            if geom is None:
+                                if margin:
+                                    margin_geom = _clip_annotation_geometry(
+                                        ann, source_dims=(height, width), scale=scale_xy,
+                                        crop_xyxy=(x0 - margin, y0 - margin,
+                                                   x0 + disk_tile + margin,
+                                                   y0 + disk_tile + margin),
+                                        output_dims=(disk_tile + 2 * margin,
+                                                     disk_tile + 2 * margin),
+                                    )
+                                    unsafe |= margin_geom is not None
+                                continue
+                            intersecting += 1
+                            if geom.visible_fraction < min_keep:
+                                unsafe = True
+                            else:
+                                kept += 1
+                                kept_area += geom.area
+                        if intersecting or unsafe:
+                            # Positives and ignores belong to eager supervised tiling.
+                            continue
+                        source_box = kwimage.Boxes([crop], "ltrb").warp(
+                            source_from_scaled
+                        ).to_ltrb().data[0]
+                        source_extent = [int(round(v)) for v in source_box]
+                        tile = make_tile_identity(
+                            dataset_fingerprint=source_fingerprint,
+                            source_asset_digest=source_digest,
+                            source_image_id=gid,
+                            source_asset_name=str(image.get("file_name", source_path.name)),
+                            extent_xyxy=source_extent,
+                            requested_scale=requested_scale,
+                            actual_scale=scale_xy,
+                            scaled_extent_xyxy=crop,
+                        )
+                        raster = make_raster_identity(
+                            source_asset_digest=source_digest,
+                            extent_xyxy=source_extent,
+                            actual_scale=scale_xy,
+                            scaled_extent_xyxy=crop,
+                            realization="resize_source_then_crop",
+                        )
+                        record = {
+                            **tile,
+                            "tile_identity": tile["tile_id"],
+                            "tile_raster_id": raster["raster_id"],
+                            "raster_identity": raster["raster_id"],
+                            "tile_source_gid": gid,
+                            "tile_scale_name": scale_name,
+                            "tile_scale_factor": float(requested_scale),
+                            "tile_actual_scale_xy": [float(v) for v in scale_xy],
+                            "tile_scaled_extent_xyxy": list(crop),
+                            "tile_extent_xyxy_in_source": source_extent,
+                            "output_width": disk_tile, "output_height": disk_tile,
+                            "padding": (
+                                "zero_bottom_right"
+                                if x0 + disk_tile > scaled_w or y0 + disk_tile > scaled_h
+                                else "none"
+                            ),
+                            "tile_model_input_size": [base_tile, base_tile],
+                            "tile_role": "negative",
+                            "negative_origin": (
+                                "zero_annotation_source" if not source_anns
+                                else "safe_background_window"
+                            ),
+                            "policy_fingerprint": policy_fingerprint,
+                            "context": {key: image[key] for key in context_fields if key in image},
+                        }
+                        writer.write(record)
+
+        completed.add(int(gid))
+        completed_image_ids.append(int(gid))
+        since_checkpoint += 1
+        if since_checkpoint >= checkpoint_images:
+            checkpoint()
+            since_checkpoint = 0
+        if hasattr(prog, "set_extra"):
+            prog.set_extra(
+                f"gid={gid} candidates={writer.total:,} "
+                f"committed_images={len(completed_image_ids):,}"
+            )
+    manifest = writer.close()
+    if resume_path.exists():
+        resume_path.unlink()
+    print(f"candidate index complete: {dst} ({manifest['num_candidates']:,} candidates)")
     return dst
 
 
@@ -587,7 +821,7 @@ def _candidate_materialization(row, jpeg_quality):
 
 
 def materialize_candidates(index_path, records, *, cache_dpath, jpeg_quality=90,
-                           batch_size=16):
+                           batch_size=16, progress=False, total_records=None):
     """Materialize selected candidates, realizing pixels only for cache misses.
 
     Candidate legality and ``tile_id`` remain tied to the current truth.  The
@@ -598,6 +832,7 @@ def materialize_candidates(index_path, records, *, cache_dpath, jpeg_quality=90,
     import itertools
     import kwcoco
     import numpy as np
+    import ubelt as ub
 
     from kwcoco_detector_kit.data.tile_cache import TileMaterializationCache
 
@@ -614,6 +849,13 @@ def materialize_candidates(index_path, records, *, cache_dpath, jpeg_quality=90,
                 row for row in iter_candidate_records(index)
                 if row["tile_id"] in wanted
             )
+    records = ub.ProgIter(
+        records,
+        total=None if total_records is None else int(total_records),
+        desc="materialize negative candidates",
+        enabled=bool(progress),
+        verbose=3,
+    )
 
     cache = TileMaterializationCache(cache_dpath)
     out = kwcoco.CocoDataset()

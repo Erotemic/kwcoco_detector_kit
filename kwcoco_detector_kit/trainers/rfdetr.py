@@ -23,9 +23,41 @@ VARIANTS = {
 
 def _prepare_roboflow_coco_layout(train_src, vali_src, output_dpath, category_names):
     """Create the directory/annotation layout expected by RF-DETR."""
+    import hashlib
+
     from kwcoco_detector_kit.data.coco_export import export_mscoco
 
     output_dpath = Path(output_dpath).resolve()
+    receipt_path = output_dpath / "PREPARED.json"
+
+    def _sha256(path):
+        hasher = hashlib.sha256()
+        with open(path, "rb") as file:
+            while chunk := file.read(1024 * 1024):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+
+    expected = {
+        "schema_version": 1,
+        "train_src": str(Path(train_src).resolve()),
+        "train_sha256": _sha256(train_src),
+        "vali_src": str(Path(vali_src).resolve()),
+        "vali_sha256": _sha256(vali_src),
+        "category_names": list(category_names),
+    }
+    outputs = {
+        "train": output_dpath / "train" / "_annotations.coco.json",
+        "valid": output_dpath / "valid" / "_annotations.coco.json",
+    }
+    if receipt_path.is_file():
+        try:
+            prior = json.loads(receipt_path.read_text())
+        except Exception:
+            prior = None
+        if prior == expected and all(path.is_file() for path in outputs.values()):
+            print(f"reuse prepared RF-DETR COCO layout: {output_dpath}")
+            return output_dpath
+
     for split, src in [("train", train_src), ("valid", vali_src)]:
         split_dpath = output_dpath / split
         split_dpath.mkdir(parents=True, exist_ok=True)
@@ -35,7 +67,11 @@ def _prepare_roboflow_coco_layout(train_src, vali_src, output_dpath, category_na
             category_names=category_names,
             include_segmentations=True,
             category_id_start=0,
+            progress=True,
         )
+    tmp_receipt = receipt_path.with_suffix(".tmp")
+    tmp_receipt.write_text(json.dumps(expected, indent=2, sort_keys=True) + "\n")
+    tmp_receipt.replace(receipt_path)
     return output_dpath
 
 

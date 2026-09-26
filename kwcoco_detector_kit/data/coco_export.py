@@ -51,6 +51,7 @@ def export_mscoco(
     category_names: Sequence[str],
     include_segmentations: bool = True,
     category_id_start: int = 0,
+    progress: bool = True,
 ):
     """Write a single MSCOCO json from a kwcoco bundle. Returns the dst path.
 
@@ -63,6 +64,7 @@ def export_mscoco(
     """
     import kwcoco
     import kwimage
+    import ubelt as ub
 
     if isinstance(category_names, str):
         raise TypeError(
@@ -86,7 +88,13 @@ def export_mscoco(
     }
 
     kept_gids = set()
-    for img in src_dset.images().objs:
+    for img in ub.ProgIter(
+        src_dset.images().objs,
+        total=src_dset.n_images,
+        desc="mscoco export:images",
+        enabled=bool(progress),
+        verbose=3,
+    ):
         img = img.copy()
         try:
             file_name = src_dset.get_image_fpath(img["id"])
@@ -103,7 +111,13 @@ def export_mscoco(
         kept_gids.add(img["id"])
 
     ann_id = 1
-    for ann in src_dset.annots().objs:
+    for ann in ub.ProgIter(
+        src_dset.annots().objs,
+        total=src_dset.n_annots,
+        desc="mscoco export:annotations",
+        enabled=bool(progress),
+        verbose=3,
+    ):
         gid = ann["image_id"]
         if gid not in kept_gids:
             continue

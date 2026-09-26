@@ -44,7 +44,20 @@ RUN test -f tpl/sam3/sam3/model_builder.py || \
 # remains in the host Hugging Face cache and is not baked into this image.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install -e ./tpl/sam3 && \
-    uv pip install 'pycocotools>=2.0.7' 'pytest>=8' 'pytest-cov>=4'
+    uv pip install 'pytest>=8' 'pytest-cov>=4'
+
+# Exercise the real package import during the build.  The lightweight KDK unit
+# adapter test uses a fake SAM3 module, so it cannot catch missing dependencies
+# in the pinned fork itself.  Keep this checkpoint-free: it validates package
+# construction/imports without requiring Hugging Face credentials or a GPU.
+RUN python - <<'PY'
+import sam3
+from sam3.model.sam3_image_processor import Sam3Processor
+from sam3.model_builder import build_sam3_image_model
+print('SAM3 import smoke passed:', sam3.__version__)
+print('processor:', Sam3Processor.__name__)
+print('builder:', build_sam3_image_model.__name__)
+PY
 
 COPY kwcoco_detector_kit ./kwcoco_detector_kit
 COPY tests ./tests

@@ -34,6 +34,23 @@ The wrapper explicitly downloads the SAM 3.1 checkpoint when
 `--checkpoint_version=sam3.1`.  A local checkpoint can instead be supplied via
 `--checkpoint=/path/to/checkpoint.pt`.
 
+
+## Docker-first admission environment
+
+The preferred admission path is the checked-in SAM3 container rather than a
+host editable install:
+
+```bash
+git submodule update --init --recursive tpl/sam3
+docker/sam3/kcd-sam3 build
+docker/sam3/kcd-sam3 image-info
+```
+
+The image uses CUDA 12.6 / PyTorch 2.7.1 for broad RTX 3090 compatibility,
+installs the pinned `tpl/sam3` fork, and reuses the host Hugging Face cache via
+the `$HOME` bind mount.  See `docker/sam3/README.md` for the frozen test-set
+benchmark and validation hard-negative review commands.
+
 ## 3090 admission run
 
 Use representative ML-ready/native-resolution chips rather than resizing a
@@ -63,6 +80,11 @@ sam3_admission/
     predictions.kwcoco.zip
     eval/
         detect_metrics.json
+    review/                 # when --review=true
+        review_queue.json
+        review_queue.tsv
+        review.kwcoco.zip
+        index.html
 ```
 
 `admission_report.json` records GPU identity, model-load time, post-warmup
@@ -109,3 +131,15 @@ kwcoco-detector-kit sam3-admission \
 The wrapper uses a 1008x1008 native source crop because that is SAM3's image
 processor resolution. KDK translates the surviving boxes and native masks back
 to source-image coordinates before writing predictions.
+
+
+## Truth-aware zero-shot review
+
+For development/validation runs, `--review=true` builds the ranked review
+against the original source KWCoco rather than the target-only metric subset.
+This preserves nuisance and uncertain annotations, allowing KDK to distinguish
+known distractors from uncertain regions and genuinely unexplained proposals.
+The default uncertain categories are `ignore,unknown,unkown`; other non-target
+categories are treated as trusted background unless configured otherwise.
+Do not enable this review workflow on a held-out test set if that test set is
+intended to remain pristine for final model comparison.

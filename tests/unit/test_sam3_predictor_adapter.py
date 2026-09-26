@@ -32,3 +32,17 @@ def test_sam3_empty_state_to_records():
         {}, actual_hw=(8, 8), orig_size=(8, 8)
     )
     assert records == []
+
+
+def test_sam3_admission_review_defaults_preserve_uncertain_truth():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "kwcoco_detector_kit/eval/sam3_admission.py"
+    ).read_text()
+    assert 'review = kwconf.Value(' in source
+    assert '"ignore,unknown,unkown"' in source
+    assert 'default_non_target_policy = kwconf.Value(' in source
+    assert '"background", choices=["background", "ignore", "error"]' in source
+    assert '"true": str(src)' in source

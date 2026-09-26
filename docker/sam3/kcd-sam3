@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# Run KDK SAM3 admission/review commands in the reproducible SAM3 container.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$HERE/../.." && pwd)"
+IMAGE="${KCD_SAM3_IMAGE:-kwcoco-detector-kit:sam3-auto}"
+GPU="${KCD_SAM3_GPU:-0}"
+AUTO_BUILD="${KCD_SAM3_AUTO_BUILD:-1}"
+SHM_SIZE="${KCD_SAM3_SHM_SIZE:-8g}"
+
+usage() {
+    cat <<'USAGE'
+Usage:
+  docker/sam3/kcd-sam3 build
+  docker/sam3/kcd-sam3 image-info
+  docker/sam3/kcd-sam3 shell
+  docker/sam3/kcd-sam3 exec COMMAND [ARG ...]
+  docker/sam3/kcd-sam3 admission [SAM3_ADMISSION_ARG ...]
+  docker/sam3/kcd-sam3 KDK_COMMAND [ARG ...]
+
+Environment:
+  KCD_SAM3_IMAGE        image tag (default kwcoco-detector-kit:sam3-auto)
+  KCD_SAM3_GPU          physical GPU exposed to Docker (default 0)
+  KCD_SAM3_AUTO_BUILD   build missing image automatically (default 1)
+  KCD_SAM3_SHM_SIZE     Docker --shm-size (default 8g)
+  KCD_SAM3_EXTRA_MOUNTS newline-separated absolute paths mounted identically
+  HF_TOKEN              forwarded when set; default ~/.cache/huggingface is under $HOME
+  HF_HOME               forwarded and mounted when set
+USAGE
+}
+
+[ $# -gt 0 ] || { usage; exit 2; }
+subcommand="$1"
+
+if [ "$subcommand" = "build" ]; then
+    shift
+    [ $# -eq 0 ] || { echo "build takes overrides via environment" >&2; exit 2; }
+    exec "$HERE/build.sh"
+fi
+
+image_is_compatible() {
+    local uid_marker admission_marker
+    uid_marker="$(docker image inspect --format '{{ index .Config.Labels "kcd.runtime_uid_safe" }}' "$IMAGE" 2>/dev/null || true)"
+    admission_marker="$(docker image inspect --format '{{ index .Config.Labels "kcd.sam3_admission" }}' "$IMAGE" 2>/dev/null || true)"
+    [ "$uid_marker" = "1" ] && [ "$admission_marker" = "1" ]
+}
+
+ensure_image() {
+    if docker image inspect "$IMAGE" >/dev/null 2>&1; then
+        if image_is_compatible; then
+            return 0
+        fi
+        if [ "$AUTO_BUILD" != "1" ]; then
+            echo "SAM3 image predates the current admission runtime contract: $IMAGE" >&2
+            exit 1
+        fi
+        echo "SAM3 image $IMAGE is stale; rebuilding it now." >&2
+        "$HERE/build.sh"
+        return 0
+    fi
+    if [ "$AUTO_BUILD" != "1" ]; then
+        echo "SAM3 image is missing: $IMAGE" >&2
+        echo "Run: docker/sam3/kcd-sam3 build" >&2
+        exit 1
+    fi
+    echo "SAM3 image $IMAGE is missing; building it now." >&2
+    "$HERE/build.sh"
+}
+
+if [ "${KCD_DOCKER_DRYRUN:-0}" = "1" ]; then
+    dryrun=1
+else
+    dryrun=0
+fi
+if [ "$dryrun" != "1" ]; then
+    ensure_image
+fi
+
+run_base=(
+    docker run --rm
+    --gpus "device=$GPU"
+    --ipc=host
+    --shm-size="$SHM_SIZE"
+    --user "$(id -u):$(id -g)"
+    --env "HOME=$HOME"
+    --env "USER=${USER:-$(id -un)}"
+    --volume "$HOME:$HOME"
+    --volume "$REPO_ROOT:/opt/kwcoco_detector_kit"
+    --workdir /opt/kwcoco_detector_kit
+)
+
+# Prefer runtime checkout provenance over the image-build SHA because KDK and
+# the SAM3 fork are bind-mounted for admission experiments.
+git_sha() {
+    git -c safe.directory='*' -C "$1" rev-parse HEAD 2>/dev/null || true
+}
+if kit_sha="$(git_sha "$REPO_ROOT")" && [ -n "$kit_sha" ]; then
+    run_base+=(--env "KCD_PROVENANCE_KIT_SHA=$kit_sha")
+fi
+if sam3_sha="$(git_sha "$REPO_ROOT/tpl/sam3")" && [ -n "$sam3_sha" ]; then
+    run_base+=(--env "KCD_PROVENANCE_SAM3_SHA=$sam3_sha")
+fi
+
+# Forward Hugging Face authentication without copying credentials into the image.
+if [ -n "${HF_TOKEN:-}" ]; then
+    run_base+=(--env "HF_TOKEN=$HF_TOKEN")
+fi
+if [ -n "${HUGGING_FACE_HUB_TOKEN:-}" ]; then
+    run_base+=(--env "HUGGING_FACE_HUB_TOKEN=$HUGGING_FACE_HUB_TOKEN")
+fi
+
+_mount_seen="|$HOME|$REPO_ROOT|"
+add_same_path_mount() {
+    local original="$1" path="$1" existing
+    [ -n "$path" ] || return 0
+    case "$path" in
+        /*) ;;
+        *) echo "SAM3 extra mount must be absolute: $path" >&2; exit 2 ;;
+    esac
+    while [ ! -e "$path" ]; do
+        existing="$(dirname "$path")"
+        if [ "$existing" = "$path" ]; then
+            echo "Could not find an existing parent for Docker path: $original" >&2
+            exit 2
+        fi
+        path="$existing"
+    done
+    if [ -f "$path" ]; then
+        path="$(dirname "$path")"
+    fi
+    path="$(readlink -f "$path")"
+    # Never bind-mount the host filesystem root merely because a requested
+    # path does not exist yet. Existing dataset/output parents should resolve
+    # to a narrower mount; otherwise the command can fail normally in-container.
+    [ "$path" = "/" ] && return 0
+    case "$_mount_seen" in
+        *"|$path|"*) return 0 ;;
+    esac
+    case "$path/" in
+        "$HOME/"*|"$REPO_ROOT/"*) return 0 ;;
+    esac
+    run_base+=(--volume "$path:$path")
+    _mount_seen="${_mount_seen}${path}|"
+}
+
+if [ -n "${HF_HOME:-}" ]; then
+    add_same_path_mount "$HF_HOME"
+    run_base+=(--env "HF_HOME=$HF_HOME")
+fi
+
+# Mount absolute KDK CLI path values. KWCoco assets may live elsewhere, so
+# KCD_SAM3_EXTRA_MOUNTS can add dataset roots referenced by manifests.
+for arg in "$@"; do
+    value=""
+    case "$arg" in
+        --*=/*) value="${arg#*=}" ;;
+        /*) value="$arg" ;;
+    esac
+    [ -z "$value" ] || add_same_path_mount "$value"
+done
+if [ -n "${KCD_SAM3_EXTRA_MOUNTS:-}" ]; then
+    while IFS= read -r extra_mount; do
+        [ -z "$extra_mount" ] || add_same_path_mount "$extra_mount"
+    done <<< "$KCD_SAM3_EXTRA_MOUNTS"
+fi
+
+case "$subcommand" in
+    image-info)
+        command=(python -c 'import importlib.metadata as md, json, pathlib, torch, sam3; print("torch=", torch.__version__); print("torch_cuda=", torch.version.cuda); print("cuda_available=", torch.cuda.is_available()); print("gpu=", torch.cuda.get_device_name(0) if torch.cuda.is_available() else None); print("capability=", torch.cuda.get_device_capability(0) if torch.cuda.is_available() else None); print("sam3=", sam3.__file__); [print(name + "=", md.version(name)) for name in ["sam3", "kwcoco", "kwconf", "delayed-image"]]; p=pathlib.Path("/etc/kcd_provenance.json"); print("provenance=", json.loads(p.read_text()) if p.exists() else None)')
+        ;;
+    shell)
+        command=(bash)
+        ;;
+    exec)
+        shift
+        [ $# -gt 0 ] || { echo "exec requires a command" >&2; exit 2; }
+        command=("$@")
+        ;;
+    admission)
+        shift
+        command=(kwcoco-detector-kit sam3-admission "$@")
+        ;;
+    -h|--help|help)
+        usage
+        exit 0
+        ;;
+    *)
+        command=(kwcoco-detector-kit "$@")
+        ;;
+esac
+
+if [ "$dryrun" = "1" ]; then
+    printf 'DRY RUN:'
+    printf ' %q' "${run_base[@]}" "$IMAGE" "${command[@]}"
+    printf '\n'
+    exit 0
+fi
+
+if [ "$subcommand" = "shell" ]; then
+    exec "${run_base[@]}" -it "$IMAGE" "${command[@]}"
+else
+    exec "${run_base[@]}" "$IMAGE" "${command[@]}"
+fi

@@ -327,6 +327,59 @@ def run(config):
         report["eval_returncode"] = int(result.returncode)
         report["eval_metrics"] = str(eval_fpath) if eval_fpath.exists() else None
 
+    if bool(config.review):
+        # Review must use the canonical/original truth, not truth_subset.  The
+        # metric subset deliberately strips nuisance categories to evaluate a
+        # binary poop-vs-background task, whereas hard-negative review needs
+        # those nuisance annotations to distinguish known distractors from
+        # genuinely unexplained false positives.
+        from kwcoco_detector_kit.data.truth_review import (
+            PredictionReviewConfig,
+            build_prediction_review,
+        )
+
+        review_dpath = out_dpath / "review"
+        review_cfg = PredictionReviewConfig.cli(
+            argv=False,
+            data={
+                "true": str(src),
+                "pred": str(pred_fpath),
+                "dst_dpath": str(review_dpath),
+                "target_categories": str(config.target_category),
+                "ignore_categories": str(config.ignore_categories),
+                "uncategorized_annotation_policy": str(
+                    config.uncategorized_annotation_policy
+                ),
+                "default_non_target_policy": str(config.default_non_target_policy),
+                "unclassified_category_policy": str(
+                    config.unclassified_category_policy
+                ),
+                "min_score": float(config.review_min_score),
+                "top_n": int(config.review_top_n),
+                "target_iou_thresh": float(config.review_target_iou_thresh),
+            },
+            strict=True,
+        )
+        print(
+            "[sam3-admission] building truth-aware false-positive review from "
+            "canonical source truth",
+            flush=True,
+        )
+        build_prediction_review(review_cfg)
+        report["review_dpath"] = str(review_dpath)
+        review_queue_fpath = review_dpath / "review_queue.json"
+        report["review_queue"] = str(review_queue_fpath)
+        report["review_kwcoco"] = str(review_dpath / "review.kwcoco.zip")
+        if review_queue_fpath.exists():
+            from collections import Counter
+
+            review_data = json.loads(review_queue_fpath.read_text())
+            counts = Counter(
+                item.get("classification", "<unknown>")
+                for item in review_data.get("items", [])
+            )
+            report["review_class_counts"] = dict(sorted(counts.items()))
+
     report_fpath.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     print(json.dumps(report, indent=2, sort_keys=True))
     print(f"[sam3-admission] report: {report_fpath}")
@@ -360,6 +413,27 @@ class SAM3AdmissionConfig(kwconf.Config):
     whole_image_pass = kwconf.Value(False, isflag=True, help="also resize/run the entire image in windowed mode")
     max_dets = kwconf.Value(300, parser=int, help="cap merged detections per source image in windowed mode")
     evaluate = kwconf.Value(True, isflag=True)
+    review = kwconf.Value(
+        False,
+        isflag=True,
+        help="build a truth-aware ranked false-positive/hard-negative review",
+    )
+    ignore_categories = kwconf.Value(
+        "ignore,unknown,unkown",
+        help="comma-separated uncertain categories excluded from hard-negative claims",
+    )
+    uncategorized_annotation_policy = kwconf.Value(
+        "ignore", choices=["background", "ignore", "error"]
+    )
+    default_non_target_policy = kwconf.Value(
+        "background", choices=["background", "ignore", "error"]
+    )
+    unclassified_category_policy = kwconf.Value(
+        "ignore", choices=["background", "ignore", "error"]
+    )
+    review_min_score = kwconf.Value(0.05, parser=float)
+    review_top_n = kwconf.Value(500, parser=int)
+    review_target_iou_thresh = kwconf.Value(0.5, parser=float)
 
     @classmethod
     def main(cls, argv=1, **kwargs):

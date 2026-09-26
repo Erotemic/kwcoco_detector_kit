@@ -26,7 +26,7 @@ classifiers = [
 ]
 dependencies = [
     # Core kwcoco / kwimage stack
-    "kwcoco>=0.8",
+    "kwcoco>=0.9.0",
     "kwimage>=0.11",
     "kwutil>=0.3",
     "ubelt>=1.4",
@@ -51,7 +51,7 @@ dependencies = [
     "Pillow>=10.0",
     "filelock>=3.12",
     "kwarray>=0.7",
-    "delayed_image>=0.4",
+    "delayed_image>=0.4.7",
 ]
 
 [project.optional-dependencies]
@@ -90,6 +90,7 @@ kwcoco-dataloader = [
 ]
 rfdetr = [
     "rfdetr[train,loggers]==1.10.1",
+    "kwimage_ext>=0.4.1",
 ]
 # Dev / test
 dev = [

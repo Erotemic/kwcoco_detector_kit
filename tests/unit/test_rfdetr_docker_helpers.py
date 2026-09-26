@@ -109,20 +109,42 @@ def test_rfdetr_runner_supports_external_data_mounts(tmp_path):
     mount = f"--volume {data_root}:{data_root}"
     assert mount in out
 
-def test_rfdetr_dockerfile_installs_prediction_fast_paths():
-    text = (REPO / "docker" / "rfdetr" / "Dockerfile").read_text()
-    assert "kwimage_ext>=0.3.2" in text
-    assert "python -m kwcoco finish_install" in text
-    assert "--with_gdal=True" in text
-    assert "--with_cv2_headless=False" in text
-    assert "from osgeo import gdal" in text
-    assert "import kwimage_ext" in text
+def test_rfdetr_dockerfile_installs_released_kw_stack_and_gdal():
+    dockerfile = (REPO / "docker" / "rfdetr" / "Dockerfile").read_text()
+    requirements = (
+        REPO / "docker" / "rfdetr" / "requirements-kwstack.txt"
+    ).read_text()
+
+    assert "kwcoco==0.9.0" in requirements
+    assert "kwimage_ext==0.4.1" in requirements
+    assert "kwconf==0.11.0" in requirements
+    assert "delayed_image==0.4.7" in requirements
+    assert "uv pip install -r docker/rfdetr/requirements-kwstack.txt" in dockerfile
+    assert "python -m kwcoco finish_install" in dockerfile
+    assert "--with_gdal=True" in dockerfile
+    assert "--with_cv2_headless=False" in dockerfile
+    assert "--prefer_uv=True" in dockerfile
+    assert "--isolated_installer=True" in dockerfile
+    assert "from osgeo import gdal" in dockerfile
+    assert "python_packages" in dockerfile
+    assert "gdal_version" in dockerfile
+
+
+def test_rfdetr_pyproject_requires_current_kw_stack_floors():
+    text = (REPO / "pyproject.toml").read_text()
+    assert '"kwcoco>=0.9.0"' in text
+    assert '"kwconf>=0.11.0"' in text
+    assert '"delayed_image>=0.4.7"' in text
+    assert '"kwimage_ext>=0.4.1"' in text
 
 
 def test_rfdetr_image_info_reports_prediction_fast_paths():
     text = RUN.read_text()
-    assert "import json, pathlib, torch, rfdetr, kwimage_ext" in text
+    assert "importlib.metadata as md" in text
+    assert "rfdetr, kwimage_ext" in text
     assert "from osgeo import gdal" in text
-    assert 'print("kwimage_ext=", kwimage_ext.__file__)' in text
+    for name in ["kwcoco", "kwimage-ext", "kwconf", "delayed-image"]:
+        assert name in text
+    assert 'print("kwimage_ext_file=", kwimage_ext.__file__)' in text
     assert 'print("gdal=", gdal.VersionInfo())' in text
 

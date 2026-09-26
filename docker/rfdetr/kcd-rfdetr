@@ -165,7 +165,7 @@ fi
 
 case "$subcommand" in
     image-info)
-        command=(python -c 'import json, pathlib, torch, rfdetr, kwimage_ext; from osgeo import gdal; print("torch=", torch.__version__); print("torch_cuda=", torch.version.cuda); print("cuda_available=", torch.cuda.is_available()); print("gpu=", torch.cuda.get_device_name(0) if torch.cuda.is_available() else None); print("capability=", torch.cuda.get_device_capability(0) if torch.cuda.is_available() else None); print("rfdetr=", rfdetr.__file__); print("kwimage_ext=", kwimage_ext.__file__); print("gdal=", gdal.VersionInfo()); p=pathlib.Path("/etc/kcd_provenance.json"); print("provenance=", json.loads(p.read_text()) if p.exists() else None)')
+        command=(python -c 'import importlib.metadata as md, json, pathlib, torch, rfdetr, kwimage_ext; from osgeo import gdal; print("torch=", torch.__version__); print("torch_cuda=", torch.version.cuda); print("cuda_available=", torch.cuda.is_available()); print("gpu=", torch.cuda.get_device_name(0) if torch.cuda.is_available() else None); print("capability=", torch.cuda.get_device_capability(0) if torch.cuda.is_available() else None); print("rfdetr=", rfdetr.__file__); [print(name + "=", md.version(name)) for name in ["kwcoco", "kwimage-ext", "kwconf", "delayed-image"]]; print("kwimage_ext_file=", kwimage_ext.__file__); print("gdal=", gdal.VersionInfo()); p=pathlib.Path("/etc/kcd_provenance.json"); print("provenance=", json.loads(p.read_text()) if p.exists() else None)')
         ;;
     shell)
         command=(bash)

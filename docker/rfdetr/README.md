@@ -9,19 +9,40 @@ RF-DETR has no custom CUDA extension in this image. The CUDA profile selects a
 compatible CUDA runtime / PyTorch wheel pair; it does not compile a
 GPU-architecture-specific RF-DETR kernel.
 
-The runtime image also installs the optional image-I/O and geometry
-accelerators used by source-space prediction:
+The runtime image installs the released KW stack from PyPI with `uv pip`.
+The exact image pins live in `docker/rfdetr/requirements-kwstack.txt`; update
+that one file when the released stack moves. The current contract is:
 
-- `kwimage_ext` is installed from PyPI so KWCoco/KWImage NMS can use the
-  compiled backend instead of falling back to pure Python/NumPy paths;
-- GDAL is installed with `python -m kwcoco finish_install --with_gdal=True`
-  through Kitware's large-image wheel index. This enables `delayed_image` to
-  use region-readable raster paths without adding a distro GDAL development
-  stack to the image.
+```text
+kwcoco==0.9.0
+kwimage_ext==0.4.1
+kwconf==0.11.0
+delayed_image==0.4.7
+```
 
-The Docker build imports both `kwimage_ext` and `osgeo.gdal` after
-installation, so an image is not published as usable if either fast-path
-dependency failed to install.
+These are deliberately **not** installed from KDK's `stack/` development
+submodules. The submodules are useful when changing several KW packages
+locally, but a production image should exercise the released packages that a
+normal user receives. This also keeps an image rebuild from depending on every
+source submodule being initialized.
+
+GDAL is the exception because normal PyPI does not provide the Linux wheel we
+want. After the released `kwcoco` is installed, the image runs:
+
+```bash
+python -m kwcoco finish_install \
+    --with_gdal=True \
+    --with_cv2_headless=False \
+    --strict=False \
+    --prefer_uv=True \
+    --isolated_installer=True
+```
+
+KWCoco therefore drives GDAL installation through Kitware's large-image wheel
+index while still using `uv` as the installer. The isolated mode prevents a
+host/user pip configuration from changing image resolution. The Docker build
+then imports GDAL and records the installed KW package and GDAL versions in
+`/etc/kcd_provenance.json`.
 
 ## Normal build: auto profile
 
@@ -77,6 +98,8 @@ Use the checked-in wrapper:
 
 ```bash
 docker/rfdetr/kcd-rfdetr image-info
+# Reports torch/CUDA plus kwcoco, kwimage-ext, kwconf, delayed-image, GDAL,
+# and the baked /etc/kcd_provenance.json package-version record.
 
 docker/rfdetr/kcd-rfdetr package-build \
     --workdir="$HOME/data/example_snapshot" \

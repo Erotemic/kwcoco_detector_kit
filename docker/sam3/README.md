@@ -26,6 +26,10 @@ Check the runtime:
 docker/sam3/kcd-sam3 image-info
 ```
 
+SAM3 and RF-DETR install the same exact released KW runtime stack from
+`docker/requirements-kwstack.txt`. `image-info` reports `kwimage_ext` and the
+selected CPU-NMS backend; production images require the Rust backend.
+
 The checkpoint is **not** baked into the image. By default the helper mounts
 `$HOME` unchanged, so Hugging Face's normal host cache is reused. Authenticate
 on the host with `hf auth login`, or export `HF_TOKEN`; the helper forwards the

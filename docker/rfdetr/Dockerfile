@@ -43,13 +43,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 WORKDIR /opt/kwcoco_detector_kit
 COPY pyproject.toml README.md LICENSE ./
-COPY docker/rfdetr/requirements-kwstack.txt ./docker/rfdetr/requirements-kwstack.txt
+COPY docker/requirements-kwstack.txt ./docker/requirements-kwstack.txt
 COPY tpl/rf-detr ./tpl/rf-detr
 RUN test -f tpl/rf-detr/src/rfdetr/__init__.py || \
       (echo 'Initialize tpl/rf-detr before building' >&2; exit 1)
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install -e './tpl/rf-detr[train,loggers]' && \
-    uv pip install -r docker/rfdetr/requirements-kwstack.txt && \
+    uv pip install -r docker/requirements-kwstack.txt && \
     uv pip install 'kwimage>=0.11' 'kwutil>=0.3' 'ubelt>=1.4' \
       'opencv-python-headless>=4.8' 'pytest>=8' 'pytest-cov>=4'
 

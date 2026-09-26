@@ -1,0 +1,7 @@
+# Released KW stack shared by detector backend runtime images.
+# Keep these exact pins together so RF-DETR and SAM3 cannot silently drift.
+# Development submodules are intentionally not installed into production images.
+kwcoco==0.9.0
+kwimage_ext==0.4.1
+kwconf==0.11.0
+delayed_image==0.4.7

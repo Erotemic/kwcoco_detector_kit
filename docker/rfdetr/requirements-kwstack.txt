@@ -1,8 +1,3 @@
-# Released KW stack used by the RF-DETR runtime image.
-# Keep these exact pins together so a stack refresh is one small edit.
-# Development submodules under stack/ are intentionally not installed into
-# this image; Docker uses released wheels/sdists through uv pip by default.
-kwcoco==0.9.0
-kwimage_ext==0.4.1
-kwconf==0.11.0
-delayed_image==0.4.7
+# Compatibility include. The canonical released KW runtime stack now lives at
+# docker/requirements-kwstack.txt and is shared by all detector backend images.
+-r ../requirements-kwstack.txt

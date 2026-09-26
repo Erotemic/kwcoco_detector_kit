@@ -35,6 +35,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 WORKDIR /opt/kwcoco_detector_kit
 COPY pyproject.toml README.md LICENSE ./
+COPY docker/requirements-kwstack.txt ./docker/requirements-kwstack.txt
 COPY tpl/sam3 ./tpl/sam3
 RUN test -f tpl/sam3/sam3/model_builder.py || \
       (echo 'Initialize tpl/sam3 before building' >&2; exit 1)
@@ -44,6 +45,7 @@ RUN test -f tpl/sam3/sam3/model_builder.py || \
 # remains in the host Hugging Face cache and is not baked into this image.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install -e ./tpl/sam3 && \
+    uv pip install -r docker/requirements-kwstack.txt && \
     uv pip install 'pytest>=8' 'pytest-cov>=4'
 
 # Exercise the real package import during the build.  The lightweight KDK unit
@@ -57,6 +59,21 @@ from sam3.model_builder import build_sam3_image_model
 print('SAM3 import smoke passed:', sam3.__version__)
 print('processor:', Sam3Processor.__name__)
 print('builder:', build_sam3_image_model.__name__)
+PY
+
+# The tiled predictor and evaluator use kwimage's optional extension fastpaths.
+# Require the released Rust wheel at image-build time so an image that silently
+# falls back to Python NMS cannot be mistaken for the production runtime.
+RUN KWIMAGE_EXT_FORCE_RUST=1 python - <<'PY'
+import importlib.metadata as md
+import kwimage_ext
+from kwimage_ext.algo._nms_backend import cpu_nms
+
+backend = cpu_nms.backend_metadata()
+assert backend['kind'] == 'rust', backend
+print('kwimage_ext:', md.version('kwimage-ext'))
+print('kwimage_ext_file:', kwimage_ext.__file__)
+print('cpu_nms_backend:', backend)
 PY
 
 COPY kwcoco_detector_kit ./kwcoco_detector_kit
@@ -95,7 +112,7 @@ prov = {
     'torch_cuda_version': torch.version.cuda,
     'python_packages': {
         name: md.version(name)
-        for name in ['kwcoco', 'kwconf', 'delayed-image', 'sam3']
+        for name in ['kwcoco', 'kwimage-ext', 'kwconf', 'delayed-image', 'sam3']
     },
 }
 Path('/etc/kcd_provenance.json').write_text(json.dumps(prov, indent=2) + '\n')
@@ -105,7 +122,7 @@ EOF_PROV
 
 LABEL kcd.kit_sha="${KCD_KIT_SHA}" kcd.sam3_sha="${KCD_SAM3_SHA}" \
       kcd.dockerfile_sha256="${KCD_DOCKERFILE_SHA}" kcd.build_time="${KCD_BUILD_TIME}" \
-      kcd.runtime_uid_safe="1" kcd.sam3_admission="1"
+      kcd.runtime_uid_safe="1" kcd.sam3_admission="1" kcd.kwimage_ext_rust="1"
 
 WORKDIR /opt/kwcoco_detector_kit
 CMD ["bash"]

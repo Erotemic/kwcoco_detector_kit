@@ -76,3 +76,27 @@ def test_sam3_dockerfile_uses_pinned_fork_and_does_not_bake_checkpoint():
     assert "facebook/sam3.1" not in text
     assert 'kcd.runtime_uid_safe="1"' in text
     assert 'kcd.sam3_admission="1"' in text
+    assert 'kcd.kwimage_ext_rust="1"' in text
+    assert 'docker/requirements-kwstack.txt' in text
+    assert 'KWIMAGE_EXT_FORCE_RUST=1' in text
+    assert "backend['kind'] == 'rust'" in text
+
+
+def test_shared_kwstack_includes_released_rust_kwimage_ext():
+    text = (REPO / "docker" / "requirements-kwstack.txt").read_text()
+    assert "kwimage_ext==0.4.1" in text
+    rfdetr = (REPO / "docker" / "rfdetr" / "Dockerfile").read_text()
+    sam3 = (REPO / "docker" / "sam3" / "Dockerfile").read_text()
+    assert "docker/requirements-kwstack.txt" in rfdetr
+    assert "docker/requirements-kwstack.txt" in sam3
+
+
+def test_sam3_image_info_reports_rust_backend():
+    out = _run(RUN, "image-info", KCD_DOCKER_DRYRUN="1")
+    assert "kwimage-ext" in out
+    assert "cpu_nms.backend_metadata" in out
+
+
+def test_sam3_exec_keeps_stdin_open():
+    out = _run(RUN, "exec", "python", "-", KCD_DOCKER_DRYRUN="1")
+    assert "--interactive" in out

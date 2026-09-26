@@ -74,6 +74,156 @@ def _mpoly_to_native(mpoly, prediction_space=None):
     return prediction_space.warp_multipolygon_to_native(mpoly)
 
 
+def _annotation_category_identity(ann):
+    """Return a stable category identity for prediction-like annotation dicts."""
+    if "category_name" in ann:
+        return ("name", ann.get("category_name"))
+    if "category_id" in ann:
+        return ("id", ann.get("category_id"))
+    if "label" in ann:
+        return ("label", ann.get("label"))
+    return ("uncategorized", None)
+
+
+def _annotation_ltrb(ann):
+    bbox = ann.get("bbox")
+    if bbox is not None:
+        x, y, w, h = map(float, bbox)
+        return np.array([x, y, x + w, y + h], dtype=float)
+    bbox_xyxy = ann.get("bbox_xyxy")
+    if bbox_xyxy is not None:
+        return np.asarray(bbox_xyxy, dtype=float)
+    return None
+
+
+def suppress_mask_iomin_duplicates(anns, thresh, *, dims=None, return_stats=False):
+    """Suppress same-class mask duplicates using intersection-over-minimum area.
+
+    Ordinary IoU NMS can retain an almost completely contained prediction when
+    its area is much smaller than the enclosing prediction.  This pass measures
+
+        IoMin(A, B) = area(A intersect B) / min(area(A), area(B))
+
+    and greedily keeps the higher-score annotation when IoMin reaches ``thresh``.
+    Only annotations with segmentations participate; box-only annotations are
+    never suppressed by this mask-specific rule.  Different categories never
+    suppress each other.
+
+    Args:
+        anns: Prediction-like annotation dictionaries.  Category identity is
+            read from ``category_name``, then ``category_id``, then ``label``.
+        thresh: Threshold in (0, 1].  ``None`` or values <= 0 disable the pass.
+        dims: Optional ``(height, width)`` used when coercing encoded masks.
+        return_stats: If true, return ``(kept, stats)``.
+
+    Returns:
+        A subset of the original dictionaries, preserving original order.  When
+        ``return_stats`` is true, also returns a small suppression summary.
+    """
+    anns = list(anns)
+    threshold = 0.0 if thresh is None else float(thresh)
+    if threshold <= 0 or len(anns) < 2:
+        stats = {
+            "threshold": threshold,
+            "input": len(anns),
+            "suppressed": 0,
+            "kept": len(anns),
+        }
+        return (anns, stats) if return_stats else anns
+    if not (0.0 < threshold <= 1.0):
+        raise ValueError(f"mask IoMin threshold must be in (0, 1], got {threshold}")
+
+    import kwimage
+
+    # Greedy confidence ordering determines the winner; output ordering remains
+    # unchanged so enabling this filter only removes records.
+    order = sorted(
+        range(len(anns)),
+        key=lambda idx: (-float(anns[idx].get("score", 0.0)), idx),
+    )
+    geom_cache = {}
+    bbox_cache = {}
+    area_cache = {}
+
+    def _coerce_geom(idx):
+        if idx in geom_cache:
+            return geom_cache[idx]
+        seg = anns[idx].get("segmentation")
+        if seg is None:
+            geom_cache[idx] = None
+            area_cache[idx] = 0.0
+            return None
+        try:
+            coerced = kwimage.Segmentation.coerce(seg, dims=dims)
+            geom = coerced.to_multi_polygon().to_shapely(fix=True)
+            area = float(geom.area)
+            if geom.is_empty or area <= 0:
+                geom = None
+                area = 0.0
+        except Exception:
+            # A malformed/unsupported segmentation should not cause a valid
+            # prediction to disappear.  Leave it untouched instead.
+            geom = None
+            area = 0.0
+        geom_cache[idx] = geom
+        area_cache[idx] = area
+        return geom
+
+    def _bbox(idx):
+        if idx not in bbox_cache:
+            box = _annotation_ltrb(anns[idx])
+            if box is None:
+                geom = _coerce_geom(idx)
+                if geom is not None:
+                    minx, miny, maxx, maxy = geom.bounds
+                    box = np.array([minx, miny, maxx, maxy], dtype=float)
+            bbox_cache[idx] = box
+        return bbox_cache[idx]
+
+    kept_score_order = []
+    suppressed = set()
+    for idx in order:
+        geom = _coerce_geom(idx)
+        if geom is None:
+            kept_score_order.append(idx)
+            continue
+        category = _annotation_category_identity(anns[idx])
+        box = _bbox(idx)
+        duplicate = False
+        for prev_idx in kept_score_order:
+            if _annotation_category_identity(anns[prev_idx]) != category:
+                continue
+            prev_geom = _coerce_geom(prev_idx)
+            if prev_geom is None:
+                continue
+            prev_box = _bbox(prev_idx)
+            if box is not None and prev_box is not None:
+                if (
+                    min(box[2], prev_box[2]) <= max(box[0], prev_box[0])
+                    or min(box[3], prev_box[3]) <= max(box[1], prev_box[1])
+                ):
+                    continue
+            min_area = min(area_cache[idx], area_cache[prev_idx])
+            if min_area <= 0:
+                continue
+            inter_area = float(geom.intersection(prev_geom).area)
+            if inter_area / min_area >= threshold:
+                duplicate = True
+                suppressed.add(idx)
+                break
+        if not duplicate:
+            kept_score_order.append(idx)
+
+    kept = [ann for idx, ann in enumerate(anns) if idx not in suppressed]
+    stats = {
+        "threshold": threshold,
+        "input": len(anns),
+        "suppressed": len(suppressed),
+        "kept": len(kept),
+    }
+    return (kept, stats) if return_stats else kept
+
+
 def apply_box_filters(records, score_thresh, nms_thresh):
     """Score-threshold then NMS over detector records.
 

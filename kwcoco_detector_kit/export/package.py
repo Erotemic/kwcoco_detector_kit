@@ -248,6 +248,7 @@ def build_model_package(
     allow_missing_weights: bool = False,
     score_thresh: float = 0.30,
     nms_iou_thresh: float = 0.50,
+    mask_iomin_thresh: float = 0.0,
     username: Optional[str] = None,
     hostname: Optional[str] = None,
 ) -> Path:
@@ -256,6 +257,11 @@ def build_model_package(
     out = Path(out).expanduser()
     if not workdir.exists():
         raise FileNotFoundError(workdir)
+
+    if not (0.0 <= float(mask_iomin_thresh) <= 1.0):
+        raise ValueError(
+            f"mask_iomin_thresh must be in [0, 1], got {mask_iomin_thresh}"
+        )
 
     policy = _safe_read_json(workdir / "policy.json")
     generated_config = _read_generated_config(workdir)
@@ -427,6 +433,7 @@ def build_model_package(
         "postprocess": {
             "score_thresh": float(score_thresh),
             "nms_iou_thresh": float(nms_iou_thresh),
+            "mask_iomin_thresh": float(mask_iomin_thresh),
         },
         "artifacts": artifacts,
         "missing_optional": missing,
@@ -544,6 +551,14 @@ class PackageBuildConfig(kwconf.Config):
     allow_missing_weights = kwconf.Value(False, isflag=True)
     score_thresh = kwconf.Value(0.30, parser=float, help="default package inference score threshold")
     nms_iou_thresh = kwconf.Value(0.50, parser=float, help="recorded NMS IoU threshold")
+    mask_iomin_thresh = kwconf.Value(
+        0.0,
+        parser=float,
+        help=(
+            "recorded same-class mask duplicate IoMin threshold; 0 disables, "
+            "0.85 is a useful starting point for containment duplicates"
+        ),
+    )
     username = kwconf.Value(None, help="provenance username; defaults to current user")
     hostname = kwconf.Value(None, help="provenance hostname; defaults to current host")
     export_onnx = kwconf.Value(
@@ -660,6 +675,7 @@ class PackageBuildConfig(kwconf.Config):
             allow_missing_weights=bool(config.allow_missing_weights),
             score_thresh=float(config.score_thresh),
             nms_iou_thresh=float(config.nms_iou_thresh),
+            mask_iomin_thresh=float(config.mask_iomin_thresh),
             username=str(username),
             hostname=str(hostname),
         )

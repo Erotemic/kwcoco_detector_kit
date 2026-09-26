@@ -203,3 +203,62 @@ def test_bbox_postprocess_maps_prediction_space_back_to_native():
         prediction_space=space,
     )
     assert anns[0]["bbox"] == [20.0, 10.0, 40.0, 40.0]
+
+
+@pytest.mark.requires_torch
+def test_suppress_mask_iomin_nested_same_category():
+    import kwimage
+    from kwcoco_detector_kit.data.postprocess import suppress_mask_iomin_duplicates
+
+    outer = kwimage.Polygon(
+        exterior=np.array([[0, 0], [100, 0], [100, 100], [0, 100], [0, 0]])
+    ).to_coco(style="new")
+    inner = kwimage.Polygon(
+        exterior=np.array([[10, 10], [50, 10], [50, 50], [10, 50], [10, 10]])
+    ).to_coco(style="new")
+    anns = [
+        {"category_name": "poop", "bbox": [0, 0, 100, 100], "segmentation": outer, "score": 0.8},
+        {"category_name": "poop", "bbox": [10, 10, 40, 40], "segmentation": inner, "score": 0.9},
+    ]
+    kept, stats = suppress_mask_iomin_duplicates(anns, 0.85, return_stats=True)
+    assert len(kept) == 1
+    assert kept[0]["score"] == 0.9
+    assert stats["suppressed"] == 1
+
+
+@pytest.mark.requires_torch
+def test_suppress_mask_iomin_respects_category_and_threshold():
+    import kwimage
+    from kwcoco_detector_kit.data.postprocess import suppress_mask_iomin_duplicates
+
+    outer = kwimage.Polygon(
+        exterior=np.array([[0, 0], [100, 0], [100, 100], [0, 100], [0, 0]])
+    ).to_coco(style="new")
+    mostly_inner = kwimage.Polygon(
+        exterior=np.array([[10, 10], [60, 10], [60, 60], [10, 60], [10, 10]])
+    ).to_coco(style="new")
+    other_class = [
+        {"category_name": "poop", "bbox": [0, 0, 100, 100], "segmentation": outer, "score": 0.9},
+        {"category_name": "leaf", "bbox": [10, 10, 50, 50], "segmentation": mostly_inner, "score": 0.8},
+    ]
+    assert len(suppress_mask_iomin_duplicates(other_class, 0.85)) == 2
+    assert suppress_mask_iomin_duplicates(other_class, 0.0) == other_class
+
+
+@pytest.mark.requires_torch
+def test_suppress_mask_iomin_partial_overlap_is_not_containment():
+    import kwimage
+    from kwcoco_detector_kit.data.postprocess import suppress_mask_iomin_duplicates
+
+    a = kwimage.Polygon(
+        exterior=np.array([[0, 0], [100, 0], [100, 100], [0, 100], [0, 0]])
+    ).to_coco(style="new")
+    b = kwimage.Polygon(
+        exterior=np.array([[50, 0], [150, 0], [150, 100], [50, 100], [50, 0]])
+    ).to_coco(style="new")
+    anns = [
+        {"category_name": "poop", "bbox": [0, 0, 100, 100], "segmentation": a, "score": 0.9},
+        {"category_name": "poop", "bbox": [50, 0, 100, 100], "segmentation": b, "score": 0.8},
+    ]
+    # 50% of either mask overlaps: below the proposed 0.85 containment rule.
+    assert len(suppress_mask_iomin_duplicates(anns, 0.85)) == 2

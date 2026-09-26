@@ -128,6 +128,14 @@ class PredictionReviewConfig(kwconf.Config):
     min_score = kwconf.Value(0.0, parser=float)
     top_n = kwconf.Value(500, parser=int)
     target_iou_thresh = kwconf.Value(0.5, parser=float)
+    mask_iomin_thresh = kwconf.Value(
+        0.0,
+        parser=float,
+        help=(
+            "deduplicate same-class segmented predictions before ranking using "
+            "intersection/min(area); 0 disables, 0.85 is a useful starting point"
+        ),
+    )
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -176,8 +184,62 @@ def build_prediction_review(config):
         unclassified_category_policy=config.unclassified_category_policy,
     )
 
+    mask_iomin_thresh = float(config.mask_iomin_thresh)
+    if not (0.0 <= mask_iomin_thresh <= 1.0):
+        raise ValueError(
+            f"mask_iomin_thresh must be in [0, 1], got {mask_iomin_thresh}"
+        )
+    all_pred_anns = pred_dset.annots().objs
+    min_score = float(config.min_score)
+    pred_anns = [
+        ann for ann in all_pred_anns
+        if float(ann.get("score", 0.0)) >= min_score
+    ]
+    dedupe_stats = {
+        "threshold": mask_iomin_thresh,
+        "total_predictions": len(all_pred_anns),
+        "min_score": min_score,
+        "input": len(pred_anns),
+        "suppressed": 0,
+        "kept": len(pred_anns),
+    }
+    if mask_iomin_thresh > 0:
+        from collections import defaultdict
+
+        from kwcoco_detector_kit.data.postprocess import suppress_mask_iomin_duplicates
+
+        anns_by_gid = defaultdict(list)
+        for ann in pred_anns:
+            anns_by_gid[int(ann["image_id"])].append(ann)
+        deduped = []
+        total_suppressed = 0
+        for gid, image_anns in anns_by_gid.items():
+            img = pred_dset.imgs[int(gid)]
+            dims = None
+            if img.get("height") is not None and img.get("width") is not None:
+                dims = (int(img["height"]), int(img["width"]))
+            kept, stats = suppress_mask_iomin_duplicates(
+                image_anns, mask_iomin_thresh, dims=dims, return_stats=True
+            )
+            deduped.extend(kept)
+            total_suppressed += int(stats["suppressed"])
+        pred_anns = deduped
+        dedupe_stats = {
+            "threshold": mask_iomin_thresh,
+            "total_predictions": len(all_pred_anns),
+            "min_score": min_score,
+            "input": sum(len(v) for v in anns_by_gid.values()),
+            "suppressed": total_suppressed,
+            "kept": len(pred_anns),
+        }
+        print(
+            "prediction-review: mask IoMin dedupe "
+            f"suppressed {total_suppressed}/{dedupe_stats['input']} "
+            f"score-eligible predictions at threshold {mask_iomin_thresh:g}"
+        )
+
     queue = []
-    for ann in pred_dset.annots().objs:
+    for ann in pred_anns:
         score = float(ann.get("score", 0.0))
         if score < float(config.min_score):
             continue
@@ -222,6 +284,7 @@ def build_prediction_review(config):
         "true_kwcoco": str(true_fpath),
         "pred_kwcoco": str(pred_fpath),
         "truth_semantics": semantics.to_dict(),
+        "prediction_postprocess": {"mask_iomin_dedupe": dedupe_stats},
         "items": queue,
     }, indent=2, sort_keys=True) + "\n")
 
@@ -272,6 +335,7 @@ def build_prediction_review(config):
         "canonical_truth": str(true_fpath),
         "prediction_source": str(pred_fpath),
         "truth_semantics": semantics.to_dict(),
+        "prediction_postprocess": {"mask_iomin_dedupe": dedupe_stats},
     })
     review_dset.fpath = str(dst_dpath / "review.kwcoco.zip")
     review_dset.dump()

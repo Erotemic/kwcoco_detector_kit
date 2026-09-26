@@ -334,6 +334,7 @@ def predict_kwcoco(
     device: str = "cpu",
     score_thresh: Optional[float] = None,
     nms_thresh: Optional[float] = None,
+    mask_iomin_thresh: Optional[float] = None,
     workdir: Optional[str | Path] = None,
     backend: str = "auto",
     windowed: Optional[bool] = None,
@@ -368,6 +369,7 @@ def predict_kwcoco(
         detector_records_to_anns,
         detector_records_to_bbox_anns,
         mask_records_to_anns,
+        suppress_mask_iomin_duplicates,
     )
     import kwcoco_detector_kit.trainers  # noqa: F401 - register plugins
     from kwcoco_detector_kit.trainers._registry import get_trainer
@@ -395,6 +397,12 @@ def predict_kwcoco(
                     "nms_iou", post_manifest.get("nms_iou_thresh", 0.50)
                 )
             )
+        if mask_iomin_thresh is None:
+            mask_iomin_thresh = float(post_manifest.get("mask_iomin_thresh", 0.0))
+        if not (0.0 <= float(mask_iomin_thresh) <= 1.0):
+            raise ValueError(
+                f"mask_iomin_thresh must be in [0, 1], got {mask_iomin_thresh}"
+            )
         if windowed is None:
             windowed = str(inference_manifest.get("mode", "whole_image")) == "windowed"
         if overlap is None:
@@ -407,6 +415,7 @@ def predict_kwcoco(
         post_cfg = {
             "score_thresh": float(score_thresh),
             "nms_thresh": float(nms_thresh),
+            "mask_iomin_thresh": float(mask_iomin_thresh),
             "crop_padding": float(post_manifest.get("crop_padding", 10)),
             "polygon_simplify": float(post_manifest.get("polygon_simplify", 1.0)),
             "min_component_area": float(post_manifest.get("min_component_area", 50.0)),
@@ -474,6 +483,7 @@ def predict_kwcoco(
                 "batch_size": int(batch_size),
                 "score_thresh": float(score_thresh),
                 "nms_thresh": float(nms_thresh),
+                "mask_iomin_thresh": float(mask_iomin_thresh),
                 "source_read_strategy": str(source_read_strategy),
                 "prediction_scale": prediction_scale,
                 "whole_image_pass": bool(whole_image_pass),
@@ -703,6 +713,11 @@ def predict_kwcoco(
                         anns = detector_records_to_bbox_anns(
                             records, ann_cfg, label_mapping,
                             prediction_space=prediction_space,
+                        )
+                    if float(mask_iomin_thresh) > 0:
+                        native_hw = getattr(prediction_space, "native_hw", None)
+                        anns = suppress_mask_iomin_duplicates(
+                            anns, float(mask_iomin_thresh), dims=native_hw
                         )
                     return anns
                 except Exception as ex:
@@ -934,6 +949,7 @@ def predict_kwcoco(
                     "batch_size": int(batch_size),
                     "score_thresh": float(score_thresh),
                     "nms_thresh": float(nms_thresh),
+                    "mask_iomin_thresh": float(mask_iomin_thresh),
                     "source_read_strategy": str(source_read_strategy),
                     "prediction_scale": prediction_scale,
                     "source_read_strategy_counts": strategy_counts,
@@ -1023,6 +1039,16 @@ class PredictConfig(kwconf.Config):
     backend = kwconf.Value("auto", choices=["auto", "onnx", "torch"])
     score_thresh = kwconf.Value(None, parser=float)
     nms_thresh = kwconf.Value(None, parser=float)
+    mask_iomin_thresh = kwconf.Value(
+        None,
+        parser=float,
+        help=(
+            "same-class mask duplicate suppression using "
+            "intersection/min(area); 0 disables, e.g. 0.85 suppresses an "
+            "instance when at least 85% of the smaller mask overlaps a "
+            "higher-score instance"
+        ),
+    )
     workdir = kwconf.Value(None, help="optional persistent materialized predictor workdir")
     windowed = kwconf.Value(
         None,
@@ -1111,6 +1137,7 @@ class PredictConfig(kwconf.Config):
             backend=str(config.backend),
             score_thresh=config.score_thresh,
             nms_thresh=config.nms_thresh,
+            mask_iomin_thresh=config.mask_iomin_thresh,
             workdir=config.workdir,
             windowed=windowed,
             window=config.window,

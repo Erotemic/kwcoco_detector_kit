@@ -70,6 +70,7 @@ def test_mock_tiny_package_zip_predict_roundtrip(synthetic_kwcoco, tmp_workdir, 
         test_kwcoco=str(synthetic_kwcoco),
         username="alice",
         hostname="node0",
+        mask_iomin_thresh=0.85,
     )
 
     with open_package(package_zip) as (root, manifest):
@@ -78,6 +79,7 @@ def test_mock_tiny_package_zip_predict_roundtrip(synthetic_kwcoco, tmp_workdir, 
         assert manifest["provenance"]["username"] == "alice"
         assert manifest["provenance"]["hostname"] == "node0"
         assert manifest["artifacts"]["checkpoint"] == "weights/best_stg2.pth"
+        assert manifest["postprocess"]["mask_iomin_thresh"] == 0.85
         assert (root / manifest["artifacts"]["checkpoint"]).exists()
         assert not Path(manifest["artifacts"]["checkpoint"]).is_absolute()
         yaml.safe_dump(manifest)
@@ -121,6 +123,9 @@ def test_predict_config_windowed_key_value_boolean():
 
     config = PredictConfig.cli(argv=common + ["--pipeline=true"], strict=True)
     assert config.pipeline is True
+
+    config = PredictConfig.cli(argv=common + ["--mask-iomin-thresh=0.85"], strict=True)
+    assert config.mask_iomin_thresh == 0.85
 
     config = PredictConfig.cli(argv=common + ["--prediction-scale=0.4"], strict=True)
     assert config.prediction_scale == 0.4

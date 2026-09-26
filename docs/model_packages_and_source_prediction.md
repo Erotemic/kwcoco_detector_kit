@@ -304,3 +304,39 @@ with `--checkpoint-every` and `--checkpoint-seconds`. Profile metadata records
 `checkpoint_writes`, `checkpoint_write_seconds`, and `checkpoint_bytes` so the
 checkpoint overhead is measurable. All temporary resume artifacts are removed
 only after the final destination KWCoco is successfully serialized.
+
+
+## Mask-containment duplicate suppression
+
+Box IoU NMS can retain two masks when a small prediction is almost entirely
+contained by a larger prediction: the union is dominated by the larger mask,
+so box/mask IoU may be modest even though the smaller mask is effectively a
+duplicate. KDK can apply a same-class mask IoMin pass after polygonization:
+
+```text
+IoMin(A, B) = area(A intersect B) / min(area(A), area(B))
+```
+
+Configure it per prediction run:
+
+```bash
+kwcoco-detector-kit predict \
+    ... \
+    --mask_iomin_thresh=0.85
+```
+
+`0` disables the pass. The higher-score instance wins; different categories do
+not suppress one another. Packages can record a default with
+`package-build --mask_iomin_thresh=...`, while a prediction-time argument
+overrides the packaged default.
+
+Existing prediction KWCoco files do not need to be regenerated merely to make a
+truth-review queue with this rule. Apply the same filter while ranking:
+
+```bash
+kwcoco-detector-kit prediction-review \
+    ... \
+    --mask_iomin_thresh=0.85
+```
+
+The review output records how many predictions were removed by the filter.

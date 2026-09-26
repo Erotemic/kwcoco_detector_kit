@@ -275,11 +275,14 @@ def run(config):
             label_mapping={0: str(config.target_category)},
         )
         add_prediction_annotations(pred, gid, anns, "sam3")
-        prog.set_postfix(
-            dets=len(records),
-            sec=f"{elapsed:.2f}",
-            peak=(f"{snap.get('peak_reserved_gb', 0):.1f}GB" if snap else "cpu"),
+        progress_postfix = (
+            f"dets={len(records)} "
+            f"sec={elapsed:.2f} "
+            f"peak={snap.get('peak_reserved_gb', 0):.1f}GB"
+            if snap
+            else f"dets={len(records)} sec={elapsed:.2f} peak=cpu"
         )
+        prog.set_postfix(progress_postfix)
 
     pred.dump()
 

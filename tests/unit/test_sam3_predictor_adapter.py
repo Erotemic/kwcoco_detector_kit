@@ -59,3 +59,14 @@ def test_coerce_numpy_accepts_torch_bfloat16():
     got = _coerce_numpy(value)
     assert got.dtype == np.float32
     np.testing.assert_allclose(got, [0.25, 0.75], rtol=0, atol=1e-3)
+
+
+def test_sam3_admission_uses_ubelt_compatible_postfix_api():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "kwcoco_detector_kit/eval/sam3_admission.py"
+    ).read_text()
+    assert "prog.set_postfix(progress_postfix)" in source
+    assert "prog.set_postfix(\n            dets=" not in source

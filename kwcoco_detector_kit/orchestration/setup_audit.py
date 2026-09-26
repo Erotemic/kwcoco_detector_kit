@@ -71,6 +71,12 @@ PROBES: List[Probe] = [
     # Webdataset — Phase 3 alternative TileStore backend.
     Probe("webdataset",       "webdataset",       "webdataset",        ("data",)),
     Probe("braceexpand",      "braceexpand",      "webdataset",        ("data",)),
+    # SAM3 admission backend. The sam3 package itself is provided by the local submodule.
+    Probe("sam3",             None,               "sam3",              ("admission",)),
+    Probe("huggingface_hub",  "huggingface_hub",  "sam3",              ("admission",)),
+    Probe("timm",             "timm>=1.0.17",     "sam3",              ("admission",)),
+    Probe("ftfy",             "ftfy==6.1.1",      "sam3",              ("admission",)),
+    Probe("iopath",           "iopath>=0.1.10",   "sam3",              ("admission",)),
 ]
 
 
@@ -196,7 +202,7 @@ class CheckEnvConfig(kwconf.Config):
 
     groups = kwconf.Value(
         "core,onnx",
-        help="comma-separated groups to probe: core,onnx,deimv2,opengroundingdino",
+        help="comma-separated groups to probe: core,onnx,deimv2,opengroundingdino,sam3",
     )
     install = kwconf.Value(
         False, isflag=True,

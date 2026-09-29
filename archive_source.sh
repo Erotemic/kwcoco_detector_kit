@@ -7,6 +7,7 @@ stack/delayed_image: 1
 stack/kwcoco: 100
 stack/kwcoco_dataloader: 100
 tpl/sam3: 10
+tpl/libreyolo: 10
 #tpl/DEIMv2: 10
 #tpl/MaskDINO: 10
 #tpl/YOLO-v9: 10

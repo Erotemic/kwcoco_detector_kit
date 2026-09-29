@@ -49,3 +49,6 @@
 [submodule "tpl/sam3"]
 	path = tpl/sam3
 	url = https://github.com/Erotemic/sam3.git
+[submodule "tpl/libreyolo"]
+	path = tpl/libreyolo
+	url = https://github.com/Erotemic/libreyolo.git

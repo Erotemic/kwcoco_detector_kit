@@ -297,7 +297,16 @@ def _build_package_predictor(
         onnx_fpath = package_root / onnx_rel
         try:
             contract = onnx_meta.get("contract")
-            if contract == "rfdetr_raw_seg_v1":
+            if contract == "libreyolo_native_v1":
+                from kwcoco_detector_kit.trainers.libreyolo import LibreYOLOPredictor
+
+                predictor = LibreYOLOPredictor(
+                    onnx_fpath,
+                    manifest.get("policy") or {},
+                    device=str(device),
+                )
+                predictor.set_score_thresh(float(score_thresh))
+            elif contract == "rfdetr_raw_seg_v1":
                 from kwcoco_detector_kit.predictors.rfdetr_onnx import RFDETROnnxPredictor
 
                 predictor = RFDETROnnxPredictor(

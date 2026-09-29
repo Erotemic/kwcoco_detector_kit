@@ -1,14 +1,14 @@
 # kwcoco-detector-kit
 
-Domain-agnostic object-detector training pipeline on **kwcoco** datasets. Scales from a single 12 GB GTX 1080 Ti to multi-GPU A100 / H100 / Blackwell clusters. Ships two trainer plugins (DEIMv2, OpenGroundingDINO) plus a mock CPU detector for CI smoke.
+Kwcoco-native detector training, evaluation, mining, and packaging. KDK keeps rich kwcoco / large-image semantics in its data plane and uses pluggable model engines; LibreYOLO is the primary general backend for current detector and instance-segmentation families.
 
 ## Quick start
 
 ```bash
 git clone https://github.com/Erotemic/kwcoco-detector-kit.git
 cd kwcoco-detector-kit
-git submodule update --init --recursive          # tpl/DEIMv2 + tpl/Open-GroundingDino
-pip install -e ".[dev]"
+git submodule update --init --recursive          # includes tpl/libreyolo
+pip install -e ".[dev,libreyolo]"
 bash examples/kwcoco_demo/run_smoke.sh
 ```
 
@@ -17,14 +17,17 @@ bash examples/kwcoco_demo/run_smoke.sh
 ## What's in the box
 
 - **`data/`** — kwcoco tile augmentation (three modes: full-only, quadrant grid, multi-scale fixed-size), positive + hard-negative merging, offline hard-negative mining, kwcoco → MSCOCO export.
-- **`trainers/`** — pluggable trainer interface; `deimv2` covers 12 variants (HGNetv2 Atto/Femto/Pico/N/S/M/L/X + DINOv3 S/M/L/X); `opengroundingdino` covers DINOv2 + BERT + DETR; `mock_tiny` is a CPU smoke detector.
+- **`trainers/`** — pluggable trainer interface; `libreyolo` is the general model-engine backend (DEIMv2, D-FINE, RF-DETR, YOLOv9, GTR, TinyFormer in the initial catalog), while direct adapters remain available as specialized/reference paths; `mock_tiny` is a CPU smoke detector.
 - **`predictors/`** — trained-checkpoint inference adapters used by the eval + hard-neg mining paths.
 - **`export/`** — ONNX export + modelspec sidecar, torch ↔ ONNX parity guard, deployment package YAML.
 - **`eval/`** — kwcoco eval driver, checkpoint shortlist sweep, ONNX desktop benchmark.
 - **`orchestration/`** — Pareto sweep state machine, round-based hard-negative mining driver, eligibility manifest, setup-time `--check-env` probe.
 - **`config-init` / `config-inspect` / `config-edit`** — editable environment + dataset YAML configs with host and kwcoco introspection; see [`docs/configs.md`](docs/configs.md).
 
-All CLIs are [scriptconfig](https://gitlab.kitware.com/utils/scriptconfig)-based; `python -m kwcoco_detector_kit --help` or `kwcoco-detector-kit --help`.
+All CLIs use `kwconf`; `python -m kwcoco_detector_kit --help` or `kwcoco-detector-kit --help`.
+
+The KDK/LibreYOLO ownership boundary and backend catalog are documented in
+[`docs/libreyolo_integration.md`](docs/libreyolo_integration.md).
 
 ## Scale tiers
 

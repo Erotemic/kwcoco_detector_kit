@@ -138,7 +138,16 @@ def check_parity(
         set_score_thresh(score_floor)
     category_names = list(policy.get("category_names") or [])
 
-    if trainer.name == "rfdetr":
+    if trainer.name == "libreyolo":
+        from kwcoco_detector_kit.trainers.libreyolo import LibreYOLOPredictor
+        onnx_predictor = LibreYOLOPredictor(
+            onnx_fpath,
+            policy,
+            device=str(device),
+        )
+        onnx_predictor.set_score_thresh(score_floor)
+        contract = "libreyolo_native_v1"
+    elif trainer.name == "rfdetr":
         from kwcoco_detector_kit.predictors.rfdetr_onnx import RFDETROnnxPredictor
         onnx_predictor = RFDETROnnxPredictor(
             onnx_fpath,
@@ -217,9 +226,13 @@ class ParityConfig(kwconf.Config):
         workdir = Path(str(config.workdir)).expanduser().resolve()
         policy = json.loads((workdir / "policy.json").read_text())
         variant = str(policy.get("variant") or "")
-        trainer_name = "rfdetr" if variant.startswith("seg_") else variant.split("_")[0]
-        if not trainer_name:
-            trainer_name = "deimv2"
+        framework = policy.get("framework") or {}
+        trainer_name = str(
+            policy.get("trainer")
+            or framework.get("trainer")
+            or ("rfdetr" if variant.startswith("seg_") else variant.split("_")[0])
+            or "deimv2"
+        )
         trainer = get_trainer(trainer_name)
         input_hw = tuple(policy.get("input_hw") or [
             policy.get("export_input_h", 640), policy.get("export_input_w", 640)

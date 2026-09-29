@@ -18,7 +18,7 @@ Resolution order for the kit SHA:
   3. ``git -C <kit_root> rev-parse HEAD`` of the editable install.
   4. ``"<unknown>"`` if everything fails.
 
-Same fallback chain for the DEIMv2 and Open-GroundingDino submodules.
+Same fallback chain for the DEIMv2, Open-GroundingDino, RF-DETR, and LibreYOLO submodules.
 """
 from __future__ import annotations
 
@@ -115,6 +115,9 @@ def provenance_dict() -> Dict[str, Any]:
       kit_dirty          uncommitted changes flag (True/False/None)
       deimv2_sha         tpl/DEIMv2 HEAD
       opengroundingdino_sha   tpl/Open-GroundingDino HEAD
+      rfdetr_sha         tpl/rf-detr HEAD
+      sam3_sha           tpl/sam3 HEAD
+      libreyolo_sha      tpl/libreyolo HEAD
       source             where the SHAs came from
                          ('env' | 'file' | 'git' | 'mixed' | 'unknown')
 
@@ -126,6 +129,7 @@ def provenance_dict() -> Dict[str, Any]:
     ogdino = (kit_root / "tpl" / "Open-GroundingDino") if kit_root else None
     rfdetr = (kit_root / "tpl" / "rf-detr") if kit_root else None
     sam3 = (kit_root / "tpl" / "sam3") if kit_root else None
+    libreyolo = (kit_root / "tpl" / "libreyolo") if kit_root else None
 
     # Track where each value came from so we can surface confusing
     # situations (e.g. file says X but git says Y).
@@ -149,6 +153,7 @@ def provenance_dict() -> Dict[str, Any]:
     ogdino_sha = _resolve_with_src("KCD_PROVENANCE_OGDINO_SHA", "opengroundingdino_sha", ogdino)
     rfdetr_sha = _resolve_with_src("KCD_PROVENANCE_RFDETR_SHA", "rfdetr_sha", rfdetr)
     sam3_sha = _resolve_with_src("KCD_PROVENANCE_SAM3_SHA", "sam3_sha", sam3)
+    libreyolo_sha = _resolve_with_src("KCD_PROVENANCE_LIBREYOLO_SHA", "libreyolo_sha", libreyolo)
     dataloader_sha = _resolve_with_src("KCD_PROVENANCE_DATALOADER_SHA", "kwcoco_dataloader_sha", dataloader)
     # Build-time-only fields (no runtime git fallback): present iff the
     # image baked /etc/kcd_provenance.json (see Dockerfile).
@@ -168,6 +173,7 @@ def provenance_dict() -> Dict[str, Any]:
     ogdino_dirty = _git_dirty(ogdino) if ogdino else None
     rfdetr_dirty = _git_dirty(rfdetr) if rfdetr else None
     sam3_dirty = _git_dirty(sam3) if sam3 else None
+    libreyolo_dirty = _git_dirty(libreyolo) if libreyolo else None
 
     return {
         "kit_sha": kit_sha,
@@ -180,6 +186,8 @@ def provenance_dict() -> Dict[str, Any]:
         "rfdetr_dirty": rfdetr_dirty,
         "sam3_sha": sam3_sha,
         "sam3_dirty": sam3_dirty,
+        "libreyolo_sha": libreyolo_sha,
+        "libreyolo_dirty": libreyolo_dirty,
         "kwcoco_dataloader_sha": dataloader_sha,
         "build_time": build_time,
         "dockerfile_sha256": dockerfile_sha256,

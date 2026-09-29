@@ -138,6 +138,20 @@ def export_onnx(
     metadata field to a reason string (see ``write_modelspec``).
     """
     workdir = Path(workdir)
+    if trainer.name == "libreyolo":
+        return _export_libreyolo(
+            trainer=trainer,
+            workdir=workdir,
+            input_hw=input_hw,
+            out_fpath=out_fpath,
+            opset=opset,
+            score_thresh=score_thresh,
+            category_names=category_names,
+            category_names_source=category_names_source,
+            imputed=imputed,
+            force=force,
+            device=device,
+        )
     if trainer.name == "rfdetr":
         return _export_rfdetr(
             trainer=trainer,
@@ -179,6 +193,93 @@ def export_onnx(
         force=force,
     )
 
+
+
+def _export_libreyolo(
+    *,
+    trainer,
+    workdir: Path,
+    input_hw: Tuple[int, int],
+    out_fpath: Optional[Path],
+    opset: int,
+    score_thresh: float,
+    category_names: Optional[Sequence[str]],
+    category_names_source: Optional[str] = None,
+    imputed: Optional[dict] = None,
+    force: bool,
+    device: str,
+) -> Path:
+    """Use LibreYOLO's family-native exporter and preserve its metadata.
+
+    Unlike KDK's historical processed-detection graph, LibreYOLO exports the
+    model family's native runtime contract. Parity/package inference routes the
+    artifact back through LibreYOLO's ONNX backend, which owns the matching
+    preprocessing and postprocessing implementation.
+    """
+    from kwcoco_detector_kit.trainers.libreyolo import _ensure_libreyolo_importable
+
+    _ensure_libreyolo_importable()
+    from libreyolo import LibreYOLO
+
+    H, W = map(int, input_hw)
+    if H != W:
+        raise ValueError(f"LibreYOLO KDK export currently requires square input, got {(H, W)}")
+    policy = _read_policy(workdir)
+    framework = policy.get("framework") or {}
+    task = framework.get("task") or policy.get("task") or "detect"
+    size = framework.get("size") or None
+    family = framework.get("family") or ""
+    ckpt = trainer.find_checkpoint(workdir)
+    export_dpath = workdir / "export"
+    export_dpath.mkdir(parents=True, exist_ok=True)
+    if out_fpath is None:
+        out_fpath = export_dpath / f"libreyolo_{family}_{task}_h{H}w{W}.onnx"
+    out_fpath = Path(out_fpath)
+    if out_fpath.is_file() and not force:
+        return out_fpath
+
+    model = LibreYOLO(str(ckpt), size=size, task=task, device=str(device))
+    exported = Path(model.export(
+        format="onnx",
+        output_path=str(out_fpath),
+        imgsz=H,
+        opset=int(opset),
+        dynamic=False,
+        batch=1,
+        device=str(device),
+    ))
+    if exported.resolve() != out_fpath.resolve():
+        if out_fpath.exists():
+            out_fpath.unlink()
+        exported.replace(out_fpath)
+    if not out_fpath.is_file():
+        raise FileNotFoundError(f"LibreYOLO exporter did not produce {out_fpath}")
+
+    names, fingerprint, prov, imp = _modelspec_provenance(
+        trainer=trainer,
+        workdir=workdir,
+        ckpt=ckpt,
+        category_names=category_names or policy.get("category_names") or [],
+        imputed=imputed,
+    )
+    write_modelspec(
+        out_fpath,
+        input_hw=(H, W),
+        postprocess_score_thresh=float(score_thresh),
+        variant=str(policy.get("variant") or "libreyolo"),
+        category_names=names,
+        category_names_source=category_names_source or "policy.json",
+        source_checkpoint=fingerprint,
+        provenance=prov,
+        imputed=imp,
+        extra_meta={
+            "backend_contract": "libreyolo_native_v1",
+            "libreyolo_family": family,
+            "libreyolo_size": size,
+            "task": task,
+        },
+    )
+    return out_fpath
 
 def _normalize_from_train_yml(workdir: Path):
     """Recover (mean, std) from the run's generated train.yml val transforms.

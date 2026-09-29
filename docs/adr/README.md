@@ -41,3 +41,4 @@ lives in `docs/` (the user-facing docs) or `dev/` (engineering memory).
 | # | Title | Status |
 |---|---|---|
 | [0001](0001-dual-tile-store-backends.md) | KwcocoJpegStore + WebdatasetStore both stay first-class | accepted |
+| [0002](0002-kwcoco-data-plane-libreyolo-model-engine.md) | KDK owns kwcoco data plane; LibreYOLO is primary model engine | accepted |

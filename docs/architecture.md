@@ -3,7 +3,7 @@
 ```
 kwcoco_detector_kit/
 ├── data/          tile / merge / mine / coco_export — kwcoco-side data plumbing
-├── trainers/      _interface + _registry + _tier + deimv2 + mock_tiny
+├── trainers/      _interface + _registry + _tier + libreyolo + legacy direct adapters
 ├── predictors/    _interface + per-trainer checkpoint inference adapters
 ├── export/        onnx + parity + modelspec + package
 ├── eval/          kwcoco_eval + checkpoint_select + bench
@@ -75,3 +75,13 @@ transform, `TiledPredictor` works only in prediction coordinates, and
 postprocessing maps final boxes/polygons back to native image coordinates.
 This separation allows overview-aware coarse inference without contaminating
 KWCoco geometry with temporary detector resolution choices.
+
+
+## Model-engine boundary
+
+The preferred general model engine is LibreYOLO; see
+[ADR-0002](adr/0002-kwcoco-data-plane-libreyolo-model-engine.md) and
+[`libreyolo_integration.md`](libreyolo_integration.md). KDK remains the owner
+of kwcoco preparation, PredictionSpace, large-image tiling, truth semantics,
+mining/replay, and source-space evaluation. The model engine receives a
+derivative prepared view and returns ordinary detector records.

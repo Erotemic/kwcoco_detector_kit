@@ -415,12 +415,16 @@ def build_model_package(
             "kdk_version": _package_version("kwcoco_detector_kit"),
             "framework_versions": {
                 "rfdetr": _package_version("rfdetr") if str(trainer) == "rfdetr" else None,
+                "libreyolo": _package_version("libreyolo") if str(trainer) == "libreyolo" else None,
                 "torch": _package_version("torch"),
                 "onnxruntime": _package_version("onnxruntime"),
             },
             "detector_source_git_commit": (
                 _git_commit(_kdk_source_root() / "tpl" / "rf-detr")
-                if str(trainer) == "rfdetr" else None
+                if str(trainer) == "rfdetr"
+                else _git_commit(_kdk_source_root() / "tpl" / "libreyolo")
+                if str(trainer) == "libreyolo"
+                else None
             ),
             "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
             "docker_image": os.environ.get("IMAGE_TAG"),

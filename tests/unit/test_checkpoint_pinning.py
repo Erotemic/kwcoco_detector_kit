@@ -68,7 +68,7 @@ def test_a_string_path_is_accepted(tmp_path):
     assert _pin_checkpoint(_Trainer(None), tmp_path, str(pinned)) == pinned
 
 
-@pytest.mark.parametrize("name", ["deimv2", "opengroundingdino", "mock_tiny"])
+@pytest.mark.parametrize("name", ["deimv2", "opengroundingdino", "rfdetr", "libreyolo", "mock_tiny"])
 def test_every_trainer_exposes_the_parameter(name):
     """The eval path passes checkpoint= unconditionally.
 

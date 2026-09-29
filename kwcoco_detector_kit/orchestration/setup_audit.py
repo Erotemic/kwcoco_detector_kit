@@ -9,6 +9,7 @@ isn't burned on a `ModuleNotFoundError` (failure #11). Covers:
 - DEIMv2 trainer hidden deps: faster_coco_eval, calflops, transformers,
   tensorboard, scipy.
 - OpenGroundingDINO + SAM2 (Phase 2): transformers, addict, yapf, colorlog.
+- LibreYOLO model engine: pinned-source runtime deps plus transformers.
 
 Each probe is a one-line ``importlib.util.find_spec`` check. The aggregate
 report exits non-zero when anything required is missing.
@@ -31,7 +32,7 @@ import kwconf
 class Probe:
     module: str
     pip_name: Optional[str]      # None means "no auto-install"
-    group: str                   # "core", "onnx", "deimv2", "opengroundingdino"
+    group: str                   # e.g. "core", "onnx", "libreyolo", "deimv2"
     required_in: Tuple[str, ...] = ()
     version_spec: Optional[str] = None
 
@@ -68,6 +69,19 @@ PROBES: List[Probe] = [
     Probe("transformers",     "transformers>=4.35,<4.47", "opengroundingdino", ("trainers",), ">=4.35,<4.47"),
     Probe("colorlog",         "colorlog",         "opengroundingdino", ("trainers",)),
     Probe("jsonlines",        "jsonlines",        "opengroundingdino", ("trainers",)),
+    # LibreYOLO model engine. Source is pinned in tpl/libreyolo and imported
+    # directly, so KDK's extra mirrors the runtime deps that are not already
+    # guaranteed by KDK core.
+    Probe("requests",         "requests>=2.25.0",     "libreyolo", ("trainers",)),
+    Probe("mss",              "mss>=9.0.1",           "libreyolo", ("trainers",)),
+    Probe("tqdm",             "tqdm>=4.65.0",         "libreyolo", ("trainers",)),
+    Probe("pycocotools",      "pycocotools>=2.0.0",  "libreyolo", ("trainers",)),
+    Probe("typer",            "typer>=0.9.0",         "libreyolo", ("trainers",)),
+    Probe("click",            "click>=8.0.0",         "libreyolo", ("trainers",)),
+    Probe("safetensors",      "safetensors>=0.4.0",  "libreyolo", ("trainers",)),
+    Probe("scipy",            "scipy>=1.7.0",        "libreyolo", ("trainers",)),
+    Probe("cloudpickle",      "cloudpickle>=3.0.0",  "libreyolo", ("trainers",)),
+    Probe("transformers",     "transformers>=5.1.0", "libreyolo", ("trainers",), ">=5.1.0"),
     # Webdataset — Phase 3 alternative TileStore backend.
     Probe("webdataset",       "webdataset",       "webdataset",        ("data",)),
     Probe("braceexpand",      "braceexpand",      "webdataset",        ("data",)),
@@ -127,7 +141,7 @@ def _satisfies_version_spec(module: str, spec: Optional[str]) -> tuple[bool, Opt
 
 # Groups for which find_spec isn't sufficient — actually try to import
 # the canonical entry points so we catch transitive version conflicts.
-_STRICT_IMPORT_GROUPS = {"deimv2", "opengroundingdino"}
+_STRICT_IMPORT_GROUPS = {"deimv2", "opengroundingdino", "libreyolo"}
 
 
 def probe_env(*, groups: Optional[Iterable[str]] = None,
@@ -139,7 +153,7 @@ def probe_env(*, groups: Optional[Iterable[str]] = None,
         strict_import: when True, do a real ``__import__`` for every
             probe (catches version-conflict raises). When False (default),
             do real imports only for groups in ``_STRICT_IMPORT_GROUPS``
-            (deimv2, opengroundingdino) and find_spec for the rest.
+            (deimv2, opengroundingdino, libreyolo) and find_spec for the rest.
     """
     selected_groups = set(groups) if groups is not None else None
     selected = [p for p in PROBES if (selected_groups is None or p.group in selected_groups)]
@@ -202,7 +216,7 @@ class CheckEnvConfig(kwconf.Config):
 
     groups = kwconf.Value(
         "core,onnx",
-        help="comma-separated groups to probe: core,onnx,deimv2,opengroundingdino,sam3",
+        help="comma-separated groups to probe: core,onnx,deimv2,opengroundingdino,libreyolo,sam3",
     )
     install = kwconf.Value(
         False, isflag=True,
@@ -295,6 +309,7 @@ def _runtime_probe(*, require_gpu: bool) -> int:
             f"[check-env runtime] provenance: kit={p['kit_sha'][:12]} "
             f"deimv2={p['deimv2_sha'][:12]} "
             f"ogdino={p['opengroundingdino_sha'][:12]} "
+            f"libreyolo={p['libreyolo_sha'][:12]} "
             f"src={p['source']}"
             + ("  DIRTY-KIT" if p.get("kit_dirty") else "")
         )
@@ -351,6 +366,18 @@ def _runtime_probe(*, require_gpu: bool) -> int:
                 f"({type(ex).__name__}: {ex})"
             )
             rc = max(rc, 5)
+
+    # --- LibreYOLO repo discovery ---
+    try:
+        from kwcoco_detector_kit.trainers.libreyolo import _resolve_libreyolo_repo
+        repo = _resolve_libreyolo_repo()
+        print(f"[check-env runtime] LibreYOLO repo OK -- {repo}")
+    except Exception as ex:
+        print(
+            f"[check-env runtime] LibreYOLO repo NOT found  -> FAIL  "
+            f"({type(ex).__name__}: {ex})"
+        )
+        rc = max(rc, 5)
 
     # --- OGDino MSDeformAttention .so (only needed for v9 distillation) ---
     try:

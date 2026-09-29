@@ -48,7 +48,7 @@ Schema (``schema: recipe.v1``)
     workspace:
         kcd_root: <path>                    # required, becomes $KCD_ROOT
     sweep:
-        trainer: deimv2 | opengroundingdino | mock_tiny
+        trainer: libreyolo | deimv2 | opengroundingdino | rfdetr | mock_tiny
         matrix:                             # list of {variant,input_hw,train_policy}
           - variant: deimv2_pico
             input_hw: [416, 416]

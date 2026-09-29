@@ -34,30 +34,48 @@ def run_onnx_bench(
 
     sess = ort.InferenceSession(str(onnx_fpath), providers=list(providers))
     inputs = sess.get_inputs()
-    images_input = next(i for i in inputs if i.name == "images")
-    size_input = next(i for i in inputs if i.name == "orig_target_sizes")
-    # Resolve dynamic batch dim: 1.
-    shape = []
-    for d in images_input.shape:
-        if isinstance(d, int):
-            shape.append(int(d))
-        elif d == "N" or d is None:
-            shape.append(1)
-        else:
-            shape.append(int(d))
-    if len(shape) != 4:
-        raise RuntimeError(f"unexpected images-input shape {images_input.shape!r}")
-    img = np.zeros(shape, dtype=np.float32)
-    H, W = shape[2], shape[3]
-    sz = np.array([[W, H]], dtype=np.int64)
+    input_by_name = {item.name: item for item in inputs}
+    if {"images", "orig_target_sizes"} <= set(input_by_name):
+        # KDK's historical processed-detection graph contract.
+        images_input = input_by_name["images"]
+        shape = []
+        for d in images_input.shape:
+            if isinstance(d, int):
+                shape.append(int(d))
+            elif d == "N" or d is None:
+                shape.append(1)
+            else:
+                shape.append(int(d))
+        if len(shape) != 4:
+            raise RuntimeError(f"unexpected images-input shape {images_input.shape!r}")
+        img = np.zeros(shape, dtype=np.float32)
+        H, W = shape[2], shape[3]
+        sz = np.array([[W, H]], dtype=np.int64)
+        feed = {"images": img, "orig_target_sizes": sz}
+        bench_contract = "kit_processed_detection_v1"
+    elif len(inputs) == 1:
+        # Family-native exports (notably LibreYOLO) normally expose one NCHW
+        # tensor and embed all geometry/preprocessing metadata in the model.
+        inp = inputs[0]
+        shape = [int(d) if isinstance(d, int) else 1 for d in inp.shape]
+        if len(shape) != 4:
+            raise RuntimeError(f"unexpected native ONNX input shape {inp.shape!r}")
+        dtype = np.float16 if inp.type == "tensor(float16)" else np.float32
+        feed = {inp.name: np.zeros(shape, dtype=dtype)}
+        bench_contract = "single_tensor_native_v1"
+    else:
+        raise RuntimeError(
+            "unsupported ONNX benchmark input contract: "
+            + repr([(item.name, item.shape, item.type) for item in inputs])
+        )
 
     for _ in range(int(warmup)):
-        sess.run(None, {"images": img, "orig_target_sizes": sz})
+        sess.run(None, feed)
 
     timings = []
     for _ in range(int(iters)):
         t0 = time.perf_counter()
-        sess.run(None, {"images": img, "orig_target_sizes": sz})
+        sess.run(None, feed)
         timings.append((time.perf_counter() - t0) * 1000.0)
 
     out_fpath = onnx_fpath.with_suffix(".bench.json")
@@ -66,6 +84,7 @@ def run_onnx_bench(
         "warmup": int(warmup),
         "iters": int(iters),
         "providers": list(providers),
+        "contract": bench_contract,
         "timings_ms": timings,
         "mean_ms": sum(timings) / len(timings),
         "min_ms": min(timings),

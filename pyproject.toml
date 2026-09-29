@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kwcoco-detector-kit"
 dynamic = ["version"]
-description = "Domain-agnostic object-detector training pipeline on kwcoco datasets — DEIMv2 + OpenGroundingDINO."
+description = "Kwcoco-native detector training, evaluation, mining, and packaging with pluggable model engines."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Jon Crall", email = "jon.crall@kitware.com" }]
-keywords = ["kwcoco", "object-detection", "deimv2", "dinov2", "dinov3", "opengroundingdino", "training", "pipeline"]
+keywords = ["kwcoco", "object-detection", "instance-segmentation", "libreyolo", "deimv2", "dinov2", "dinov3", "training", "pipeline"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -91,6 +91,26 @@ kwcoco-dataloader = [
 rfdetr = [
     "rfdetr[train,loggers]==1.10.1",
     "kwimage_ext>=0.4.1",
+]
+# LibreYOLO model-engine integration. The pinned tpl/libreyolo checkout is
+# imported directly; this extra installs the optional dependencies needed by
+# the modern detector families and native ONNX export.
+libreyolo = [
+    # tpl/libreyolo is imported directly rather than installed as a wheel, so
+    # mirror the runtime dependencies that are not already KDK core deps.
+    "requests>=2.25.0",
+    "mss>=9.0.1",
+    "tqdm>=4.65.0",
+    "pycocotools>=2.0.0",
+    "typer>=0.9.0",
+    "click>=8.0.0",
+    "safetensors>=0.4.0",
+    "scipy>=1.7.0",
+    "cloudpickle>=3.0.0",
+    # RF-DETR and several modern transformer-backed families.
+    "transformers>=5.1.0",
+    # LibreYOLO's current floor is newer than KDK's generic cv2 floor.
+    "opencv-python-headless>=4.11.0.86",
 ]
 # Dev / test
 dev = [

@@ -4,7 +4,7 @@ Trainer plugin protocol.
 Each trainer plugin lives in its own submodule under ``trainers/`` and
 is registered against the kit's central registry via
 ``trainers._registry.register_trainer``. The kit's orchestration layer
-dispatches by name (``trainer="deimv2"``, ``trainer="opengroundingdino"``,
+dispatches by name (for example ``trainer="libreyolo"`` or
 ``trainer="mock_tiny"``).
 
 The interface is a runtime-checkable Protocol so plugins can be

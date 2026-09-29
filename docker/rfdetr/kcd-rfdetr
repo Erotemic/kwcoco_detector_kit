@@ -105,6 +105,7 @@ run_base=(
     --user "$(id -u):$(id -g)"
     --env "HOME=$HOME"
     --env "USER=${USER:-$(id -un)}"
+    --env "LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6"
     --volume "$HOME:$HOME"
     --volume "$REPO_ROOT:/opt/kwcoco_detector_kit"
     --workdir /opt/kwcoco_detector_kit
